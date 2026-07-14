@@ -1,0 +1,55 @@
+# Project Black Monolith — full local stack.
+#
+#   docker compose up -d --build      # bring the whole system up
+#   ./run_full_demo.sh                # drive all three attack fixtures
+#   open http://localhost:3000        # watch detections arrive live
+#
+# ChromaDB runs embedded inside vector-anchor; the TraceAudit model backend
+# defaults to an offline mock, so no Ollama or separate vector DB is required.
+# All three defense modules forward their events to the dashboard's ingest
+# endpoint over the internal Docker network.
+
+services:
+  dashboard:
+    build: ./dashboard
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/ingest').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  vector-anchor:
+    build: ./vector-anchor
+    ports:
+      - "8001:8001"
+    environment:
+      MONOLITH_DASHBOARD_URL: "http://dashboard:3000/api/ingest"
+      MONOLITH_EMBEDDING: "hash"
+      MONOLITH_CHROMA_PATH: "/app/chroma_store"
+    depends_on:
+      dashboard:
+        condition: service_started
+
+  trace-audit:
+    build: ./trace-audit
+    ports:
+      - "8002:8002"
+    environment:
+      MONOLITH_DASHBOARD_URL: "http://dashboard:3000/api/ingest"
+      MONOLITH_MODEL_BACKEND: "mock"
+      MONOLITH_BASELINE_PATH: "/app/baseline_distribution.json"
+    depends_on:
+      dashboard:
+        condition: service_started
+
+  mcp-shield:
+    build: ./mcp-shield
+    environment:
+      MONOLITH_DASHBOARD_URL: "http://dashboard:3000/api/ingest"
+      MCP_SHIELD_MODE: "enforce"
+      MCP_SHIELD_BASELINE: "/tmp/baseline_hashes.json"
+    depends_on:
+      dashboard:
+        condition: service_started
