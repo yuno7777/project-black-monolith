@@ -1,0 +1,37 @@
+# ── Secrets / environment ────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ── Rust (mcp-shield) ────────────────────────────────────────────────
+target/
+**/target/
+# Runtime-generated trusted-schema store
+baseline_hashes.json
+
+# ── Python (vector-anchor, trace-audit) ──────────────────────────────
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+# Runtime-generated data / models
+chroma_store/
+**/chroma_store/
+baseline_distribution.json
+.ollama/
+
+# ── Node / Next.js (dashboard) ───────────────────────────────────────
+node_modules/
+.next/
+next-env.d.ts
+npm-debug.log*
+
+# ── Editor / OS ──────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp
