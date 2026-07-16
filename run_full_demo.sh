@@ -17,6 +17,17 @@ cd "$(dirname "$0")"
 DC="docker compose"
 PAUSE="${DEMO_PAUSE:-3}"   # seconds between phases, so events are easy to follow
 
+# Every attack below is deliberately tolerant (`|| true`) so a hiccup in one
+# phase still lets the rest of the story play out on screen. That tolerance is
+# why the run is verified against the ledger at the end rather than by exit
+# codes along the way — otherwise "the demo ran" and "the demo worked" would be
+# indistinguishable, which is exactly the kind of green-but-meaningless check
+# this project is supposed to be arguing against.
+#
+# Only detections newer than this are counted, so a ledger left over from an
+# earlier run cannot make this pass.
+START_MS="$(date +%s)000"
+
 hr() { printf '\n\033[1m%s\033[0m\n' "══════════════════════════════════════════════════════════════"; }
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
 
@@ -91,7 +102,34 @@ $DC exec -T trace-audit python fixtures/divergence_prompt.py pii 2>&1 \
     | grep -E "REDACTED|result:" || true
 sleep "$PAUSE"
 
+# ═══════════════════════════════════════════════════════════════════════
+hr; say "VERIFYING — did every attack actually reach the ledger?"; hr
+# This asserts the whole delivery path, not just the detectors: detection ->
+# on-disk outbox -> authenticated ingest -> Postgres. Delivery is asynchronous,
+# so each check is given a few seconds to arrive.
+expect() { # event_type  human-label
+    for _ in $(seq 1 20); do
+        if curl -sf "http://localhost:3000/api/incidents?status=all&since_ms=$START_MS&limit=500" 2>/dev/null \
+             | grep -q "\"$1\""; then
+            printf '  \033[32m[OK]\033[0m   %s\n' "$2"; return 0
+        fi
+        sleep 1
+    done
+    printf '  \033[31m[FAIL]\033[0m %s — no %s event reached the ledger\n' "$2" "$1"; return 1
+}
+
+fails=0
+expect schema_mismatch                "MCP-Shield flagged the rug pull"          || fails=$((fails + 1))
+expect corpus_poison_quarantine       "VectorAnchor quarantined the bait doc"    || fails=$((fails + 1))
+expect reasoning_divergence_terminate "TraceAudit terminated on divergence"      || fails=$((fails + 1))
+expect pii_redacted                   "TraceAudit redacted the fake credential"  || fails=$((fails + 1))
+
 hr
-say "Full demo complete. Every detection above was pushed to the dashboard —"
-say "see the unified live feed at  http://localhost:3000"
+if [ "$fails" -ne 0 ]; then
+    say "DEMO FAILED — $fails of 4 expected detections never reached the dashboard."
+    hr
+    exit 1
+fi
+say "DEMO PASSED — all three layers detected, and every detection reached the ledger."
+say "See the unified live feed at  http://localhost:3000"
 hr
