@@ -106,6 +106,8 @@ jobs:
         run: bash scripts/verify_recovery.sh
       - name: Verify the incident lifecycle
         run: bash scripts/verify_incidents.sh
+      - name: Verify cross-layer correlation
+        run: bash scripts/verify_correlation.sh
       - name: Run the full three-attack demo
         run: ./run_full_demo.sh
       - name: Dump container logs on failure
