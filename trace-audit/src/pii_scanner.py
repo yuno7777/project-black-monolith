@@ -1,10 +1,16 @@
 """Regex scanner for credential / PII-like patterns in streamed reasoning
 tokens.
 
-Runs against the rolling text buffer as tokens arrive. On a match, the caller
-redacts the matched span (see redaction.py) *before* anything is logged, and
-emits an event. Patterns are intentionally conservative to keep false
-positives low in a demo.
+On a match, the caller redacts the matched span (see redaction.py) *before*
+anything is logged, and emits an event. Patterns are intentionally conservative
+to keep false positives low in a demo.
+
+**Scope — read this before trusting it.** `stream_proxy` calls `scan()` on each
+token in isolation, not on a rolling buffer, so a secret a tokenizer splits
+across two tokens matches neither half and is missed. That is a real gap, it is
+ordinary tokenizer behaviour rather than an attack, and it is measured in
+`tests/test_evasion.py`. Closing it means scanning a sliding character window
+with overlap; the patterns themselves are not the limitation.
 """
 
 from __future__ import annotations

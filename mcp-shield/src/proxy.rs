@@ -549,6 +549,72 @@ mod tests {
         );
     }
 
+    // --- adversarial evaluation ------------------------------------------
+    //
+    // The README calls first-contact trust a known limitation. Prose is cheap,
+    // so this measures it. The test below asserts the proxy does NOT block an
+    // attack — deliberately. It pins a limitation inherent to
+    // fingerprint-on-first-sight, so the documented claim is backed by a test,
+    // and anyone who later closes the gap is told by a failure to update it.
+
+    #[test]
+    fn known_evasion_a_tool_poisoned_from_first_contact_is_not_blocked() {
+        // There is no clean baseline to compare against or rewrite to: the
+        // first thing the proxy ever saw *is* the poison, so it is trusted and
+        // registered as-is. Nothing about the fingerprint can help here — the
+        // gap is inherent to trust-on-first-use, not a detector bug.
+        let mut store = temp_store("first-contact");
+        let msg = tools_list_response(POISONED_DESC);
+        let outcome =
+            analyze_tools_list(&msg, &mut store, KEY, ShieldMode::Enforce).expect("analysis ok");
+        assert!(
+            matches!(outcome, AnalysisOutcome::Analyzed { rewritten: None }),
+            "first contact cannot be a mismatch, so enforce mode has nothing to \
+             rewrite to and the poisoned schema reaches the agent"
+        );
+    }
+
+    #[test]
+    fn the_sanitizer_still_flags_a_first_contact_poisoning() {
+        // Bounds the damage above: the fingerprint layer is blind on first
+        // contact, but the description scan is not — it needs no history. So
+        // the attack is *reported* even though it is not *blocked*, which is
+        // the difference between a gap and a hole.
+        let findings = crate::sanitizer::scan_description(POISONED_DESC);
+        assert!(
+            !findings.is_empty(),
+            "a poisoned description must still be flagged on first sighting, \
+             since the sanitizer is stateless and does not depend on a baseline"
+        );
+    }
+
+    #[test]
+    fn a_rug_pull_after_a_poisoned_baseline_still_flags() {
+        // The evasion buys one serving, not immunity: once the poison is the
+        // baseline, any *further* mutation is still caught. The attacker has to
+        // stay poisoned to stay hidden.
+        let mut store = temp_store("first-contact-then-mutate");
+        analyze_tools_list(
+            &tools_list_response(POISONED_DESC),
+            &mut store,
+            KEY,
+            ShieldMode::Enforce,
+        )
+        .expect("analysis ok");
+        let outcome = analyze_tools_list(
+            &tools_list_response(CLEAN_DESC),
+            &mut store,
+            KEY,
+            ShieldMode::Enforce,
+        )
+        .expect("analysis ok");
+        assert!(
+            matches!(outcome, AnalysisOutcome::Analyzed { rewritten: Some(_) }),
+            "any change from the registered baseline must be caught, even when \
+             the baseline itself was the poisoned schema"
+        );
+    }
+
     #[test]
     fn clean_first_sighting_registers_without_rewrite() {
         let mut store = temp_store("clean");
