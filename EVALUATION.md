@@ -223,7 +223,7 @@ event record. What is evaluated here is not that the buttons work but that the
 **Test.** `scripts/verify_incidents.sh` seeds an event, walks it through the
 lifecycle against the live stack, and asserts the invariants.
 
-**Result: PASSED — 27 / 27 checks.**
+**Result: PASSED — 33 / 33 checks.**
 
 | Property under test | Why it matters | Result |
 | :-- | :-- | :-- |
@@ -241,12 +241,19 @@ Two design points the tests pin down:
 - **Append-only is enforced by a trigger, not a `REVOKE`.** A `REVOKE` does not
   bind the table's owner, which is the role the application connects as, so it
   would have been a comment rather than a control.
-- **The identity is the weak link, and is documented as such.** `/api/incidents`
-  is unauthenticated and the analyst name is a self-declared `localStorage`
-  label, not a login. The trail is tamper-evident against later edits; it is
-  **not** evidence of who acted, because the dashboard has no user model. Any
-  multi-operator deployment needs a real identity layer in front of these routes
-  before the trail means anything. See the dashboard README.
+- **The actor is derived from the credential, never from the request.** Triage
+  requires an operator token, separate from the per-module ingest tokens — if a
+  module token worked here, any module could close its own findings. The body's
+  `actor` is ignored outright, and the tests confirm a forged name reaches
+  neither the triage row nor the trail. Missing configuration returns **503 and
+  refuses every write**: an authenticator that was never set up must not be
+  mistaken for one that passed.
+
+  **Remaining gap, stated plainly:** `GET /api/incidents` is still
+  unauthenticated, and the token is a bearer credential in `localStorage` with
+  no sessions, expiry or rotation. The trail is now tamper-evident *and*
+  attributable on a single-operator stack; it is not an identity layer, and a
+  multi-user deployment needs real sessions in front of these routes.
 
 ---
 
@@ -295,7 +302,8 @@ cd dashboard && npm start &  BASE=http://localhost:3000 node test/malformed-even
 cd mcp-shield && bash fixtures/verify_outbox.sh
 bash scripts/verify_ingest.sh            # 16 ingest-contract checks
 bash scripts/verify_recovery.sh          # stops/restarts the dashboard; removes no data
-bash scripts/verify_incidents.sh         # 27 incident-lifecycle checks
+bash scripts/verify_incidents.sh         # 33 incident-lifecycle checks
+bash scripts/verify_correlation.sh       # 13 cross-layer correlation checks
 
 # Full end-to-end integration WITHOUT Docker (dashboard + all 3 modules + attacks)
 ./scripts/run_local_demo.sh            # holds services up; open http://localhost:3000

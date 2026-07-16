@@ -7,7 +7,7 @@ import { KNOWN_MODULES, MODULE_ACCENT, MODULE_LABELS, STATUS_LABELS } from "@/li
 import Sidebar, { Rail } from "../components/Sidebar";
 import ThemeToggle from "../components/ThemeToggle";
 import IncidentPanel, { type TransitionRequest } from "../components/IncidentPanel";
-import { useAnalyst } from "../components/useAnalyst";
+import { useOperatorToken } from "../components/useOperatorToken";
 import { ModuleGlyph, SevIcon, IconSearch, IconUser, IconLedger } from "../components/Icons";
 
 type StatusTab = IncidentStatus | "open" | "all";
@@ -48,7 +48,7 @@ function InvestigateConsole() {
   // silently never open, so a deep link widens them to "all".
   const deepLinkId = useSearchParams().get("event");
 
-  const [analyst, setAnalyst] = useAnalyst();
+  const [token, setToken] = useOperatorToken();
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [status, setStatus] = useState<StatusTab>(deepLinkId ? "all" : "open");
@@ -123,11 +123,17 @@ function InvestigateConsole() {
 
   const transition = useCallback(
     async (eventId: string, t: TransitionRequest): Promise<string | null> => {
+      if (!token) return "paste your operator token first — triage is authenticated";
       try {
         const res = await fetch("/api/incidents", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...t, event_id: eventId, actor: analyst }),
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          // No actor: the server derives it from the token, so this request
+          // cannot claim to be someone else.
+          body: JSON.stringify({ ...t, event_id: eventId }),
         });
         const data = await res.json();
         if (!res.ok) return data.error ?? "the transition was rejected";
@@ -143,7 +149,7 @@ function InvestigateConsole() {
         return "could not reach the ledger";
       }
     },
-    [analyst, load],
+    [token, load],
   );
 
   const openCount = counts.open ?? 0;
@@ -188,14 +194,17 @@ function InvestigateConsole() {
             </div>
 
             <div className="topbar-right">
-              <span className="analyst">
+              <span className={`analyst${token ? "" : " unset"}`}>
                 <IconUser size={13} />
                 <input
-                  value={analyst}
-                  onChange={(e) => setAnalyst(e.target.value)}
-                  aria-label="Your analyst name"
-                  title="Recorded against your triage actions (not authentication)"
+                  type="password"
+                  value={token}
+                  onChange={(e) => setToken(e.target.value)}
+                  placeholder="operator token"
+                  aria-label="Operator token"
+                  title="Authenticates your triage actions. The name recorded in the audit trail is derived from this token."
                   spellCheck={false}
+                  autoComplete="off"
                 />
               </span>
               <ThemeToggle />
@@ -326,7 +335,6 @@ function InvestigateConsole() {
               <div className="stack">
                 <IncidentPanel
                   incident={selected}
-                  analyst={analyst}
                   onTransition={(t) => transition(selected.event_id, t)}
                   onClose={() => setSelectedId(null)}
                   onSelectSession={focusSession}

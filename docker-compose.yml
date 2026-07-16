@@ -51,6 +51,12 @@ services:
       DATABASE_URL: postgresql://postgres:${MONOLITH_POSTGRES_PASSWORD:?set MONOLITH_POSTGRES_PASSWORD in .env}@database:5432/postgres
       EVENT_INGEST_TOKENS_JSON: >-
         {"mcp-shield":"${MONOLITH_EVENT_TOKEN_MCP_SHIELD:?set MONOLITH_EVENT_TOKEN_MCP_SHIELD in .env}","vector-anchor":"${MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR:?set MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR in .env}","trace-audit":"${MONOLITH_EVENT_TOKEN_TRACE_AUDIT:?set MONOLITH_EVENT_TOKEN_TRACE_AUDIT in .env}"}
+      # Human operators for the investigation queue. Separate from the module
+      # tokens above by design: those identify modules, and a module must not be
+      # able to close its own findings. The key is the name the audit trail
+      # records, so it comes from the credential rather than from the request.
+      OPERATOR_TOKENS_JSON: >-
+        {"${MONOLITH_OPERATOR_NAME:-operator}":"${MONOLITH_OPERATOR_TOKEN:?set MONOLITH_OPERATOR_TOKEN in .env — run scripts/generate_secrets.sh}"}
     depends_on:
       database:
         condition: service_healthy

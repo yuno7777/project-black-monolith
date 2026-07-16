@@ -3,11 +3,17 @@
 // POST /api/incidents — apply a triage transition (assign / acknowledge /
 //                       resolve) and append it to the audit trail.
 //
-// Unlike /api/ingest these are operator endpoints, not module endpoints, and
-// they are deliberately unauthenticated: this dashboard has no user model, and
-// a per-module bearer token would be the wrong credential for a human anyway.
-// See the "Known limitations" note in the dashboard README — anything beyond a
-// single-operator local stack needs a real identity layer in front of this.
+// These are operator (human) endpoints, not module endpoints, so they use their
+// own credential — a module token identifies a module and would let any module
+// close its own findings.
+//
+// POST requires a valid operator bearer token, and the actor recorded in the
+// audit trail is derived from that token rather than read from the body: an
+// actor a caller can name itself is not evidence.
+//
+// GET is not authenticated. This is a single-operator local stack and the read
+// path exposes only what the dashboard already renders, but it is a real gap
+// for any deployment beyond localhost — see the dashboard README.
 
 import {
   applyTransition,
@@ -21,6 +27,7 @@ import {
   UnknownEventError,
 } from "@/lib/incident-store";
 import type { IncidentQuery } from "@/lib/incident-store";
+import { authenticateOperator, OperatorAuthUnavailable } from "@/lib/operator-auth";
 import type { IncidentStatus, Severity } from "@/lib/types";
 import { INCIDENT_STATUSES } from "@/lib/types";
 
@@ -97,6 +104,27 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  // Authenticate before parsing: an unauthenticated caller learns nothing about
+  // whether its payload would have been valid.
+  let actor: string | null;
+  try {
+    actor = authenticateOperator(req);
+  } catch (error) {
+    if (error instanceof OperatorAuthUnavailable) {
+      // Fail closed. An authenticator that was never configured must never be
+      // mistaken for one that passed.
+      console.error("operator authentication is misconfigured", error);
+      return Response.json(
+        { error: "operator authentication is unavailable" },
+        { status: 503 },
+      );
+    }
+    throw error;
+  }
+  if (!actor) {
+    return Response.json({ error: "invalid operator credential" }, { status: 401 });
+  }
+
   let body: unknown;
   try {
     body = JSON.parse(await req.text());
@@ -106,7 +134,9 @@ export async function POST(req: Request) {
 
   let transition;
   try {
-    transition = normalizeTransition(body);
+    // The actor comes from the credential, never from the body — a caller
+    // cannot write someone else's name into the audit trail.
+    transition = normalizeTransition(body, actor);
   } catch (error) {
     if (error instanceof IncidentInputError) {
       return Response.json({ error: error.message }, { status: 422 });
