@@ -1,14 +1,15 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { MonolithEvent, Severity } from "@/lib/types";
+import Link from "next/link";
+import type { Incident, IncidentStatus, MonolithEvent, Severity } from "@/lib/types";
 import { KNOWN_MODULES, MODULE_LABELS } from "@/lib/types";
 import Sidebar, { Rail } from "./components/Sidebar";
 import ThreatFeed from "./components/ThreatFeed";
 import ModuleBars from "./components/ModuleBars";
 import SeverityDonut from "./components/SeverityDonut";
 import ThemeToggle from "./components/ThemeToggle";
-import { IconIntercept, IconActivity, IconAlert, IconBolt, IconSearch } from "./components/Icons";
+import { IconIntercept, IconActivity, IconAlert, IconBolt, IconSearch, IconLedger } from "./components/Icons";
 
 function avgLatency(events: MonolithEvent[]): number | null {
   const s: number[] = [];
@@ -45,6 +46,8 @@ export default function Page() {
   const [severity, setSeverity] = useState<Severity | "all">("all");
   const [query, setQuery] = useState("");
   const [now, setNow] = useState<string>("");
+  const [openIncidents, setOpenIncidents] = useState<number | null>(null);
+  const [triageByEvent, setTriageByEvent] = useState<Map<string, IncidentStatus>>(new Map());
   const seen = useRef<Set<number>>(new Set());
 
   useEffect(() => {
@@ -71,6 +74,36 @@ export default function Page() {
       }
     };
     return () => es.close();
+  }, []);
+
+  // Triage state lives in the ledger, not on the event stream, so the overview
+  // polls for it. Only the triaged set is fetched (small, and the only rows
+  // that get badged) plus the counts — "every event with its status" would mean
+  // shipping the whole ledger on a timer just to render a handful of pills.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch("/api/incidents?status=triaged&limit=500");
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        const map = new Map<string, IncidentStatus>();
+        for (const i of (data.incidents ?? []) as Incident[]) {
+          if (i.triage?.status) map.set(i.event_id, i.triage.status);
+        }
+        setTriageByEvent(map);
+        setOpenIncidents(data.counts?.open ?? null);
+      } catch {
+        /* the feed is the primary surface; leave the badges off if this fails */
+      }
+    };
+    load();
+    const t = setInterval(load, 15_000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
   }, []);
 
   const byModule = useMemo(() => {
@@ -101,7 +134,6 @@ export default function Page() {
 
   const intercepted = severityCounts.critical + severityCounts.warning;
   const latency = avgLatency(events);
-  const activeModules = KNOWN_MODULES.filter((m) => byModule[m].length).length;
 
   const kpis = [
     {
@@ -112,13 +144,17 @@ export default function Page() {
       accent: "var(--mod-vector)",
       chip: events.length ? `${Math.round((intercepted / events.length) * 100)}% of feed` : null,
     },
+    // Replaces the old "Total events" card: that number is already the donut's
+    // centre and the sidebar's count, whereas how much is still unhandled was
+    // nowhere on this page.
     {
-      k: "Total events",
-      v: events.length,
-      sub: `${activeModules} of 3 modules active`,
-      icon: <IconActivity />,
+      k: "Open incidents",
+      v: openIncidents ?? "—",
+      sub: openIncidents === null ? "ledger unavailable" : "new + acknowledged",
+      icon: <IconLedger />,
       accent: "var(--mod-mcp)",
       chip: null,
+      href: "/investigate",
     },
     {
       k: "Critical",
@@ -172,21 +208,31 @@ export default function Page() {
           </div>
 
           <div className="kpis">
-            {kpis.map((c) => (
-              <div
-                className="kpi"
-                key={c.k}
-                style={{ ["--accent-mod" as string]: c.accent }}
-              >
-                <div className="kpi-top">
-                  <span className="kpi-ic">{c.icon}</span>
-                  {c.chip ? <span className="chip num">{c.chip}</span> : null}
+            {kpis.map((c) => {
+              const body = (
+                <>
+                  <div className="kpi-top">
+                    <span className="kpi-ic">{c.icon}</span>
+                    {c.chip ? <span className="chip num">{c.chip}</span> : null}
+                  </div>
+                  <div className="kpi-k">{c.k}</div>
+                  <div className="kpi-v num">{c.v}</div>
+                  <div className="kpi-sub">{c.sub}</div>
+                </>
+              );
+              const style = { ["--accent-mod" as string]: c.accent };
+              // Only the card that leads somewhere is a link, so the hover
+              // affordance never promises a destination that does not exist.
+              return c.href ? (
+                <Link className="kpi kpi-link" key={c.k} href={c.href} style={style}>
+                  {body}
+                </Link>
+              ) : (
+                <div className="kpi" key={c.k} style={style}>
+                  {body}
                 </div>
-                <div className="kpi-k">{c.k}</div>
-                <div className="kpi-v num">{c.v}</div>
-                <div className="kpi-sub">{c.sub}</div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           <div className="content">
@@ -216,6 +262,7 @@ export default function Page() {
               </div>
               <ThreatFeed
                 events={shown}
+                triageByEvent={triageByEvent}
                 emptyHint={
                   events.length
                     ? "No events match these filters."
