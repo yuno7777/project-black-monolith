@@ -295,6 +295,13 @@ html, body {
 .content { display: grid; grid-template-columns: 1fr 340px; gap: 11px; align-items: stretch; flex: 1; min-height: 0; }
 @media (max-width: 1240px) { .content { grid-template-columns: 1fr; overflow-y: auto; } }
 .stack { display: flex; flex-direction: column; gap: 11px; min-height: 0; overflow-y: auto; }
+/* A flex item shrinks below its content by default, and .card clips
+   (overflow: hidden) — together that silently cropped the donut's legend
+   instead of scrolling. Cards keep their natural height; the column scrolls. */
+.stack > .card { flex: none; }
+/* The incident panel is the exception: it owns an internal scroll area, so it
+   should fill the column rather than run past it. */
+.stack > .panel-card { flex: 1; min-height: 0; }
 
 /* ============================ card ============================ */
 .card {
@@ -312,8 +319,8 @@ html, body {
 .card-meta { font-size: 11.5px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
 
 /* ============================ charts ============================ */
-.chart-wrap { padding: 8px 10px 12px; }
-.donut-holder { position: relative; height: 158px; }
+.chart-wrap { padding: 8px 10px 10px; }
+.donut-holder { position: relative; height: 140px; }
 .donut-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; }
 .donut-center .dc-v { font-size: 26px; font-weight: 700; color: var(--ink); letter-spacing: -0.6px; }
 .donut-center .dc-k { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--ink-faint); margin-top: 2px; }
@@ -328,7 +335,6 @@ html, body {
 .legend-row.on { color: var(--ink); background: var(--card-2); }
 .legend-row .lg-dot { width: 8px; height: 8px; border-radius: 3px; flex: none; transition: opacity 0.13s ease; }
 .legend-row b { margin-left: auto; color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 620; }
-.donut-center .dc-k { text-transform: uppercase; }
 .chart-tip {
   background: var(--tooltip); border: 1px solid var(--line); border-radius: 9px;
   padding: 7px 10px; font-size: 12px; color: var(--tooltip-ink); box-shadow: var(--shadow);
