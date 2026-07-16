@@ -20,23 +20,11 @@ class EventBroker {
   private seq = 0;
   private readonly capacity = 500;
 
-  ingest(raw: Partial<MonolithEvent>): MonolithEvent {
+  ingest(raw: MonolithEvent): MonolithEvent {
     const event: MonolithEvent = {
-      timestamp_ms:
-        typeof raw.timestamp_ms === "number" ? raw.timestamp_ms : Date.now(),
-      module: typeof raw.module === "string" ? raw.module : "unknown",
-      event_type:
-        typeof raw.event_type === "string" ? raw.event_type : "unknown",
-      severity:
-        raw.severity === "critical" ||
-        raw.severity === "warning" ||
-        raw.severity === "info"
-          ? raw.severity
-          : "info",
-      details:
-        raw.details && typeof raw.details === "object" ? raw.details : {},
+      ...raw,
       seq: ++this.seq,
-      received_ms: Date.now(),
+      received_ms: raw.received_ms ?? Date.now(),
     };
 
     this.buffer.push(event);
