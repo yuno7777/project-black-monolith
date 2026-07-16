@@ -181,6 +181,7 @@ are gated in CI.
 bash mcp-shield/fixtures/verify_outbox.sh   # (from mcp-shield/) no Docker needed
 bash scripts/verify_ingest.sh               # 16 checks against the ingest contract
 bash scripts/verify_recovery.sh             # kills the dashboard, proves nothing is lost
+bash scripts/verify_incidents.sh            # 27 checks on the incident lifecycle
 ```
 
 - **`verify_outbox.sh`** drives MCP-Shield's spool through three phases against
@@ -198,6 +199,11 @@ bash scripts/verify_recovery.sh             # kills the dashboard, proves nothin
   retrievals, and asserts the events sit in VectorAnchor's SQLite spool with the
   ledger frozen — then restarts it and asserts the spool drains into the ledger.
   It restarts a container but removes no data.
+- **`verify_incidents.sh`** walks an incident through its lifecycle and asserts
+  the constraints that keep the queue honest: an untriaged event still reaches
+  the queue, resolving demands a verdict, omitting a field never silently clears
+  it, the underlying event is never mutated by triage, and the audit trail
+  rejects `UPDATE` and `DELETE` outright.
 
 ---
 

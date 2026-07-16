@@ -37,6 +37,11 @@ backoff. The dashboard being down costs delivery latency, not evidence.
   clean teardown on disconnect.
 - `app/page.tsx` — client component; subscribes via `EventSource`, de-dupes by
   sequence number, derives all stats client-side.
+- `lib/incident-store.ts` — the investigation queue and incident lifecycle.
+- `app/api/incidents/route.ts` — `GET` the queue (filtered, worst-first), `POST`
+  a triage transition.
+- `app/api/incidents/[eventId]/audit/route.ts` — `GET` one incident's trail.
+- `app/investigate/page.tsx` — the queue UI.
 - `app/components/` — `ThreatFeed` (newest-first, click to expand),
   `ModuleStatusCard` (per-module status + counts), `SessionSummary` (totals,
   severity distribution, per-layer breakdown, avg detection latency),
@@ -80,3 +85,44 @@ root `run_full_demo.sh` against the full Docker stack.
 - A supplied `event_id` must be a UUID (the column is a Postgres `uuid`); a
   malformed one is a permanent 422 rather than a 503 that outboxes would
   retry forever.
+
+## Investigation queue (`/investigate`)
+
+The live feed answers "what is happening"; the queue answers "what has anyone
+done about it". It reads the persisted ledger — not the SSE stream — filtered by
+status, severity, module, time window and free text, ordered **worst-first then
+newest-first**, and supports assigning, acknowledging and resolving.
+
+Design notes:
+
+- **Triage is stored separately from the event.** `security_events` stays an
+  immutable record of what the detectors saw; `incident_triage` holds human
+  judgement *about* an event. Nothing an analyst does mutates evidence.
+- **An event with no triage row reads as `new`**, synthesized on read. Back-
+  filling a triage row at ingest would put an extra write on the detection path
+  for every event, and the queue treats "never looked at" and "new" alike.
+- **Resolving requires a verdict** (`true_positive` / `false_positive` /
+  `benign` / `duplicate`), enforced by a CHECK constraint as well as the API.
+  Without it a "resolved" queue is just a hidden queue, and the false-positive
+  rate — the number this project is evaluated on — could never be recovered.
+- **`incident_audit` is append-only**, enforced by a trigger rather than a
+  `REVOKE`, because a REVOKE would not bind the table's owner, which is the role
+  the app connects as. Each transition and its resulting state are written in
+  the **same transaction** as the state change.
+- Omitting a field on a transition means "leave it alone", not "clear it" —
+  otherwise resolving an incident without restating the assignee would silently
+  unassign it. `resolution` is the deliberate exception: reopening clears the
+  stale verdict.
+- The queue **polls every 15s rather than subscribing to SSE**. It is a working
+  surface, and re-sorting rows under an analyst's cursor mid-triage would be
+  hostile.
+
+> [!IMPORTANT]
+> **`/api/incidents` is unauthenticated, and the analyst name is not a login.**
+> The ingest endpoints authenticate *modules* with per-module bearer tokens, but
+> this dashboard has no user model, and a module token would be the wrong
+> credential for a human. The analyst name is a self-declared attribution label
+> in `localStorage` so the audit trail reads as something other than a wall of
+> "unknown" on a single-operator stack. Anything multi-user, or anything exposed
+> beyond localhost, needs a real identity layer in front of these routes — the
+> audit trail is only as trustworthy as the identity feeding it.

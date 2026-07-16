@@ -30,6 +30,62 @@ export interface MonolithEvent {
   source?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Incident lifecycle. Triage is human judgement *about* an event; it is stored
+// and typed separately from the event, which stays immutable evidence.
+
+export type IncidentStatus = "new" | "acknowledged" | "resolved";
+
+export type Resolution = "true_positive" | "false_positive" | "benign" | "duplicate";
+
+export interface Triage {
+  status: IncidentStatus;
+  assignee?: string;
+  note?: string;
+  resolution?: Resolution;
+  updated_ms: number;
+  updated_by: string;
+}
+
+/** A ledger event joined with its triage state (absent until first triaged). */
+export interface Incident extends MonolithEvent {
+  event_id: string;
+  triage?: Triage;
+}
+
+export interface AuditEntry {
+  audit_id: number;
+  at_ms: number;
+  actor: string;
+  from_status?: IncidentStatus;
+  to_status: IncidentStatus;
+  assignee?: string;
+  resolution?: Resolution;
+  note?: string;
+}
+
+export const INCIDENT_STATUSES: IncidentStatus[] = ["new", "acknowledged", "resolved"];
+
+export const STATUS_LABELS: Record<IncidentStatus, string> = {
+  new: "New",
+  acknowledged: "Acknowledged",
+  resolved: "Resolved",
+};
+
+export const RESOLUTIONS: Resolution[] = [
+  "true_positive",
+  "false_positive",
+  "benign",
+  "duplicate",
+];
+
+export const RESOLUTION_LABELS: Record<Resolution, string> = {
+  true_positive: "True positive",
+  false_positive: "False positive",
+  benign: "Benign",
+  duplicate: "Duplicate",
+};
+
 export const KNOWN_MODULES: ModuleName[] = [
   "mcp-shield",
   "vector-anchor",
