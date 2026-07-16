@@ -46,6 +46,8 @@ class Config:
 
     # --- dashboard integration ------------------------------------------
     dashboard_url: str | None
+    event_token: str | None
+    event_outbox_path: str
 
 
 def load_config() -> Config:
@@ -56,9 +58,18 @@ def load_config() -> Config:
         embedding_dim=int(os.environ.get("MONOLITH_EMBEDDING_DIM", "256")),
         top_k=int(os.environ.get("MONOLITH_TOP_K", "3")),
         candidate_buffer=int(os.environ.get("MONOLITH_CANDIDATE_BUFFER", "5")),
-        top_rank_threshold=int(os.environ.get("MONOLITH_TOP_RANK_THRESHOLD", "3")),
+        # top_rank_threshold and topic_similarity were tuned from a
+        # false-positive sweep (see fixtures/calibrate.py /
+        # fixtures/calibration_results.md). The original (3, 0.30) let broad
+        # single-domain documents accumulate up to 7 distinct "topics" — more
+        # than the poison's score of 5 — an unfixable overlap. At (2, 0.20)
+        # the highest clean document scores 2 and the poison scores 4, a
+        # clean 2-topic separation. See README "Threshold calibration".
+        top_rank_threshold=int(os.environ.get("MONOLITH_TOP_RANK_THRESHOLD", "2")),
         min_distinct_topics=int(os.environ.get("MONOLITH_MIN_DISTINCT_TOPICS", "4")),
-        topic_similarity=float(os.environ.get("MONOLITH_TOPIC_SIMILARITY", "0.30")),
+        topic_similarity=float(os.environ.get("MONOLITH_TOPIC_SIMILARITY", "0.20")),
         window_size=int(os.environ.get("MONOLITH_WINDOW_SIZE", "50")),
         dashboard_url=os.environ.get("MONOLITH_DASHBOARD_URL") or None,
+        event_token=os.environ.get("MONOLITH_EVENT_TOKEN") or None,
+        event_outbox_path=os.environ.get("MONOLITH_EVENT_OUTBOX_PATH", "./event_outbox.db"),
     )

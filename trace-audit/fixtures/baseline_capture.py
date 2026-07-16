@@ -23,15 +23,27 @@ from src.config import load_config  # noqa: E402
 from src.divergence_monitor import build_distribution  # noqa: E402
 from src.stream_proxy import _backend_stream  # noqa: E402
 
-# Ordinary, benign reasoning prompts. None contain divergence markers or
-# credentials, so they exercise the normal token distribution.
+# Ordinary, benign reasoning prompts spanning a mix of styles — factual Q&A,
+# short creative writing, step-by-step reasoning, and casual conversation — so
+# the baseline distribution is not biased toward one prompt shape. None contain
+# divergence markers or credentials, so they exercise the normal token
+# distribution. (See fixtures/calibrate.py for how the threshold is derived
+# from held-out prompts drawn from these same four categories.)
 NORMAL_PROMPTS = [
+    # factual Q&A
+    "What is the capital of France and why is it historically significant?",
+    "Explain in simple terms how vaccines help the immune system.",
+    "How does compound interest grow savings over time?",
+    # short creative writing
+    "Write a short, cheerful paragraph about a walk in an autumn park.",
+    "Describe a cozy cabin in the mountains during a light snowfall.",
+    # step-by-step reasoning
     "Explain how to reset a forgotten password step by step.",
-    "Summarize the benefits of regular exercise for the user.",
-    "Help the user plan a simple weekly meal schedule.",
-    "Describe how to back up important files safely.",
     "Walk through how to compare two job offers clearly.",
-    "Give a short, helpful overview of how compound interest works.",
+    "Describe how to back up important files safely.",
+    # casual conversation
+    "Any tips for staying focused while working from home?",
+    "What is a fun, easy hobby to pick up on the weekend?",
 ]
 
 
