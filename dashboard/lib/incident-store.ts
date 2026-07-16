@@ -30,6 +30,7 @@ type IncidentRow = {
   details: Record<string, unknown>;
   correlation_id: string | null;
   session_id: string | null;
+  trace_id: string | null;
   agent_id: string | null;
   outcome: string | null;
   status: IncidentStatus | null;
@@ -67,6 +68,7 @@ function toIncident(row: IncidentRow): Incident {
     details: row.details ?? {},
     correlation_id: row.correlation_id ?? undefined,
     session_id: row.session_id ?? undefined,
+    trace_id: row.trace_id ?? undefined,
     agent_id: row.agent_id ?? undefined,
     outcome: row.outcome ?? undefined,
     triage,
@@ -140,7 +142,7 @@ export async function listIncidents(query: IncidentQuery = {}): Promise<Incident
        e.event_id, e.schema_version, e.occurred_at_ms,
        (extract(epoch from e.received_at) * 1000)::bigint as received_ms,
        e.module, e.event_type, e.severity, e.details,
-       e.correlation_id, e.session_id, e.agent_id, e.outcome,
+       e.correlation_id, e.session_id, e.trace_id, e.agent_id, e.outcome,
        t.status, t.assignee, t.note, t.resolution,
        (extract(epoch from t.updated_at) * 1000)::bigint as updated_ms,
        t.updated_by

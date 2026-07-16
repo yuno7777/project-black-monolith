@@ -190,6 +190,7 @@ bash mcp-shield/fixtures/verify_outbox.sh   # (from mcp-shield/) no Docker neede
 bash scripts/verify_ingest.sh               # 16 checks against the ingest contract
 bash scripts/verify_recovery.sh             # kills the dashboard, proves nothing is lost
 bash scripts/verify_incidents.sh            # 27 checks on the incident lifecycle
+bash scripts/verify_correlation.sh          # 13 checks on cross-layer correlation
 ```
 
 - **`verify_outbox.sh`** drives MCP-Shield's spool through three phases against
@@ -212,6 +213,12 @@ bash scripts/verify_incidents.sh            # 27 checks on the incident lifecycl
   the queue, resolving demands a verdict, omitting a field never silently clears
   it, the underlying event is never mutated by triage, and the audit trail
   rejects `UPDATE` and `DELETE` outright.
+- **`verify_correlation.sh`** raises detections in two different agent sessions
+  and asserts the layers tie together *and stay apart* — a grouping that also
+  grabs the neighbours is not a correlation, it is a bug that looks like the
+  feature working. It also pins the severity ranking against a deliberately
+  seeded `{info, warning}` session, the one case where sorting severity as text
+  would quietly report a warning session as informational.
 
 ---
 
