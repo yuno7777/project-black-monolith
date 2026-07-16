@@ -131,17 +131,51 @@ zero-false-negative / re-approval-required posture, not a tuned detector.
   tracker state, TraceAudit's captured baseline, and the dashboard's in-memory
   event history, handling both the Docker and local cases. Verified on the
   local path.
-- **Compose validated** with `docker compose config` (syntax + resolution).
-  The full four-service stack was previously brought up end-to-end under
-  Docker and drove all three attacks onto the dashboard successfully.
-- **Docker cold-start (under Docker).** Docker Desktop on this machine had been
-  crashing on startup inside its Inference-manager / Model-Runner; this was a
-  local Docker-config issue, since fixed by disabling Model Runner
-  (`EnableInference=false` in the per-user `settings-store.json` — note
-  `EnableDockerAI` controls Gordon, not the Model Runner). With that in place,
-  `docker compose up -d --build` builds all four images and brings every
-  service to **healthy** (dashboard :3000, vector-anchor :8001, trace-audit
-  :8002, mcp-shield), and `docker run hello-world` succeeds — Docker 29.6.1.
+- **Docker cold-start — validated end-to-end.** On Docker 29.6.1,
+  `docker compose up -d --build` from a stopped state builds and brings **all
+  five services to healthy** (database, dashboard :3000, vector-anchor :8001,
+  trace-audit :8002, mcp-shield) with no manual intervention; the ledger
+  migration is applied automatically at dashboard startup by
+  `scripts/migrate.mjs`, and `./run_full_demo.sh` then drove all three attacks
+  through to the dashboard successfully.
+
+  Two real defects were found and fixed getting there, both of which had made
+  the stack look like a Docker problem when it was not:
+
+  - **The dashboard crashed on boot with `42501 permission denied for
+    database`.** `supabase/postgres` bootstraps as the superuser
+    `supabase_admin`, so a database created via `POSTGRES_DB` is owned by it and
+    the app's `postgres` role receives CONNECT but not CREATE — `create schema`
+    then fails. The ledger now lives in the `monolith` **schema** of the
+    `postgres` database, which also matches Supabase-hosted projects (where you
+    cannot create databases at all). Because the three modules
+    `depend_on: dashboard: service_healthy`, this single failure was why only
+    part of the stack came up.
+  - **The database healthcheck was a false positive.** `pg_isready` reported
+    healthy on a database the application could not actually use, because it
+    neither authenticates nor runs a query. It is now
+    `psql -U postgres -d postgres -c 'select 1'`.
+
+- **Delivery guarantees — gated, not asserted.** Three scripts run against the
+  live stack and are wired into CI (`integration` job):
+
+  | Script | What it proves | Result |
+  | :-- | :-- | :-- |
+  | `mcp-shield/fixtures/verify_outbox.sh` | spool while the collector is down · backlog redelivered on the *next* run · 401 dead-letters | all 3 phases PASS |
+  | `scripts/verify_ingest.sh` | token scoping · idempotent redelivery · permanent-vs-retryable rejections · batch · persistence + SSE replay | **16 / 16 PASS** |
+  | `scripts/verify_recovery.sh` | dashboard stopped → detections spool → restarted → spool drains to the ledger | PASS |
+
+  The recovery run is the load-bearing one: with the dashboard stopped, four
+  live retrievals produced **5 events held in VectorAnchor's SQLite spool while
+  the ledger stayed frozen**; on restart the spool drained to **0** and every
+  event landed in the ledger. A collector outage costs latency, not evidence.
+
+- **A latent poison-pill was found and fixed.** `event_id` is a Postgres `uuid`
+  column, so a non-UUID value failed the insert with `22P02`, surfaced as a 503,
+  and would have been retried **forever** by the outboxes — which correctly
+  treat 5xx as transient. It is now rejected as a permanent 422. The existing
+  malformed-event test (§5) never caught this because it never sends an
+  `event_id` at all.
 - **Cold-start also validated Docker-free**, via `scripts/run_local_demo.sh` —
   the local equivalent of the full stack (dashboard :3000, VectorAnchor :8001,
   TraceAudit :8002 as background processes with `MONOLITH_DASHBOARD_URL` set).
@@ -190,6 +224,12 @@ cd mcp-shield     && for i in 1 2 3 4 5; do bash fixtures/run_demo.sh >/dev/null
 
 # Dashboard malformed-event ingest test (needs the dashboard running)
 cd dashboard && npm start &  BASE=http://localhost:3000 node test/malformed-event.test.mjs
+
+# Delivery guarantees. The outbox phases need no Docker; the other two run
+# against a live `docker compose up -d` stack.
+cd mcp-shield && bash fixtures/verify_outbox.sh
+bash scripts/verify_ingest.sh            # 16 ingest-contract checks
+bash scripts/verify_recovery.sh          # stops/restarts the dashboard; removes no data
 
 # Full end-to-end integration WITHOUT Docker (dashboard + all 3 modules + attacks)
 ./scripts/run_local_demo.sh            # holds services up; open http://localhost:3000
