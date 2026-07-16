@@ -36,7 +36,11 @@ it and serves the next-best clean result instead.
 - `src/embedding.py` — the embedding function (see design note below).
 - `src/store.py` — ChromaDB collection helpers.
 - `src/events.py` — structured event emission in the shared Project Black
-  Monolith shape + best-effort dashboard forwarding.
+  Monolith shape, delivered through a durable WAL-backed SQLite outbox:
+  events are spooled locally and delivered on a background thread with
+  exponential backoff, so a dashboard outage delays delivery rather than
+  losing the detection. Permanent rejections (401/422/…) are dead-lettered
+  instead of retried forever.
 - `src/main.py` — FastAPI app.
 
 ## Design decisions (noted for the reviewer)

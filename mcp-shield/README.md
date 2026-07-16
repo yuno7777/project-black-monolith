@@ -65,9 +65,11 @@ its entry (or the whole `baseline_hashes.json`).
 
 Detections are also emitted as single-line JSON events in the shared Project
 Black Monolith shape (tracing target `monolith_event`) so they can be pushed
-to the unified dashboard unchanged. If `MONOLITH_DASHBOARD_URL` is set, each
-event is also best-effort POSTed there (fire-and-forget; a down dashboard
-never affects the proxy):
+to the unified dashboard unchanged. When `MONOLITH_DASHBOARD_URL` and
+`MONOLITH_EVENT_TOKEN` are set, each event is spooled to a **durable outbox**
+(`MONOLITH_EVENT_OUTBOX_PATH`) and delivered asynchronously — a down dashboard
+delays delivery but never loses the detection, and never affects the proxy
+path:
 
 ```json
 {
@@ -103,8 +105,19 @@ limitations).
   store (`baseline_hashes.json`), description diffing.
 - `src/sanitizer.rs` — description pattern scanning (3 detector families).
 - `src/jsonrpc.rs` — minimal JSON-RPC 2.0 message model.
-- `src/events.rs` — structured event emission in the shared Monolith shape,
-  plus best-effort dashboard forwarding.
+- `src/events.rs` — structured event emission in the shared Monolith shape.
+- `src/outbox.rs` — durable at-least-once dashboard delivery: a
+  newline-delimited JSON spool (fsync on append, atomic compaction), retry
+  with exponential backoff, and dead-lettering for permanent rejections.
+
+  Because this proxy is **short-lived** — it exits when the agent closes
+  stdin — it cannot rely on a background retry loop the way the long-running
+  Python services do. Instead it drains the previous run's backlog on
+  startup, flushes live while running, and makes one final forced pass before
+  exit. Anything still undelivered stays on the spool and is retried by the
+  next invocation. The honest limit: if the dashboard is down and the proxy
+  never runs again, those events remain on disk undelivered — preserved, not
+  lost.
 
 Framing: line-delimited JSON-RPC (one message per `\n`-terminated line),
 matching the MCP stdio transport. Logs go exclusively to **stderr**; stdout
