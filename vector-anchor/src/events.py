@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import random
 import sqlite3
 import sys
@@ -12,10 +11,68 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 Severity = Literal["info", "warning", "critical"]
+
+# An id longer than this is a caller error, not a correlation key. The dashboard
+# silently drops over-long text fields, so clamping here keeps a nonsense header
+# from quietly costing a detection its correlation.
+MAX_ID_LENGTH = 128
+
+
+def _clean_id(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    trimmed = value.strip()[:MAX_ID_LENGTH]
+    return trimmed or None
+
+
+@dataclass(frozen=True)
+class EventContext:
+    """Who and what an event belongs to.
+
+    This is what makes three independent modules one system: detections that
+    share a `session_id` are the same agent session, so a rug pull at the tool
+    layer and a poisoned retrieval at the memory layer stop being two unrelated
+    blips and become one compromised agent.
+
+    Each field is only set when it is actually known — an invented id would be
+    worse than a missing one, because it would group unrelated activity and the
+    grouping is the whole point.
+    """
+
+    # One operation within a session (a single /retrieve, /generate, tools/list).
+    trace_id: str | None = None
+    # One agent session. The cross-layer key.
+    session_id: str | None = None
+    # Caller-supplied: ties an operation together across several modules.
+    correlation_id: str | None = None
+    # Which agent, stable across sessions.
+    agent_id: str | None = None
+
+
+# Header names a caller (an agent framework) uses to propagate identity into the
+# long-running HTTP services. Short-lived processes take theirs from the
+# environment instead — see the Rust module.
+AGENT_HEADER = "x-monolith-agent-id"
+SESSION_HEADER = "x-monolith-session-id"
+TRACE_HEADER = "x-monolith-trace-id"
+CORRELATION_HEADER = "x-monolith-correlation-id"
+
+
+def context_from_headers(headers: Mapping[str, str]) -> EventContext:
+    """Build a context from request headers, minting a trace id if the caller
+    did not supply one (every operation gets one; only the caller can know the
+    session it belongs to)."""
+    return EventContext(
+        trace_id=_clean_id(headers.get(TRACE_HEADER)) or str(uuid.uuid4()),
+        session_id=_clean_id(headers.get(SESSION_HEADER)),
+        correlation_id=_clean_id(headers.get(CORRELATION_HEADER)),
+        agent_id=_clean_id(headers.get(AGENT_HEADER)),
+    )
 
 
 class EventOutbox:
@@ -113,10 +170,26 @@ def make_emitter(
     dashboard_url: str | None,
     event_token: str | None,
     outbox_path: str,
+    agent_id: str | None = None,
+    session_id: str | None = None,
 ):
-    outbox = EventOutbox(outbox_path, dashboard_url, event_token) if dashboard_url and event_token else None
+    """Build the emit function.
 
-    def emit(event_type: str, severity: Severity, details: dict[str, Any]) -> None:
+    `agent_id`/`session_id` are the process-level defaults (from the
+    environment). A per-request `EventContext` overrides them, which is how a
+    long-running service serving many agents attributes each detection to the
+    right one.
+    """
+    outbox = EventOutbox(outbox_path, dashboard_url, event_token) if dashboard_url and event_token else None
+    default_agent = _clean_id(agent_id)
+    default_session = _clean_id(session_id)
+
+    def emit(
+        event_type: str,
+        severity: Severity,
+        details: dict[str, Any],
+        ctx: EventContext | None = None,
+    ) -> None:
         event = {
             "event_id": str(uuid.uuid4()),
             "schema_version": 2,
@@ -127,6 +200,19 @@ def make_emitter(
             "details": details,
             "source": "module",
         }
+        # Correlation fields are omitted when unknown rather than sent as null:
+        # the contract treats them as optional, and a null would claim we looked
+        # and found nothing rather than that nobody told us.
+        correlation = {
+            "agent_id": (ctx.agent_id if ctx else None) or default_agent,
+            "session_id": (ctx.session_id if ctx else None) or default_session,
+            "trace_id": ctx.trace_id if ctx else None,
+            "correlation_id": ctx.correlation_id if ctx else None,
+        }
+        for key, value in correlation.items():
+            if value:
+                event[key] = value
+
         line = json.dumps(event, separators=(",", ":"))
         print(line, file=sys.stderr, flush=True)
         if outbox:

@@ -10,11 +10,11 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from pydantic import BaseModel
 
 from .config import MODULE_NAME, load_config
-from .events import make_emitter
+from .events import context_from_headers, make_emitter
 from .frequency_tracker import FrequencyTracker
 from .quarantine import Quarantine
 from .retriever_proxy import RetrieverProxy
@@ -38,7 +38,12 @@ class AddDocumentsRequest(BaseModel):
 def build_proxy() -> RetrieverProxy:
     cfg = load_config()
     emit = make_emitter(
-        MODULE_NAME, cfg.dashboard_url, cfg.event_token, cfg.event_outbox_path
+        MODULE_NAME,
+        cfg.dashboard_url,
+        cfg.event_token,
+        cfg.event_outbox_path,
+        agent_id=cfg.agent_id,
+        session_id=cfg.session_id,
     )
     embed_fn = build_embedding_function(cfg)
     collection = get_or_create_collection(cfg, embedding_function=embed_fn)
@@ -85,9 +90,12 @@ def health() -> dict:
 
 
 @app.post("/retrieve")
-def retrieve(req: RetrieveRequest) -> dict:
+def retrieve(req: RetrieveRequest, request: Request) -> dict:
+    # The caller (an agent framework) propagates its identity in X-Monolith-*
+    # headers; anything it does not send falls back to this process's
+    # configured defaults inside the emitter.
     proxy: RetrieverProxy = app.state.proxy
-    return proxy.retrieve(req.query, req.k)
+    return proxy.retrieve(req.query, req.k, context_from_headers(request.headers))
 
 
 @app.post("/admin/add-documents")

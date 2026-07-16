@@ -49,6 +49,15 @@ class Config:
     event_token: str | None
     event_outbox_path: str
 
+    # --- correlation ----------------------------------------------------
+    # Process-level defaults for who the detections belong to. A per-request
+    # X-Monolith-* header overrides them, which is how one service serving many
+    # agents attributes each detection correctly. Both are None unless
+    # configured: an invented session id would group unrelated agents together,
+    # and the grouping is the entire point of having one.
+    agent_id: str | None
+    session_id: str | None
+
 
 def load_config() -> Config:
     return Config(
@@ -72,4 +81,6 @@ def load_config() -> Config:
         dashboard_url=os.environ.get("MONOLITH_DASHBOARD_URL") or None,
         event_token=os.environ.get("MONOLITH_EVENT_TOKEN") or None,
         event_outbox_path=os.environ.get("MONOLITH_EVENT_OUTBOX_PATH", "./event_outbox.db"),
+        agent_id=os.environ.get("MONOLITH_AGENT_ID") or None,
+        session_id=os.environ.get("MONOLITH_SESSION_ID") or None,
     )

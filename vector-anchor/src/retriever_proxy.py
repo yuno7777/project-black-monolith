@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from .config import Config
-from .events import now_ms
+from .events import EventContext, now_ms
 from .frequency_tracker import FrequencyTracker
 from .quarantine import Quarantine, QuarantinedDoc
 
@@ -35,7 +35,15 @@ class RetrieverProxy:
         self.cfg = cfg
         self.emit = emit
 
-    def retrieve(self, query: str, k: int | None = None) -> dict[str, Any]:
+    def retrieve(
+        self,
+        query: str,
+        k: int | None = None,
+        ctx: EventContext | None = None,
+    ) -> dict[str, Any]:
+        """`ctx` carries the caller's correlation identity for this one
+        retrieval, so a quarantine here can be tied to detections the other
+        layers made in the same agent session."""
         start = now_ms()
         k = k or self.cfg.top_k
         n = k + self.cfg.candidate_buffer
@@ -90,6 +98,7 @@ class RetrieverProxy:
                             "preview": preview,
                             "detection_latency_ms": now_ms() - start,
                         },
+                        ctx,
                     )
                 withheld.append({"id": doc_id, "reason": "quarantined_now"})
                 continue
@@ -109,6 +118,7 @@ class RetrieverProxy:
                 "withheld": len(withheld),
                 "latency_ms": now_ms() - start,
             },
+            ctx,
         )
 
         return {
