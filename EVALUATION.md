@@ -311,7 +311,63 @@ What the numbers say beyond "it evades":
 
 ---
 
-## 8. Dashboard — theme contrast
+## 8. Detection overhead — what does the defense cost?
+
+Every module here sits **inline** on the path it protects, so its cost is paid
+on every request an agent makes. A detector nobody can afford to run is not a
+defense, so the price is measured rather than assumed.
+
+**Method.** Each benchmark times *only what the defense adds*. The model's
+generation, the vector search, and the child MCP server's own work are excluded:
+they happen with or without this project, and charging them to the defense would
+flatter it. Each detector is warmed to its steady state first — a full rolling
+window, a monitor past `min_tokens_before_check`, regexes already built —
+because the cold path is not the one that runs in production.
+
+**Measured on the development machine (Windows 11, Docker 29.6.1). Timings are
+machine-specific; the reproduction commands are below.**
+
+| Module | Unit of work | mean | median | p95 | p99 |
+| :-- | :-- | ---: | ---: | ---: | ---: |
+| **MCP-Shield** | per tool in a `tools/list` (canonical serialize + HMAC-SHA256 + description scan) | **6.4 µs** | 5.1 µs | 7.4 µs | 12.5 µs |
+| **TraceAudit** | per streamed token (PII scan + rolling KL update) | **13.0 µs** | 11.8 µs | 16.9 µs | 30.0 µs |
+| **VectorAnchor** | per `/retrieve` (record the query + cluster each returned doc's history) | **295.7 µs** | 273.5 µs | 513.2 µs | 711.7 µs |
+
+In terms an operator would care about:
+
+- A **20-tool `tools/list`** costs **~0.13 ms** of analysis — against a proxied
+  process spawn and JSON-RPC round trip, this is free.
+- A **60-token response** costs **~0.78 ms** of auditing spread across the whole
+  stream — roughly 13 µs added to each token's latency, against a model that
+  takes tens of milliseconds per token. Invisible.
+- A **retrieval** costs **~0.3 ms**, the most expensive of the three and the one
+  worth watching. It is dominated by the topic clustering, which is quadratic in
+  the number of queries a document has ranked for within the window — so the
+  cost scales with `window_size`, the same parameter §7 identifies as what
+  prices the slow-drip evasion. **Widening the window to resist slow-drip makes
+  retrieval more expensive; that trade-off is the real design knob**, and it is
+  the thing to measure again before changing it.
+
+**Honest notes.** These are single-machine numbers with no cross-run variance
+analysis, and the `max` column is dominated by scheduler noise and GC rather
+than the detector (VectorAnchor's 5.9 ms max against a 274 µs median is an
+outlier, not a tail). They establish an order of magnitude — "microseconds, not
+milliseconds" for the two inline hot paths — which is the claim being made, not
+a throughput benchmark.
+
+**Not gated in CI.** Timings vary by runner, and a benchmark that fails on a
+noisy machine teaches people to ignore failures. The MCP-Shield benchmark is
+`#[ignore]`d for the same reason and must be asked for explicitly.
+
+```bash
+cd mcp-shield    && cargo test --release benchmark -- --ignored --nocapture
+cd vector-anchor && python fixtures/benchmark.py
+cd trace-audit   && python fixtures/benchmark.py
+```
+
+---
+
+## 9. Dashboard — theme contrast
 
 **Test.** Both themes were audited by computing WCAG 2.1 contrast ratios for 19
 text/background pairs, compositing every translucent surface down to an opaque
@@ -352,6 +408,11 @@ cd mcp-shield     && for i in 1 2 3 4 5; do bash fixtures/run_demo.sh >/dev/null
 cd vector-anchor && python -m pytest tests/test_evasion.py -q
 cd trace-audit   && python -m pytest tests/test_evasion.py -q
 cd mcp-shield    && cargo test known_evasion
+
+# Detection overhead (machine-specific; not gated in CI)
+cd mcp-shield    && cargo test --release benchmark -- --ignored --nocapture
+cd vector-anchor && python fixtures/benchmark.py
+cd trace-audit   && python fixtures/benchmark.py
 
 # Dashboard malformed-event ingest test (needs the dashboard running)
 cd dashboard && npm start &  BASE=http://localhost:3000 node test/malformed-event.test.mjs

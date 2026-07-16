@@ -549,6 +549,59 @@ mod tests {
         );
     }
 
+    /// What does MCP-Shield's analysis cost per tool?
+    ///
+    /// `#[ignore]`d because it is a measurement, not an assertion: timings vary
+    /// by machine, and a benchmark that fails CI on a noisy runner teaches
+    /// people to ignore failures. Run it deliberately:
+    ///
+    ///   cargo test --release benchmark -- --ignored --nocapture
+    ///
+    /// Timed is exactly what the proxy adds per tool in a `tools/list`
+    /// response: canonical serialization + HMAC-SHA256, and the description
+    /// scan. Not timed is the JSON parsing and the child process's own work,
+    /// which happen with or without this proxy.
+    #[test]
+    #[ignore]
+    fn benchmark_per_tool_analysis_cost() {
+        use std::time::Instant;
+
+        const ITERATIONS: u32 = 20_000;
+        let tool = json!({
+            "name": "read_file",
+            "description": POISONED_DESC,
+            "inputSchema": { "type": "object", "properties": { "path": { "type": "string" } } }
+        });
+
+        // Warm up: the first pass pays for lazily-built regexes and cache
+        // misses, which is not the steady state a proxy actually runs in.
+        for _ in 0..1_000 {
+            let _ = fingerprint::fingerprint_tool(KEY, &tool);
+            let _ = crate::sanitizer::scan_description(POISONED_DESC);
+        }
+
+        let mut samples: Vec<u128> = Vec::with_capacity(ITERATIONS as usize);
+        for _ in 0..ITERATIONS {
+            let start = Instant::now();
+            let _ = fingerprint::fingerprint_tool(KEY, &tool).expect("fingerprint ok");
+            let _ = crate::sanitizer::scan_description(POISONED_DESC);
+            samples.push(start.elapsed().as_nanos());
+        }
+        samples.sort_unstable();
+
+        let mean = samples.iter().sum::<u128>() as f64 / samples.len() as f64;
+        println!("\nMCP-Shield — analysis overhead per tool (N={ITERATIONS})");
+        println!("  mean    {:8.2} us", mean / 1000.0);
+        println!("  median  {:8.2} us", samples[samples.len() / 2] as f64 / 1000.0);
+        println!("  p95     {:8.2} us", samples[samples.len() * 95 / 100] as f64 / 1000.0);
+        println!("  p99     {:8.2} us", samples[samples.len() * 99 / 100] as f64 / 1000.0);
+        println!("  max     {:8.2} us", samples[samples.len() - 1] as f64 / 1000.0);
+        println!(
+            "  a 20-tool tools/list costs ~{:.3} ms of analysis\n",
+            mean * 20.0 / 1_000_000.0
+        );
+    }
+
     // --- adversarial evaluation ------------------------------------------
     //
     // The README calls first-contact trust a known limitation. Prose is cheap,
