@@ -208,6 +208,46 @@ export function IconGear({ size = 18, className }: IconProps) {
   );
 }
 
+// Triage: acknowledged — seen and taken, not yet closed.
+export function IconEye({ size = 15, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className} aria-hidden>
+      <path d="M2.2 12S5.8 5.4 12 5.4 21.8 12 21.8 12 18.2 18.6 12 18.6 2.2 12 2.2 12z" />
+      <circle cx="12" cy="12" r="2.9" />
+    </svg>
+  );
+}
+
+// Triage: resolved — closed out with a verdict.
+export function IconCheck({ size = 15, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className} aria-hidden>
+      <path d="M4.6 12.4l4.8 4.8L19.4 7.2" />
+    </svg>
+  );
+}
+
+// Triage: the analyst an incident is assigned to.
+export function IconUser({ size = 15, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className} aria-hidden>
+      <circle cx="12" cy="7.8" r="3.9" />
+      <path d="M4.8 20.2a7.2 7.2 0 0114.4 0" />
+    </svg>
+  );
+}
+
+// The append-only audit trail.
+export function IconHistory({ size = 15, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className} aria-hidden>
+      <path d="M3.6 12a8.4 8.4 0 108.4-8.4A8.4 8.4 0 005.4 6.6" />
+      <path d="M3.4 3.4v3.6h3.6" />
+      <path d="M12 7.6V12l3 1.8" />
+    </svg>
+  );
+}
+
 export function ModuleGlyph({ module, size = 20, className }: { module: string; size?: number; className?: string }) {
   if (module === "mcp-shield") return <IconTool size={size} className={className} />;
   if (module === "vector-anchor") return <IconMemory size={size} className={className} />;

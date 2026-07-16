@@ -1,22 +1,36 @@
 "use client";
 
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import type { MonolithEvent } from "@/lib/types";
 import { KNOWN_MODULES, MODULE_ACCENT, MODULE_LABELS, MODULE_LAYER } from "@/lib/types";
 import { Logo, ModuleGlyph, IconActivity, IconGrid, IconLedger, IconGear } from "./Icons";
 
-/** The narrow icon rail. Only the overview is wired up — the ledger and
- *  settings destinations do not exist yet, so they are not presented as if
- *  they do. */
+/** The narrow icon rail. Settings does not exist yet, so it is not presented
+ *  as if it does. */
 export function Rail() {
+  const path = usePathname();
   return (
     <nav className="rail" aria-label="Sections">
       <span className="rail-logo"><Logo size={30} /></span>
-      <button className="rail-btn on" aria-label="Threat overview" aria-current="page" title="Threat overview">
+      <Link
+        href="/"
+        className={`rail-btn${path === "/" ? " on" : ""}`}
+        aria-label="Threat overview"
+        aria-current={path === "/" ? "page" : undefined}
+        title="Threat overview"
+      >
         <IconGrid />
-      </button>
-      <button className="rail-btn" aria-label="Event ledger (coming soon)" title="Event ledger — not built yet" disabled>
+      </Link>
+      <Link
+        href="/investigate"
+        className={`rail-btn${path === "/investigate" ? " on" : ""}`}
+        aria-label="Investigation queue"
+        aria-current={path === "/investigate" ? "page" : undefined}
+        title="Investigation queue"
+      >
         <IconLedger />
-      </button>
+      </Link>
       <div className="rail-foot">
         <button className="rail-btn" aria-label="Settings (coming soon)" title="Settings — not built yet" disabled>
           <IconGear />

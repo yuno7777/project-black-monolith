@@ -104,6 +104,8 @@ jobs:
         run: bash scripts/verify_ingest.sh
       - name: Verify outage recovery (spool -> drain)
         run: bash scripts/verify_recovery.sh
+      - name: Verify the incident lifecycle
+        run: bash scripts/verify_incidents.sh
       - name: Run the full three-attack demo
         run: ./run_full_demo.sh
       - name: Dump container logs on failure
