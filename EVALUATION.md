@@ -1,9 +1,13 @@
 # Evaluation — calibration, false-positive validation, and resilience
 
-This document summarizes the rigor pass across all three detection modules.
-Every number below is measured, not aspirational; each is reproducible from
-the per-module `fixtures/calibrate.py` (or the MCP-Shield demo loop) and is
-recorded in the corresponding `fixtures/calibration_results.md`.
+This document summarizes the rigor pass across all three detection modules and
+the console in front of them. Every number below is measured, not aspirational,
+and every claim has a command that reproduces it — see
+[Reproduce everything](#reproduce-everything). Detector thresholds come from the
+per-module `fixtures/calibrate.py` and are recorded in the corresponding
+`fixtures/calibration_results.md`; the delivery, lifecycle and resilience results
+come from the `verify_*.sh` harnesses, which are gated in CI so these numbers
+cannot quietly stop being true.
 
 All measurements use the modules' **deterministic offline backends** (the
 mock model for TraceAudit, the hashing embedder for VectorAnchor), so results
@@ -209,6 +213,67 @@ rather than crash or show `undefined`.
 
 ---
 
+## 6. Incident lifecycle — integrity of the triage record
+
+A detector that fires and is never acted on is not a defense, so the ledger
+carries an incident lifecycle (assign → acknowledge → resolve) on top of the
+event record. What is evaluated here is not that the buttons work but that the
+**record cannot lie**.
+
+**Test.** `scripts/verify_incidents.sh` seeds an event, walks it through the
+lifecycle against the live stack, and asserts the invariants.
+
+**Result: PASSED — 27 / 27 checks.**
+
+| Property under test | Why it matters | Result |
+| :-- | :-- | :-- |
+| An untriaged event still appears in the open queue | Triage rows are created lazily, so an event with no row must not be invisible — that would mean detections silently never reach an analyst | PASS |
+| Resolving requires a verdict | A "resolved" queue with no verdict is a hidden queue; without it the false-positive rate (§1, §2) can never be recovered from production data | PASS (`422` without one) |
+| Omitting a field never clears it | Found a real defect: resolving without restating the assignee **silently unassigned the incident**, erasing who made the call | PASS (after fix) |
+| Reopening clears the stale verdict | A reopened incident that still reads "false positive" is worse than no label | PASS |
+| Triage never mutates the event | `security_events` is evidence; judgement about it lives in a separate table | PASS (severity unchanged) |
+| The audit trail rejects `UPDATE` | "Who cleared this critical, and why" must survive later edits | PASS (trigger raises) |
+| The audit trail rejects `DELETE` | As above — a deletable trail is not a trail | PASS (trigger raises) |
+| Every transition is recorded | The trail is written in the **same transaction** as the state change, so an unaccounted-for change is impossible | PASS (3 / 3) |
+
+Two design points the tests pin down:
+
+- **Append-only is enforced by a trigger, not a `REVOKE`.** A `REVOKE` does not
+  bind the table's owner, which is the role the application connects as, so it
+  would have been a comment rather than a control.
+- **The identity is the weak link, and is documented as such.** `/api/incidents`
+  is unauthenticated and the analyst name is a self-declared `localStorage`
+  label, not a login. The trail is tamper-evident against later edits; it is
+  **not** evidence of who acted, because the dashboard has no user model. Any
+  multi-operator deployment needs a real identity layer in front of these routes
+  before the trail means anything. See the dashboard README.
+
+---
+
+## 7. Dashboard — theme contrast
+
+**Test.** Both themes were audited by computing WCAG 2.1 contrast ratios for 19
+text/background pairs, compositing every translucent surface down to an opaque
+colour rather than trusting the token values (the cards are glass over a black
+canvas, so the declared colour is not the rendered one).
+
+**Result: PASSED — 19 / 19 pairs meet AA (4.5:1) in both themes**; worst case
+4.53:1 (light) and 5.10:1 (dark).
+
+This found a real defect. The light palette had been written as a tonal mirror
+of the dark one, which does not survive inversion: muted text (timestamps, card
+subtitles, KPI labels — 10–11.5px, so "small text" under WCAG) measured
+**2.2–2.5:1 against the near-white cards** and was effectively unreadable. Dark
+mode was also borderline at 3.7:1 on the same labels. Both ink steps were moved
+so the hierarchy stays ordered.
+
+> **Method note.** The measurements are taken with transitions disabled. Reading
+> a transitioned property immediately after switching themes returns the *old*
+> value, which silently produces a page of fake failures — an artifact worth
+> knowing about before trusting any automated audit of a themed UI.
+
+---
+
 ## Reproduce everything
 
 ```bash
@@ -230,6 +295,7 @@ cd dashboard && npm start &  BASE=http://localhost:3000 node test/malformed-even
 cd mcp-shield && bash fixtures/verify_outbox.sh
 bash scripts/verify_ingest.sh            # 16 ingest-contract checks
 bash scripts/verify_recovery.sh          # stops/restarts the dashboard; removes no data
+bash scripts/verify_incidents.sh         # 27 incident-lifecycle checks
 
 # Full end-to-end integration WITHOUT Docker (dashboard + all 3 modules + attacks)
 ./scripts/run_local_demo.sh            # holds services up; open http://localhost:3000
