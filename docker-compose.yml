@@ -69,6 +69,10 @@ services:
       MONOLITH_DASHBOARD_URL: "http://dashboard:3000/api/ingest"
       MONOLITH_EVENT_TOKEN: ${MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR:?set MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR in .env}
       MONOLITH_EVENT_OUTBOX_PATH: /var/lib/monolith/outbox.db
+      # Which agent these detections belong to. The session id is NOT set
+      # here: these services are long-running and serve many sessions, so
+      # the caller supplies it per request via X-Monolith-Session-Id.
+      MONOLITH_AGENT_ID: ${MONOLITH_AGENT_ID:-demo-agent}
       MONOLITH_EMBEDDING: "hash"
       MONOLITH_CHROMA_PATH: "/app/chroma_store"
     volumes:
@@ -91,6 +95,10 @@ services:
       MONOLITH_DASHBOARD_URL: "http://dashboard:3000/api/ingest"
       MONOLITH_EVENT_TOKEN: ${MONOLITH_EVENT_TOKEN_TRACE_AUDIT:?set MONOLITH_EVENT_TOKEN_TRACE_AUDIT in .env}
       MONOLITH_EVENT_OUTBOX_PATH: /var/lib/monolith/outbox.db
+      # Which agent these detections belong to. The session id is NOT set
+      # here: these services are long-running and serve many sessions, so
+      # the caller supplies it per request via X-Monolith-Session-Id.
+      MONOLITH_AGENT_ID: ${MONOLITH_AGENT_ID:-demo-agent}
       MONOLITH_MODEL_BACKEND: "mock"
       MONOLITH_BASELINE_PATH: "/app/baseline_distribution.json"
     volumes:
@@ -115,6 +123,10 @@ services:
       # JSONL spool, not SQLite: this module keeps to the deps already in
       # Cargo.toml. Same delivery contract as the Python outboxes.
       MONOLITH_EVENT_OUTBOX_PATH: /var/lib/monolith/outbox.jsonl
+      # This proxy is spawned per agent session and exits when stdin
+      # closes, so one invocation is one session — run_full_demo.sh passes
+      # MONOLITH_SESSION_ID in at exec time rather than baking one here.
+      MONOLITH_AGENT_ID: ${MONOLITH_AGENT_ID:-demo-agent}
       MCP_SHIELD_MODE: "enforce"
       MCP_SHIELD_BASELINE: "/tmp/baseline_hashes.json"
     volumes:

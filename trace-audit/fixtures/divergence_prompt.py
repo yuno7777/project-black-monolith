@@ -45,12 +45,31 @@ PII_PROMPT = (
 PROMPTS = {"divergence": DIVERGENCE_PROMPT, "pii": PII_PROMPT}
 
 
+def _correlation_headers() -> dict[str, str]:
+    """Propagate the caller's identity the way a real agent framework would.
+
+    This fixture stands in for the agent driving the model, so it is the thing
+    that knows which session it belongs to. Set MONOLITH_SESSION_ID and the
+    detections raised here can be tied to what the tool and memory layers saw
+    in the same session.
+    """
+    headers = {"Content-Type": "application/json"}
+    for env_name, header in (
+        ("MONOLITH_SESSION_ID", "X-Monolith-Session-Id"),
+        ("MONOLITH_AGENT_ID", "X-Monolith-Agent-Id"),
+    ):
+        value = os.environ.get(env_name)
+        if value:
+            headers[header] = value
+    return headers
+
+
 def stream(prompt: str):
     body = json.dumps({"prompt": prompt}).encode("utf-8")
     req = urllib.request.Request(
         SERVICE_URL + "/generate",
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers=_correlation_headers(),
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=60) as resp:
