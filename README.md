@@ -171,6 +171,36 @@ Each detection reaches the dashboard within a second, tagged by module and sever
 
 ---
 
+## Verifying the delivery guarantees
+
+The demo shows detections *working*; these three scripts show the delivery path
+holding up when the collector does not. All three run against the live stack and
+are gated in CI.
+
+```bash
+bash mcp-shield/fixtures/verify_outbox.sh   # (from mcp-shield/) no Docker needed
+bash scripts/verify_ingest.sh               # 16 checks against the ingest contract
+bash scripts/verify_recovery.sh             # kills the dashboard, proves nothing is lost
+```
+
+- **`verify_outbox.sh`** drives MCP-Shield's spool through three phases against
+  a local stub dashboard: unreachable (events persist, the proxy keeps serving),
+  reachable (the previous run's backlog drains — the claim that matters for a
+  short-lived process), and rejecting with 401 (events dead-letter instead of
+  retrying forever). It also asserts every delivered envelope carried a bearer
+  token, a v4 UUID `event_id`, and `schema_version: 2`.
+- **`verify_ingest.sh`** covers the ingestion contract: token scoping (one
+  module's credential cannot forge another's events), idempotent redelivery,
+  the validation rejections that must be permanent rather than retryable, batch
+  acceptance, and that a newly connected SSE client is replayed persisted
+  history rather than an in-memory buffer.
+- **`verify_recovery.sh`** stops the dashboard container, drives real
+  retrievals, and asserts the events sit in VectorAnchor's SQLite spool with the
+  ledger frozen — then restarts it and asserts the spool drains into the ledger.
+  It restarts a container but removes no data.
+
+---
+
 ## Modules
 
 Each module is standalone, with its own README, tests, demo script, and Dockerfile.
@@ -259,7 +289,7 @@ cd trace-audit   && pip install -r requirements.txt && python -m pytest tests/ &
 cd dashboard     && npm install && npm run build
 ```
 
-Continuous integration runs `cargo build` + `cargo test` for MCP-Shield, `pytest` for VectorAnchor and TraceAudit, and a Next.js build for the dashboard on every push and pull request to `main`.
+Continuous integration runs `cargo build` + `cargo test` for MCP-Shield, `pytest` for VectorAnchor and TraceAudit, and a Next.js build for the dashboard on every push and pull request to `main`. Once those are green, an **integration job** builds the full Compose stack and runs the ingest-contract, outage-recovery and end-to-end demo scripts against it, so the delivery guarantees are gated rather than asserted.
 
 ### Project structure
 
@@ -271,6 +301,7 @@ project-black-monolith/
 ├── dashboard/           Next.js 15 real-time SSE threat feed
 ├── docker-compose.yml   One-command full stack
 ├── run_full_demo.sh     End-to-end integration demo
+├── scripts/             Secret generation · ingest-contract and recovery verification
 └── .github/             CI workflow · issue & pull-request templates
 ```
 

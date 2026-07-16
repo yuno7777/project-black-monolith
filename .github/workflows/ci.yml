@@ -16,10 +16,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # The outbox verification spawns fixtures/fake_mcp_server.py as the
+      # proxied server and fixtures/fake_ingest.js as the stand-in dashboard.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: Build
         run: cargo build --verbose
       - name: Test
         run: cargo test --verbose
+      - name: Verify the durable outbox (spool / redeliver / dead-letter)
+        run: bash fixtures/verify_outbox.sh
 
   vector-anchor:
     name: VectorAnchor (Python tests)
@@ -72,3 +82,33 @@ jobs:
         run: npm ci
       - name: Build
         run: npm run build
+
+  integration:
+    name: Integration (ingest contract + outage recovery)
+    runs-on: ubuntu-latest
+    # The unit suites are cheap and catch most breakage; only pay for the
+    # 5-image stack build once they are green.
+    needs: [mcp-shield, vector-anchor, trace-audit, dashboard]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Generate local secrets
+        # Ephemeral per-run credentials; nothing here is a real secret, and
+        # .env is gitignored so none of it can be committed.
+        run: bash scripts/generate_secrets.sh
+      - name: Bring the stack up
+        run: docker compose up -d --build --wait
+      - name: Verify the ingestion contract
+        run: bash scripts/verify_ingest.sh
+      - name: Verify outage recovery (spool -> drain)
+        run: bash scripts/verify_recovery.sh
+      - name: Run the full three-attack demo
+        run: ./run_full_demo.sh
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail=120
+      - name: Tear the stack down
+        if: always()
+        run: docker compose down -v
