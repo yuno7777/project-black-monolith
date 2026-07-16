@@ -89,13 +89,17 @@ margin**.
 
 **False-positive result: 0 / 24** clean documents flagged.
 
-**Limitation (honest).** Detection is frequency-based within a *bounded rolling
-window* (`window_size`, default 50 queries), not persistent long-term
-tracking. A **slow-drip** attacker who surfaces a bait document for only one
-unrelated topic per window — letting earlier hits age out — never reaches
-`min_distinct_topics` within any single window and would evade detection.
-Catching that would require long-horizon per-document accumulation, which the
-window-based design deliberately trades away for bounded memory and recency.
+**Limitation — measured, not asserted.** Detection is frequency-based within a
+*bounded rolling window* (`window_size`, default 50 queries), not persistent
+long-term tracking. A **slow-drip** attacker who surfaces a bait document for
+one unrelated topic per window — letting earlier hits age out — never reaches
+`min_distinct_topics` within any single window. This evasion was **built and
+confirmed to work** (§7): the bait peaks at a score of 1 against a threshold of
+4 while covering 12 distinct topics. The cost to the attacker is ~50 covering
+retrievals per hidden topic, which makes `window_size` — not
+`min_distinct_topics` — the parameter that actually prices the attack. Catching
+it would require long-horizon per-document accumulation, which the window-based
+design deliberately trades away for bounded memory and recency.
 
 ---
 
@@ -118,6 +122,13 @@ tuning surface: a schema either matches its baseline or it does not.
 inspected; the fingerprint is exact, so a benign but *legitimate* schema update
 also flags (by design — the operator must re-baseline). This is a
 zero-false-negative / re-approval-required posture, not a tuned detector.
+
+**First-contact trust — measured (§7).** A tool poisoned the *first* time it is
+ever seen has no clean baseline to compare against, so it is registered as-is
+and enforce mode has nothing to rewrite to. Confirmed by test. The blast radius
+is bounded in both directions: the sanitizer is stateless, so the poisoning is
+still *reported* on first sighting, and any later mutation still flags — the
+attacker buys one serving and must stay poisoned to stay hidden.
 
 ---
 
@@ -257,7 +268,50 @@ Two design points the tests pin down:
 
 ---
 
-## 7. Dashboard — theme contrast
+## 7. Adversarial evaluation — do the known evasions actually work?
+
+Sections 1–3 measure the detectors against the attacks they are built for. This
+section does the opposite: it takes the three evasions the module READMEs admit
+in prose and **builds each one, to find out whether the admission is true**.
+
+**All three evasions succeed.** That is the result, and it is reported rather
+than buried: a limitation stated with a number is a boundary, the same
+limitation stated in prose is a hope. Each is now a test that asserts the
+detector *misses* the attack, so if anyone later closes a gap, a failing test
+forces the claim to be updated rather than left stale.
+
+| Evasion | Module | Outcome | Measured cost / bound |
+| :-- | :-- | :-- | :-- |
+| **Slow drip** — surface the bait for one topic per window, let earlier hits age out | VectorAnchor | **Evades.** Peak score 1 vs. a threshold of 4, across 12 distinct topics — 3× the threshold | ~50 covering retrievals per hidden topic (= `window_size`). Drip any faster and it is caught |
+| **Token-boundary split** — a secret the tokenizer splits across two tokens | TraceAudit | **Evades.** All 19 possible split points of a 20-char key match neither half | Bounded: only the split secret is missed; an unsplit secret in the same trace is still caught |
+| **First-contact poisoning** — the tool is poisoned the first time it is ever seen | MCP-Shield | **Not blocked.** No clean baseline exists to compare or rewrite to | Bounded: still *reported* by the sanitizer, and any later mutation is still caught |
+
+Reproduce: `python -m pytest tests/test_evasion.py` in `vector-anchor/` and
+`trace-audit/`; `cargo test known_evasion` in `mcp-shield/`.
+
+What the numbers say beyond "it evades":
+
+- **VectorAnchor's real security parameter is `window_size`, not
+  `min_distinct_topics`.** The threshold is what the attacker must stay under;
+  the window is what sets the price of doing so. At the shipped window of 50 the
+  attacker needs ~50 covering retrievals per topic they want to hide — and the
+  test pins the boundary by showing that hits spaced to co-exist inside one
+  window are still caught. Raising the window raises the cost linearly, at the
+  price of memory and recency.
+- **TraceAudit's gap is a windowing choice, not a detection ceiling.**
+  Concatenating the fragments — what a sliding character window with overlap
+  would do — recovers the secret the per-token scan missed. The regexes are
+  fine; the input they are handed is not. This also corrected a docstring in
+  `pii_scanner.py` that claimed it "runs against the rolling text buffer": it
+  does not, `stream_proxy` hands it one token at a time.
+- **MCP-Shield's gap is inherent to trust-on-first-use**, not a detector bug,
+  and it is the shallowest of the three: the attack is reported (the sanitizer
+  is stateless and needs no baseline) and buys exactly one serving, since any
+  later mutation still flags. It is a gap, not a hole.
+
+---
+
+## 8. Dashboard — theme contrast
 
 **Test.** Both themes were audited by computing WCAG 2.1 contrast ratios for 19
 text/background pairs, compositing every translucent surface down to an opaque
@@ -293,6 +347,11 @@ cd vector-anchor  && python fixtures/calibrate.py     # -> fixtures/calibration_
 # MCP-Shield 5-trial repeatability (regenerates the trial table)
 cd mcp-shield     && for i in 1 2 3 4 5; do bash fixtures/run_demo.sh >/dev/null 2>&1 \
                        && echo "trial $i PASS"; done
+
+# Adversarial evaluation — do the documented evasions actually work?
+cd vector-anchor && python -m pytest tests/test_evasion.py -q
+cd trace-audit   && python -m pytest tests/test_evasion.py -q
+cd mcp-shield    && cargo test known_evasion
 
 # Dashboard malformed-event ingest test (needs the dashboard running)
 cd dashboard && npm start &  BASE=http://localhost:3000 node test/malformed-event.test.mjs
