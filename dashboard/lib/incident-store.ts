@@ -77,6 +77,8 @@ export interface IncidentQuery {
   status?: IncidentStatus | "open" | "all" | "triaged";
   severity?: Severity | "all";
   module?: string | "all";
+  /** Exact agent session — the cross-layer key. */
+  session?: string;
   q?: string;
   since_ms?: number;
   limit?: number;
@@ -109,15 +111,23 @@ export async function listIncidents(query: IncidentQuery = {}): Promise<Incident
   if (query.since_ms !== undefined) {
     where.push(`e.occurred_at_ms >= ${add(query.since_ms)}`);
   }
+  if (query.session) {
+    where.push(`e.session_id = ${add(query.session)}`);
+  }
   if (query.q) {
     // Free text across the fields an analyst would actually search by. The
-    // details cast lets a search hit inside the payload (e.g. a tool name).
+    // details cast lets a search hit inside the payload (e.g. a tool name),
+    // and the correlation ids are here because pasting a session id into the
+    // search box is the most obvious way to ask "what else did this agent do?".
     const needle = add(`%${query.q}%`);
     where.push(`(
       e.event_type ilike ${needle}
       or e.module ilike ${needle}
       or e.severity ilike ${needle}
       or coalesce(t.assignee, '') ilike ${needle}
+      or coalesce(e.session_id, '') ilike ${needle}
+      or coalesce(e.agent_id, '') ilike ${needle}
+      or coalesce(e.trace_id, '') ilike ${needle}
       or coalesce(e.correlation_id, '') ilike ${needle}
       or e.details::text ilike ${needle}
     )`);
@@ -176,6 +186,93 @@ export async function getAuditTrail(eventId: string): Promise<AuditEntry[]> {
     resolution: r.resolution ?? undefined,
     note: r.note ?? undefined,
   }));
+}
+
+export interface SessionLayer {
+  module: string;
+  events: number;
+  worst: Severity;
+}
+
+export interface SessionView {
+  session_id: string;
+  agent_id?: string;
+  layers: SessionLayer[];
+  total: number;
+  /** True once more than one defense layer has flagged the same session. */
+  cross_layer: boolean;
+  first_ms: number;
+  last_ms: number;
+}
+
+/**
+ * What else happened in this event's agent session.
+ *
+ * This is the query the whole correlation effort exists for. One module firing
+ * is a detection; the same session tripping the tool, memory *and* reasoning
+ * layers is a compromised agent, and no single module can see that.
+ */
+export async function sessionForEvent(eventId: string): Promise<SessionView | null> {
+  const db = getDb();
+  const owner = await db.query<{ session_id: string | null; agent_id: string | null }>(
+    "select session_id, agent_id from monolith.security_events where event_id = $1",
+    [eventId],
+  );
+  const session = owner.rows[0]?.session_id;
+  // An event with no session cannot be correlated — say so rather than
+  // inventing a grouping.
+  if (!session) return null;
+
+  const result = await db.query<{
+    module: string;
+    events: string;
+    worst: Severity;
+    first_ms: string;
+    last_ms: string;
+  }>(
+    `select
+       module,
+       count(*)::bigint as events,
+       -- "worst" must be by severity rank, not alphabetical: 'critical' < 'info'
+       -- as text would quietly report a critical session as informational.
+       (array_agg(severity order by case severity
+          when 'critical' then 0 when 'warning' then 1 else 2 end))[1] as worst,
+       min(occurred_at_ms)::bigint as first_ms,
+       max(occurred_at_ms)::bigint as last_ms
+     from monolith.security_events
+     where session_id = $1
+     group by module`,
+    [session],
+  );
+  if (!result.rows.length) return null;
+
+  const layers = result.rows.map((r) => ({
+    module: r.module,
+    events: Number(r.events),
+    worst: r.worst,
+  }));
+  return {
+    session_id: session,
+    agent_id: owner.rows[0]?.agent_id ?? undefined,
+    layers,
+    total: layers.reduce((sum, l) => sum + l.events, 0),
+    cross_layer: layers.length > 1,
+    first_ms: Math.min(...result.rows.map((r) => Number(r.first_ms))),
+    last_ms: Math.max(...result.rows.map((r) => Number(r.last_ms))),
+  };
+}
+
+/** Sessions that more than one defense layer has flagged. */
+export async function crossLayerSessionCount(): Promise<number> {
+  const result = await getDb().query<{ n: string }>(
+    `select count(*)::bigint as n from (
+       select session_id from monolith.security_events
+       where session_id is not null
+       group by session_id
+       having count(distinct module) > 1
+     ) s`,
+  );
+  return Number(result.rows[0]?.n ?? 0);
 }
 
 /** Counts for the queue's status tabs, in one round trip. */

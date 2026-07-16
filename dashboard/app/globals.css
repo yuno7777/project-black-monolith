@@ -536,3 +536,53 @@ html, body {
 .trail-head strong { color: var(--ink); font-weight: 620; }
 .trail-when { font-size: 11px; color: var(--ink-faint); font-variant-numeric: tabular-nums; margin-top: 1px; }
 .trail-note { font-size: 12px; color: var(--ink-dim); margin-top: 4px; word-break: break-word; }
+
+/* ============================ agent session ============================ */
+/* The cross-layer banner. Severity colours stay reserved for severity, so this
+   uses the emphasis surface plus a critical-tinted rule rather than becoming a
+   fourth kind of red. */
+.cross-layer {
+  display: flex; flex-direction: column; gap: 4px;
+  background: var(--card-inset); border: 1px solid var(--line);
+  border-left: 2px solid var(--sev-critical);
+  border-radius: var(--r-sm); padding: 10px 12px; margin-bottom: 9px;
+}
+.cross-layer .cl-head {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12.5px; font-weight: 640; color: var(--ink);
+}
+.cross-layer .cl-sub { font-size: 11.5px; line-height: 1.5; color: var(--ink-dim); }
+
+.session-layers { display: flex; flex-direction: column; gap: 5px; }
+.session-layer {
+  display: flex; align-items: center; gap: 9px;
+  background: var(--card-inset); border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm); padding: 8px 10px;
+}
+.session-layer .sl-ic {
+  width: 26px; height: 26px; flex: none; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 8px; color: var(--accent-mod);
+  background: color-mix(in srgb, var(--accent-mod) 14%, transparent);
+}
+.session-layer .sl-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.session-layer .sl-name { font-size: 12.5px; font-weight: 600; color: var(--ink); }
+.session-layer .sl-layer { font-size: 10.5px; color: var(--ink-faint); }
+.session-layer .sl-n {
+  font-size: 12px; font-weight: 660; color: var(--ink);
+  background: var(--chip); border-radius: 999px; padding: 2px 8px; min-width: 24px; text-align: center;
+}
+.session-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-top: 8px;
+}
+
+.session-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--line); background: var(--card); color: var(--ink-dim);
+  border-radius: 999px; padding: 5px 11px; font-family: inherit; font-size: 11.5px;
+  cursor: pointer; transition: all 0.14s ease;
+}
+.session-chip:hover { color: var(--ink); background: var(--card-2); }
+.session-chip .sc-x {
+  color: var(--ink-faint); border-left: 1px solid var(--line); padding-left: 7px; margin-left: 1px;
+}

@@ -11,6 +11,7 @@
 
 import {
   applyTransition,
+  crossLayerSessionCount,
   incidentCounts,
   IncidentInputError,
   isKnownModule,
@@ -55,6 +56,9 @@ export async function GET(req: Request) {
     query.module = module;
   }
 
+  const session = params.get("session");
+  if (session) query.session = session.slice(0, 128);
+
   const q = params.get("q");
   if (q) query.q = q.slice(0, 256);
 
@@ -77,8 +81,15 @@ export async function GET(req: Request) {
   }
 
   try {
-    const [incidents, counts] = await Promise.all([listIncidents(query), incidentCounts()]);
-    return Response.json({ incidents, counts });
+    const [incidents, counts, crossLayer] = await Promise.all([
+      listIncidents(query),
+      incidentCounts(),
+      crossLayerSessionCount(),
+    ]);
+    return Response.json({
+      incidents,
+      counts: { ...counts, cross_layer_sessions: crossLayer },
+    });
   } catch (error) {
     console.error("failed to list incidents", error);
     return Response.json({ error: "the ledger is temporarily unavailable" }, { status: 503 });

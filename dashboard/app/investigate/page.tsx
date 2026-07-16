@@ -56,6 +56,7 @@ function InvestigateConsole() {
   const [module, setModule] = useState<string | null>(null);
   const [windowKey, setWindowKey] = useState(deepLinkId ? "all" : "24h");
   const [query, setQuery] = useState("");
+  const [sessionFilter, setSessionFilter] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(deepLinkId);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -76,6 +77,7 @@ function InvestigateConsole() {
     const params = new URLSearchParams({ status, severity, limit: "300" });
     if (module) params.set("module", module);
     if (debouncedQuery) params.set("q", debouncedQuery);
+    if (sessionFilter) params.set("session", sessionFilter);
     const win = WINDOWS.find((w) => w.key === windowKey);
     if (win?.ms) params.set("since_ms", String(Date.now() - win.ms));
 
@@ -93,7 +95,7 @@ function InvestigateConsole() {
     } finally {
       if (seq === requestSeq.current) setLoading(false);
     }
-  }, [status, severity, module, windowKey, debouncedQuery]);
+  }, [status, severity, module, windowKey, debouncedQuery, sessionFilter]);
 
   useEffect(() => {
     load();
@@ -145,6 +147,17 @@ function InvestigateConsole() {
   );
 
   const openCount = counts.open ?? 0;
+  const crossLayer = counts.cross_layer_sessions ?? 0;
+
+  // Focusing a session widens the other filters for the same reason a deep link
+  // does: the point is to see everything that agent did, and a 24h/open default
+  // would hide exactly the older or already-resolved events that make the
+  // session worth looking at.
+  const focusSession = (id: string) => {
+    setSessionFilter(id);
+    setStatus("all");
+    setWindowKey("all");
+  };
 
   return (
     <div className="frame">
@@ -157,7 +170,10 @@ function InvestigateConsole() {
             <div>
               <h1>Investigation queue</h1>
               <div className="crumb">
-                {openCount} open · triage, assign and resolve against the persisted ledger
+                {openCount} open
+                {crossLayer > 0
+                  ? ` · ${crossLayer} session${crossLayer === 1 ? "" : "s"} flagged by more than one layer`
+                  : " · triage, assign and resolve against the persisted ledger"}
               </div>
             </div>
 
@@ -187,6 +203,18 @@ function InvestigateConsole() {
           </div>
 
           <div className="filters">
+            {sessionFilter ? (
+              <button
+                className="session-chip"
+                onClick={() => setSessionFilter(null)}
+                title="Stop filtering by this agent session"
+              >
+                <IconUser size={12} />
+                session <span className="mono-id">{sessionFilter}</span>
+                <span className="sc-x">clear</span>
+              </button>
+            ) : null}
+
             <div className="seg" role="tablist" aria-label="Filter by status">
               {STATUS_TABS.map((t) => (
                 <button
@@ -301,6 +329,7 @@ function InvestigateConsole() {
                   analyst={analyst}
                   onTransition={(t) => transition(selected.event_id, t)}
                   onClose={() => setSelectedId(null)}
+                  onSelectSession={focusSession}
                 />
               </div>
             ) : null}
