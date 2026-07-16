@@ -127,7 +127,6 @@ export default function Page() {
       icon: <IconAlert />,
       accent: "var(--sev-critical)",
       chip: null,
-      emph: true,
     },
     {
       k: "Avg detection latency",
@@ -175,7 +174,7 @@ export default function Page() {
           <div className="kpis">
             {kpis.map((c) => (
               <div
-                className={`kpi${c.emph ? " kpi-emph" : ""}`}
+                className="kpi"
                 key={c.k}
                 style={{ ["--accent-mod" as string]: c.accent }}
               >
@@ -229,16 +228,17 @@ export default function Page() {
               <div className="card">
                 <div className="card-head">
                   <span className="card-title">Detections by severity</span>
+                  <span className="card-meta">{severity === "all" ? "click to filter" : "filtered"}</span>
                 </div>
-                <SeverityDonut events={events} />
+                <SeverityDonut events={events} selected={severity} onSelect={setSeverity} />
               </div>
 
               <div className="card">
                 <div className="card-head">
                   <span className="card-title">Events by module</span>
-                  <span className="card-meta">3 layers</span>
+                  <span className="card-meta">{filter ? "filtered" : "3 layers"}</span>
                 </div>
-                <ModuleBars byModule={byModule} />
+                <ModuleBars byModule={byModule} selected={filter} onSelect={setFilter} />
               </div>
             </div>
           </div>

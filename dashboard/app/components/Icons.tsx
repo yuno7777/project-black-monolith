@@ -15,22 +15,36 @@ const base = (size: number): React.SVGProps<SVGSVGElement> => ({
   strokeLinejoin: "round" as const,
 });
 
-// Brand mark: the "black monolith" — a tall obelisk split into three layers
-// (tool / memory / reasoning), washed with the tri-module gradient.
+// Brand mark: the monolith itself — a hard-edged slab standing in three
+// stacked sections (tool / memory / reasoning), turned a few degrees so the
+// right-hand face catches light.
+//
+// Deliberately not a rounded rectangle with a gradient wash: a monolith is a
+// slab, and rounding the corners made it read as a battery. The only colour is
+// on the side faces, one per module, so the mark carries the same "three
+// independent layers" idea as the rest of the product without a logo-sized
+// rainbow. Everything else inherits currentColor.
+const MONOLITH_SECTIONS = [
+  { y0: 3.4, y1: 11.0, face: "var(--mod-mcp)" },
+  { y0: 12.0, y1: 19.6, face: "var(--mod-vector)" },
+  { y0: 20.6, y1: 28.2, face: "var(--mod-trace)" },
+];
+
 export function Logo({ size = 30 }: IconProps) {
+  // The side face is sheared down by this much, which is what reads as
+  // perspective rather than a flat bar glued to the edge.
+  const skew = 1.8;
   return (
     <svg width={size} height={size} viewBox="0 0 32 32" fill="none" aria-hidden>
-      <defs>
-        <linearGradient id="ml-grad" x1="6" y1="2" x2="26" y2="30" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#5b9dff" />
-          <stop offset="0.5" stopColor="#22c3a6" />
-          <stop offset="1" stopColor="#b088ff" />
-        </linearGradient>
-      </defs>
-      <rect x="9.5" y="2.5" width="13" height="27" rx="3.2" fill="url(#ml-grad)" opacity="0.14" />
-      <rect x="9.5" y="2.5" width="13" height="27" rx="3.2" stroke="url(#ml-grad)" strokeWidth="1.7" />
-      <line x1="9.5" y1="11.5" x2="22.5" y2="11.5" stroke="url(#ml-grad)" strokeWidth="1.3" opacity="0.75" />
-      <line x1="9.5" y1="20.5" x2="22.5" y2="20.5" stroke="url(#ml-grad)" strokeWidth="1.3" opacity="0.75" />
+      {MONOLITH_SECTIONS.map((s) => (
+        <g key={s.y0}>
+          <rect x="10.4" y={s.y0} width="9.6" height={s.y1 - s.y0} fill="currentColor" />
+          <path
+            d={`M20 ${s.y0} L23.6 ${s.y0 + skew} L23.6 ${s.y1 + skew} L20 ${s.y1} Z`}
+            fill={s.face}
+          />
+        </g>
+      ))}
     </svg>
   );
 }

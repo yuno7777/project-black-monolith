@@ -1,7 +1,7 @@
 "use client";
 
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
-import type { MonolithEvent } from "@/lib/types";
+import type { MonolithEvent, Severity } from "@/lib/types";
 
 // CSS variables rather than literals: SVG `fill` resolves var(), so the chart
 // re-colours with the theme instead of staying frozen at one palette.
@@ -22,7 +22,19 @@ function Tip({ active, payload }: { active?: boolean; payload?: { name: string; 
   );
 }
 
-export default function SeverityDonut({ events }: { events: MonolithEvent[] }) {
+/** Each arc maps 1:1 onto a severity filter, so the chart doubles as the
+ *  control for it — clicking a slice filters the feed, clicking it again
+ *  clears. `selected` is the page's filter state, not the chart's: the chart
+ *  stays a pure readout of it. */
+export default function SeverityDonut({
+  events,
+  selected = "all",
+  onSelect,
+}: {
+  events: MonolithEvent[];
+  selected?: Severity | "all";
+  onSelect?: (severity: Severity | "all") => void;
+}) {
   const counts = {
     critical: events.filter((e) => e.severity === "critical").length,
     warning: events.filter((e) => e.severity === "warning").length,
@@ -30,9 +42,16 @@ export default function SeverityDonut({ events }: { events: MonolithEvent[] }) {
   };
   const total = events.length;
 
-  const data = SEGMENTS.map((s) => ({ name: s.label, value: counts[s.key], color: s.color }));
+  const data = SEGMENTS.map((s) => ({ key: s.key, name: s.label, value: counts[s.key], color: s.color }));
   const hasData = total > 0;
-  const chartData = hasData ? data.filter((d) => d.value > 0) : [{ name: "None", value: 1, color: "var(--chip)" }];
+  const chartData = hasData
+    ? data.filter((d) => d.value > 0)
+    : [{ key: "none", name: "None", value: 1, color: "var(--chip)" }];
+
+  const toggle = (key: string) => {
+    if (!onSelect || key === "none") return;
+    onSelect(selected === key ? "all" : (key as Severity));
+  };
 
   return (
     <div className="chart-wrap">
@@ -53,25 +72,38 @@ export default function SeverityDonut({ events }: { events: MonolithEvent[] }) {
               endAngle={-270}
               isAnimationActive={false}
             >
-              {chartData.map((d, i) => (
-                <Cell key={i} fill={d.color} />
+              {chartData.map((d) => (
+                <Cell
+                  key={d.key}
+                  fill={d.color}
+                  // Dim what is filtered out rather than hiding it, so the
+                  // proportions the donut is drawing stay honest.
+                  opacity={selected === "all" || selected === d.key ? 1 : 0.28}
+                  style={{ cursor: onSelect && hasData ? "pointer" : "default", outline: "none" }}
+                  onClick={() => toggle(d.key)}
+                />
               ))}
             </Pie>
             {hasData && <Tooltip content={<Tip />} />}
           </PieChart>
         </ResponsiveContainer>
         <div className="donut-center">
-          <span className="dc-v num">{total}</span>
-          <span className="dc-k">events</span>
+          <span className="dc-v num">{selected === "all" ? total : counts[selected]}</span>
+          <span className="dc-k">{selected === "all" ? "events" : selected}</span>
         </div>
       </div>
       <div style={{ marginTop: 6 }}>
         {SEGMENTS.map((s) => (
-          <div className="legend-row" key={s.key}>
+          <button
+            className={`legend-row${selected === s.key ? " on" : ""}`}
+            key={s.key}
+            onClick={() => toggle(s.key)}
+            aria-pressed={selected === s.key}
+          >
             <span className="lg-dot" style={{ background: s.color }} />
             {s.label}
             <b>{counts[s.key]}</b>
-          </div>
+          </button>
         ))}
       </div>
     </div>
