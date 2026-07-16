@@ -31,13 +31,23 @@
   --ink-dim: #9aa1ad;
   --ink-faint: #666c78;
 
-  /* The one high-contrast surface. */
-  --emphasis: #e8365d;
+  /* Selected/active chrome. Deliberately colourless: in a security console
+     colour should mean something, so it is reserved for module identity and
+     severity. Anything that is merely "the thing you clicked" is a lift in
+     brightness plus a hairline, never a hue. */
+  --emphasis: rgba(255, 255, 255, 0.14);
   --emphasis-ink: #ffffff;
-  --emphasis-dim: rgba(255, 255, 255, 0.72);
+  --emphasis-dim: rgba(255, 255, 255, 0.62);
+  --emphasis-line: rgba(255, 255, 255, 0.26);
 
-  --accent: #ff4d6d;
-  --accent-ink: #ffffff;
+  --accent: #d9dce3;
+  --accent-ink: #0a0b0d;
+
+  /* Tooltips float over arbitrary content, so they need real opacity rather
+     than the translucency the rest of the surfaces use. */
+  --tooltip: rgba(26, 27, 31, 0.95);
+  --tooltip-ink: #f2f3f6;
+  --tooltip-dim: rgba(242, 243, 246, 0.6);
 
   --mod-mcp: #5b9dff;
   --mod-vector: #2dd4bf;
@@ -75,11 +85,19 @@
   --ink-dim: #6a6f7a;
   --ink-faint: #9b9fa8;
 
-  --emphasis: #131417;
+  /* Light mode inverts: the selected surface is the near-black slab, which is
+     the same idea (a contrast step, not a hue) read the other way up. */
+  --emphasis: #16171b;
   --emphasis-ink: #f7f7f8;
   --emphasis-dim: rgba(247, 247, 248, 0.62);
+  --emphasis-line: transparent;
 
-  --accent: #e8365d;
+  --accent: #16171b;
+  --accent-ink: #ffffff;
+
+  --tooltip: rgba(22, 23, 27, 0.96);
+  --tooltip-ink: #f7f7f8;
+  --tooltip-dim: rgba(247, 247, 248, 0.62);
 
   --mod-mcp: #3b82f6;
   --mod-vector: #0d9488;
@@ -141,7 +159,6 @@ html, body {
   background: var(--rail); border-right: 1px solid var(--line-soft);
   backdrop-filter: var(--glass); -webkit-backdrop-filter: var(--glass);
 }
-.rail-logo { margin-bottom: 10px; }
 .rail-btn {
   width: 38px; height: 38px; display: inline-flex; align-items: center; justify-content: center;
   border-radius: 12px; border: 1px solid transparent; background: transparent;
@@ -149,7 +166,9 @@ html, body {
 }
 .rail-btn:hover:not(:disabled) { background: var(--card-2); color: var(--ink); }
 .rail-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.rail-btn.on { background: var(--accent); color: var(--accent-ink); box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 40%, transparent); }
+/* --emphasis-ink, not --ink: light mode's emphasis is a near-black slab, so
+   --ink there would be dark text on a dark chip. */
+.rail-btn.on { background: var(--emphasis); color: var(--emphasis-ink); border-color: var(--emphasis-line); }
 .rail-foot { margin-top: auto; }
 
 /* ============================ sidebar ============================ */
@@ -159,8 +178,15 @@ html, body {
   background: var(--sidebar-bg); border-right: 1px solid var(--line-soft);
 }
 .brand { padding: 2px 6px 16px; }
-.brand-name { font-size: 14.5px; font-weight: 650; letter-spacing: -0.1px; color: var(--ink); line-height: 1.15; }
-.brand-sub { font-size: 11px; color: var(--ink-faint); margin-top: 2px; }
+/* "Project" sits above the name in small caps rather than inline: the mark is
+   "Black Monolith", and setting all three words at one weight buries it. */
+.brand-name { font-size: 15px; font-weight: 660; letter-spacing: -0.2px; color: var(--ink); line-height: 1.2; }
+.brand-project {
+  display: block; font-size: 9px; font-weight: 700; letter-spacing: 1.6px;
+  text-transform: uppercase; color: var(--ink-faint); margin-bottom: 1px;
+}
+.brand-sub { font-size: 11px; color: var(--ink-faint); margin-top: 3px; }
+.rail-logo { color: var(--ink); margin-bottom: 10px; display: inline-flex; }
 
 .nav-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1.3px; color: var(--ink-faint); padding: 14px 8px 6px; }
 .nav-item {
@@ -228,7 +254,9 @@ html, body {
   transition: all 0.16s ease; display: inline-flex; align-items: center; gap: 6px;
 }
 .seg button:hover { color: var(--ink); }
-.seg button.on { background: var(--emphasis); color: var(--emphasis-ink); }
+/* Inset hairline, because in dark mode the active pill and the track it sits
+   in are both translucent white and would otherwise be near-identical. */
+.seg button.on { background: var(--emphasis); color: var(--emphasis-ink); box-shadow: inset 0 0 0 1px var(--emphasis-line); }
 .seg button .seg-n { font-variant-numeric: tabular-nums; opacity: 0.75; font-size: 11px; }
 
 .chip {
@@ -256,11 +284,12 @@ html, body {
 .kpi-v { font-size: 27px; font-weight: 690; margin-top: 3px; color: var(--ink); line-height: 1.05; letter-spacing: -0.8px; }
 .kpi-sub { font-size: 11px; color: var(--ink-dim); margin-top: 2px; }
 
-.kpi.kpi-emph { background: var(--emphasis); border-color: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; }
-.kpi.kpi-emph .kpi-k, .kpi.kpi-emph .kpi-sub { color: var(--emphasis-dim); }
-.kpi.kpi-emph .kpi-v { color: var(--emphasis-ink); }
-.kpi.kpi-emph .kpi-ic { background: rgba(255, 255, 255, 0.16); color: var(--emphasis-ink); }
-.kpi.kpi-emph .chip { background: rgba(255, 255, 255, 0.16); color: var(--emphasis-ink); }
+/* Every KPI is presented identically. A critical count is worth reading, not
+   worth a full-bleed panel shouting across the page — the number carries the
+   weight on its own, and flooding the eye on every load is how a console
+   trains its operator to stop looking. */
+.kpi { transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease; }
+.kpi:hover { border-color: color-mix(in srgb, var(--accent-mod, var(--ink)) 34%, var(--line)); transform: translateY(-1px); }
 
 /* ============================ content grid ============================ */
 .content { display: grid; grid-template-columns: 1fr 340px; gap: 11px; align-items: stretch; flex: 1; min-height: 0; }
@@ -288,11 +317,24 @@ html, body {
 .donut-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; }
 .donut-center .dc-v { font-size: 26px; font-weight: 700; color: var(--ink); letter-spacing: -0.6px; }
 .donut-center .dc-k { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--ink-faint); margin-top: 2px; }
-.legend-row { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--ink-dim); padding: 4px 15px; }
-.legend-row .lg-dot { width: 8px; height: 8px; border-radius: 3px; }
+/* The legend is the donut's control surface, so each row is a real button. */
+.legend-row {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  font-size: 12.5px; font-family: inherit; color: var(--ink-dim);
+  padding: 5px 15px; border: none; background: transparent; text-align: left;
+  cursor: pointer; transition: background 0.13s ease, color 0.13s ease;
+}
+.legend-row:hover { background: var(--card-2); color: var(--ink); }
+.legend-row.on { color: var(--ink); background: var(--card-2); }
+.legend-row .lg-dot { width: 8px; height: 8px; border-radius: 3px; flex: none; transition: opacity 0.13s ease; }
 .legend-row b { margin-left: auto; color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 620; }
-.chart-tip { background: var(--emphasis); border-radius: 9px; padding: 7px 10px; font-size: 12px; color: var(--emphasis-ink); box-shadow: var(--shadow); }
-.chart-tip .tip-k { color: var(--emphasis-dim); }
+.donut-center .dc-k { text-transform: uppercase; }
+.chart-tip {
+  background: var(--tooltip); border: 1px solid var(--line); border-radius: 9px;
+  padding: 7px 10px; font-size: 12px; color: var(--tooltip-ink); box-shadow: var(--shadow);
+  backdrop-filter: var(--glass); -webkit-backdrop-filter: var(--glass);
+}
+.chart-tip .tip-k { color: var(--tooltip-dim); }
 
 /* ============================ module status rows ============================ */
 .mod-row { display: flex; align-items: center; gap: 12px; padding: 12px 15px; border-bottom: 1px solid var(--line-soft); }
@@ -345,8 +387,11 @@ html, body {
 .kv .kk { color: var(--ink-faint); font-variant-numeric: tabular-nums; }
 .kv .vv { color: var(--ink); word-break: break-word; font-variant-numeric: tabular-nums; }
 
+/* A brief tint as a critical event lands, so a new arrival is noticeable in
+   peripheral vision — then gone. It marks the moment, it does not mark the row
+   forever. */
 .critical-flash { animation: flash 1.1s ease-out; }
-@keyframes flash { from { background: color-mix(in srgb, var(--sev-critical) 14%, transparent); } to { background: transparent; } }
+@keyframes flash { from { background: color-mix(in srgb, var(--sev-critical) 9%, transparent); } to { background: transparent; } }
 
 /* ============================ investigation queue ============================ */
 /* The filter bar sits between the topbar and the queue; it wraps rather than
@@ -378,9 +423,11 @@ html, body {
   text-transform: uppercase; letter-spacing: 0.6px; padding: 3px 8px; border-radius: 999px;
   background: var(--chip); color: var(--ink-dim); white-space: nowrap;
 }
-.status-pill.new { background: color-mix(in srgb, var(--sev-critical) 16%, transparent); color: var(--sev-critical); }
-.status-pill.acknowledged { background: color-mix(in srgb, var(--sev-warning) 16%, transparent); color: var(--sev-warning); }
-.status-pill.resolved { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+/* Triage state is not severity: an untriaged `info` event is not an emergency.
+   "New" stays neutral so the severity colour beside it keeps its meaning. */
+.status-pill.new { background: var(--chip); color: var(--ink-dim); }
+.status-pill.acknowledged { background: color-mix(in srgb, var(--sev-warning) 15%, transparent); color: var(--sev-warning); }
+.status-pill.resolved { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
 
 .event.inc .event-time { font-variant-numeric: tabular-nums; }
 .event.inc.on { background: var(--card-2); }
@@ -430,8 +477,8 @@ html, body {
 }
 .act:hover:not(:disabled) { color: var(--ink); background: var(--card-2); }
 .act:disabled { opacity: 0.45; cursor: not-allowed; }
-.act.primary { background: var(--emphasis); border-color: transparent; color: var(--emphasis-ink); }
-.act.primary:hover:not(:disabled) { background: var(--accent); color: var(--accent-ink); }
+.act.primary { background: var(--emphasis); border-color: var(--emphasis-line); color: var(--emphasis-ink); }
+.act.primary:hover:not(:disabled) { background: var(--accent); border-color: transparent; color: var(--accent-ink); }
 .panel-select {
   border: 1px solid var(--line); background: var(--card); color: var(--ink);
   border-radius: 999px; padding: 0 10px; font-family: inherit; font-size: 12px; outline: none;

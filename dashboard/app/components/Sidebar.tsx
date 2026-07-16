@@ -54,10 +54,11 @@ export default function Sidebar({
   return (
     <aside className="sidebar">
       <div className="brand">
-        <div>
-          <div className="brand-name">Black Monolith</div>
-          <div className="brand-sub">Sleepers Research</div>
+        <div className="brand-name">
+          <span className="brand-project">Project</span>
+          Black Monolith
         </div>
+        <div className="brand-sub">Sleepers Research</div>
       </div>
 
       <div className="nav-label">Overview</div>
