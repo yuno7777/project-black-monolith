@@ -28,6 +28,13 @@ PAUSE="${DEMO_PAUSE:-3}"   # seconds between phases, so events are easy to follo
 # earlier run cannot make this pass.
 START_MS="$(date +%s)000"
 
+# One agent session for all three attacks. This is what makes the demo tell a
+# single story instead of three: the tool, memory and reasoning detections below
+# all carry this id, so the console can show them as one compromised agent
+# rather than three unrelated blips. A fresh id per run keeps runs distinct.
+SESSION_ID="demo-$(date +%s)-$$"
+SESSION_HDR="X-Monolith-Session-Id: $SESSION_ID"
+
 hr() { printf '\n\033[1m%s\033[0m\n' "══════════════════════════════════════════════════════════════"; }
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
 
@@ -47,6 +54,7 @@ if [ "$ready" != true ]; then
     exit 1
 fi
 say "All services healthy. Open http://localhost:3000 to watch the live feed."
+say "Agent session for this run: $SESSION_ID"
 sleep "$PAUSE"
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -55,7 +63,12 @@ hr; say "ATTACK 1/3 — MCP-Shield: tool-schema rug pull (tool layer)"; hr
 # so phase 1 registers cleanly on every run. The reset + demo run inside one
 # quoted `sh -c` so the /tmp path is never passed as a bare shell argument
 # (which some Windows shells would path-mangle).
-$DC exec -T mcp-shield sh -c 'rm -f /tmp/baseline_hashes.json && bash fixtures/run_demo.sh' 2>&1 \
+# MONOLITH_SESSION_ID is passed at exec time, not baked into the image: the
+# proxy is spawned per agent session, so the session is only known now. The
+# value has no leading slash, so it is safe to pass with -e even under MSYS
+# (unlike the /tmp path above, which is why that stays inside the quoted sh -c).
+$DC exec -T -e MONOLITH_SESSION_ID="$SESSION_ID" mcp-shield \
+    sh -c 'rm -f /tmp/baseline_hashes.json && bash fixtures/run_demo.sh' 2>&1 \
     | grep -E "PHASE|SCHEMA MISMATCH|SUSPICIOUS|\[OK\]|\[FAIL\]|DEMO" || true
 sleep "$PAUSE"
 
@@ -66,13 +79,16 @@ $DC exec -T vector-anchor curl -s -X POST http://localhost:8001/admin/reset-dete
 $DC exec -T vector-anchor python fixtures/seed_corpus.py || true
 
 say "  Running clean, on-topic queries (expect no quarantine)…"
+# VectorAnchor is long-running and serves many sessions, so the caller states
+# which one it is on each request rather than the service assuming.
 for q in \
     "how to compost kitchen scraps for my garden" \
     "how do astronomers measure distance to a nebula" \
     "how to sear a steak so the meat stays juicy" \
     "how to pay off high interest credit card debt"; do
     $DC exec -T vector-anchor curl -s -X POST http://localhost:8001/retrieve \
-        -H 'Content-Type: application/json' -d "{\"query\":\"$q\"}" >/dev/null || true
+        -H 'Content-Type: application/json' -H "$SESSION_HDR" \
+        -d "{\"query\":\"$q\"}" >/dev/null || true
 done
 
 say "  Injecting the adversarial universal-bait document…"
@@ -85,7 +101,8 @@ for q in \
     "how long should I boil pasta noodles" \
     "how much emergency fund and savings should I budget"; do
     $DC exec -T vector-anchor curl -s -X POST http://localhost:8001/retrieve \
-        -H 'Content-Type: application/json' -d "{\"query\":\"$q\"}" >/dev/null || true
+        -H 'Content-Type: application/json' -H "$SESSION_HDR" \
+        -d "{\"query\":\"$q\"}" >/dev/null || true
 done
 say "  Quarantine state:"
 $DC exec -T vector-anchor curl -s http://localhost:8001/quarantine || true
@@ -94,11 +111,15 @@ sleep "$PAUSE"
 
 # ═══════════════════════════════════════════════════════════════════════
 hr; say "ATTACK 3/3 — TraceAudit: reasoning divergence + PII leak (reasoning layer)"; hr
+# The fixture stands in for the agent driving the model, so it is the thing that
+# knows the session; it forwards MONOLITH_SESSION_ID as an X-Monolith-* header.
 say "  Streaming the divergence test prompt (expect early termination)…"
-$DC exec -T trace-audit python fixtures/divergence_prompt.py divergence 2>&1 \
+$DC exec -T -e MONOLITH_SESSION_ID="$SESSION_ID" trace-audit \
+    python fixtures/divergence_prompt.py divergence 2>&1 \
     | grep -E "TERMINATED|safe refusal|result:" || true
 say "  Streaming a prompt whose context holds a fake credential (expect redaction)…"
-$DC exec -T trace-audit python fixtures/divergence_prompt.py pii 2>&1 \
+$DC exec -T -e MONOLITH_SESSION_ID="$SESSION_ID" trace-audit \
+    python fixtures/divergence_prompt.py pii 2>&1 \
     | grep -E "REDACTED|result:" || true
 sleep "$PAUSE"
 
@@ -124,12 +145,22 @@ expect corpus_poison_quarantine       "VectorAnchor quarantined the bait doc"   
 expect reasoning_divergence_terminate "TraceAudit terminated on divergence"      || fails=$((fails + 1))
 expect pii_redacted                   "TraceAudit redacted the fake credential"  || fails=$((fails + 1))
 
+# The point of the session id is that the three layers correlate. Assert it,
+# rather than trusting that the plumbing held.
+LAYERS=$(curl -sf "http://localhost:3000/api/incidents?status=all&q=$SESSION_ID&limit=500" 2>/dev/null \
+    | grep -o '"module":"[a-z-]*"' | sort -u | wc -l | tr -d ' ')
+printf '  %s   all three layers reported under one session (%s/3 modules)\n' \
+    "$([ "${LAYERS:-0}" -eq 3 ] && printf '\033[32m[OK]\033[0m ' || printf '\033[31m[FAIL]\033[0m')" "${LAYERS:-0}"
+[ "${LAYERS:-0}" -eq 3 ] || fails=$((fails + 1))
+
 hr
 if [ "$fails" -ne 0 ]; then
-    say "DEMO FAILED — $fails of 4 expected detections never reached the dashboard."
+    say "DEMO FAILED — $fails check(s) failed."
     hr
     exit 1
 fi
-say "DEMO PASSED — all three layers detected, and every detection reached the ledger."
+say "DEMO PASSED — all three layers detected, every detection reached the ledger,"
+say "and all of it correlates to one compromised agent session:"
+say "  $SESSION_ID"
 say "See the unified live feed at  http://localhost:3000"
 hr
