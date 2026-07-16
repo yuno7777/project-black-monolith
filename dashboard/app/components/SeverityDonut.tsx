@@ -64,8 +64,8 @@ export default function SeverityDonut({
               nameKey="name"
               cx="50%"
               cy="50%"
-              innerRadius={54}
-              outerRadius={78}
+              innerRadius={47}
+              outerRadius={68}
               paddingAngle={hasData ? 3 : 0}
               stroke="none"
               startAngle={90}
