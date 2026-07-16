@@ -1,11 +1,6 @@
 import type { MonolithEvent } from "@/lib/types";
-import { MODULE_LABELS, MODULE_LAYER } from "@/lib/types";
-
-const MODULE_COLOR: Record<string, string> = {
-  "mcp-shield": "var(--mod-mcp)",
-  "vector-anchor": "var(--mod-vector)",
-  "trace-audit": "var(--mod-trace)",
-};
+import { MODULE_ACCENT, MODULE_LABELS, MODULE_LAYER } from "@/lib/types";
+import { ModuleGlyph } from "./Icons";
 
 export default function ModuleStatusCard({
   module,
@@ -17,26 +12,24 @@ export default function ModuleStatusCard({
   const count = events.length;
   const critical = events.filter((e) => e.severity === "critical").length;
   const last = events[0];
-  const seenRecently =
-    last && Date.now() - (last.received_ms ?? last.timestamp_ms) < 60_000;
+  const live =
+    count > 0 && last
+      ? Date.now() - (last.received_ms ?? last.timestamp_ms) < 120_000
+      : false;
 
   return (
-    <div
-      className="mod-card"
-      style={{ ["--accent" as string]: MODULE_COLOR[module] ?? "var(--border-bright)" }}
-    >
-      <div className="mod-name">
-        <span className={`dot${count > 0 || seenRecently ? " live" : ""}`} />
-        {MODULE_LABELS[module] ?? module}
+    <div className="mod-row" style={{ ["--accent-mod" as string]: MODULE_ACCENT[module] }}>
+      <span className="mod-ic"><ModuleGlyph module={module} size={19} /></span>
+      <div className="mod-main">
+        <div className="mod-name">
+          <span className={`mini-dot${live ? " live" : ""}`} />
+          {MODULE_LABELS[module] ?? module}
+        </div>
+        <div className="mod-layer">{MODULE_LAYER[module] ?? "—"}</div>
       </div>
-      <div className="mod-layer">{MODULE_LAYER[module] ?? "—"}</div>
-      <div className="mod-stats">
-        <span>
-          <b>{count}</b> events
-        </span>
-        <span>
-          <b>{critical}</b> critical
-        </span>
+      <div className="mod-metric">
+        <div className="mm-v num">{count}</div>
+        <div className="mm-k">{critical} critical</div>
       </div>
     </div>
   );
