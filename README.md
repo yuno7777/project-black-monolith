@@ -127,7 +127,7 @@ All three modules emit a single JSON shape, so the dashboard consumes every feed
 | `severity` | string | `info` · `warning` · `critical` |
 | `details` | object | Module-specific payload (hashes, scores, previews, latency) |
 
-Modules deliver events by POSTing them to the dashboard's ingest endpoint (`MONOLITH_DASHBOARD_URL`); the dashboard fans them out to the browser over Server-Sent Events. Best-effort and fire-and-forget — a module never blocks on the dashboard being reachable.
+Modules deliver events by POSTing them to the dashboard's ingest endpoint (`MONOLITH_DASHBOARD_URL`) with a per-module bearer token. Each module first spools the event to a **durable on-disk outbox**, then delivers it asynchronously with exponential backoff, so a dashboard outage costs delivery latency rather than evidence — a security tool must not lose a detection because the collector was restarting. Emission never blocks the detection path. The dashboard persists every event to a Postgres ledger before fanning it out to the browser over Server-Sent Events; `event_id` is the idempotency key, so a redelivered event is deduplicated rather than double-counted.
 
 ---
 
@@ -239,7 +239,7 @@ See [trace-audit/README.md](trace-audit/README.md) for the mock/Ollama backends 
 
 ### Dashboard &nbsp;<sub>Next.js 15 · React 19</sub>
 
-An in-memory ingest broker plus a Server-Sent Events stream. Modules POST events to `/api/ingest`; the browser subscribes to `/api/events`. The UI presents a unified feed color-coded by module and severity, per-module status cards, and a live session summary — total events, severity distribution, per-layer breakdown, and average detection latency. See [dashboard/README.md](dashboard/README.md).
+An authenticated ingest endpoint over a Postgres event ledger, plus a Server-Sent Events stream. Modules POST events to `/api/ingest` with a per-module bearer token; events are persisted before publication and keyed by `event_id` for idempotent redelivery. The browser subscribes to `/api/events` and is replayed the persisted history on connect, so a client that joins late — or after a restart — still sees what it missed. The UI presents a unified feed color-coded by module and severity, severity and module breakdowns, and average detection latency, on a pitch-black console with an optional light theme. See [dashboard/README.md](dashboard/README.md).
 
 ---
 

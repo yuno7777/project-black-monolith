@@ -31,7 +31,11 @@ token stream in real time. It defends the reasoning layer two ways:
 - `src/divergence_monitor.py` — rolling KL-divergence monitor (pure Python).
 - `src/pii_scanner.py` — regex scanner for credential/PII patterns.
 - `src/redaction.py` — span redaction (runs before any logging).
-- `src/events.py` — shared Monolith event shape + dashboard forwarding.
+- `src/events.py` — shared Monolith event shape, delivered through a durable
+  WAL-backed SQLite outbox: events are spooled locally and delivered on a
+  background thread with exponential backoff, so a dashboard outage delays
+  delivery rather than losing the detection. Permanent rejections
+  (401/422/…) are dead-lettered instead of retried forever.
 - `src/main.py` — FastAPI streaming (SSE) app.
 
 ## Design decisions (noted for the reviewer)

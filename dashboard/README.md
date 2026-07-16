@@ -16,10 +16,16 @@ to this dashboard's `/api/ingest` endpoint** (set `MONOLITH_DASHBOARD_URL` on
 each module). No message queue, no log-file tailing, no shared volume.
 
 ```text
-  MCP-Shield ─┐
-  VectorAnchor├─POST /api/ingest─▶  in-memory broker  ─SSE /api/events─▶  browser
-  TraceAudit ─┘   (lib/event-ingest.ts: bounded ring buffer + fan-out)
+  MCP-Shield ─┐                      ┌─▶ Postgres ledger ─┐
+  VectorAnchor├─POST /api/ingest ───▶│   (persist first)  │─SSE /api/events─▶ browser
+  TraceAudit ─┘  Bearer <token>      └─▶ in-process broker┘   (replay + live)
+     │                                    (fan-out only)
+     └── durable on-disk outbox: spool → retry → dead-letter
 ```
+
+Each module spools every event to a local outbox and fsyncs it *before* the
+detection path continues, then delivers asynchronously with exponential
+backoff. The dashboard being down costs delivery latency, not evidence.
 
 - `lib/event-ingest.ts` — process-wide singleton broker: a bounded ring
   buffer of recent events plus a subscriber set. Stored on `globalThis` so it
@@ -61,5 +67,16 @@ root `run_full_demo.sh` against the full Docker stack.
   critical.
 - **Latency** in the summary averages `details.detection_latency_ms` (or
   `latency_ms`) across events that carry it.
-- No auth, no persistence — single-operator local demo. Events live only in
-  the in-memory ring buffer (last 500) and reset on restart.
+- **Ingest is authenticated.** Every POST carries a per-module bearer token
+  (`EVENT_INGEST_TOKENS_JSON`), compared with `timingSafeEqual` and scoped to
+  a single module, so one module's credential cannot forge another's events.
+  An unknown or cross-module token is a 401.
+- **Events are persisted**, not just buffered: they are written to the
+  Postgres ledger before being published to SSE, and a newly connected client
+  is replayed that history. `event_id` is the primary key, so a module that
+  retries an uncertain delivery is deduplicated (`accepted: 0,
+  duplicates: 1`) rather than double-inserted. The in-process broker is now
+  only a live fan-out over the durable store.
+- A supplied `event_id` must be a UUID (the column is a Postgres `uuid`); a
+  malformed one is a permanent 422 rather than a 503 that outboxes would
+  retry forever.
