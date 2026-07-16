@@ -184,6 +184,26 @@ The script exits 0 only if all eight checks pass, ending with:
 DEMO PASSED: rug pull detected, blocked in enforce mode, forwarded (with warnings) in monitor mode.
 ```
 
+## Verifying the durable outbox
+
+```sh
+bash fixtures/verify_outbox.sh    # from mcp-shield/; needs cargo, node and python
+```
+
+No Docker required — `fixtures/fake_ingest.js` stands in for the dashboard's
+`/api/ingest` so both its availability and its status code can be controlled.
+Three phases, run in CI:
+
+1. **Dashboard down** — events must persist to the spool and the proxy must
+   keep serving the MCP stream regardless.
+2. **Dashboard up** — the *next* invocation must deliver the backlog phase A
+   left behind. This is the claim that matters here: the proxy exits when the
+   agent closes stdin, so it cannot retry on a background loop. The script also
+   asserts every delivered envelope carried a bearer token, a v4 UUID
+   `event_id`, and `schema_version: 2`.
+3. **Dashboard returns 401** — a permanent rejection must dead-letter rather
+   than retry forever.
+
 Unit tests (`cargo test`, 11 tests) cover the sanitizer families, an exact
 hit-count check against the fixture's poisoned description (guarding
 against double-counting from overlapping patterns), canonicalization
