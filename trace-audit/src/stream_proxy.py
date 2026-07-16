@@ -22,6 +22,7 @@ forwarded, logged, or emitted.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import random
 from typing import AsyncIterator
 
@@ -69,8 +70,16 @@ def _leaked_secrets(prompt: str) -> list[str]:
     return [m.value for m in scan(prompt)]
 
 
+def _stable_seed(prompt: str) -> int:
+    """Process-independent seed. Python's built-in ``hash()`` is salted per
+    process (PYTHONHASHSEED), so use a stable digest instead — this makes the
+    mock backend genuinely deterministic across restarts, which the demo and
+    the calibration harness rely on."""
+    return int.from_bytes(hashlib.sha256(prompt.encode("utf-8")).digest()[:8], "big")
+
+
 async def _mock_stream(prompt: str, max_tokens: int) -> AsyncIterator[str]:
-    rng = random.Random(hash(prompt) & 0xFFFFFFFF)
+    rng = random.Random(_stable_seed(prompt))
     pool = DIVERGENT_TOKENS if _looks_divergent(prompt) else NORMAL_TOKENS
     secrets = _leaked_secrets(prompt)
     for i in range(max_tokens):
