@@ -1,15 +1,24 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { AuditEntry, Incident, IncidentStatus, Resolution } from "@/lib/types";
+import type { AuditEntry, Incident, IncidentStatus, Resolution, SessionView } from "@/lib/types";
 import {
   MODULE_ACCENT,
   MODULE_LABELS,
+  MODULE_LAYER,
   RESOLUTIONS,
   RESOLUTION_LABELS,
   STATUS_LABELS,
 } from "@/lib/types";
-import { ModuleGlyph, SevIcon, IconEye, IconCheck, IconUser, IconHistory } from "./Icons";
+import {
+  ModuleGlyph,
+  SevIcon,
+  IconEye,
+  IconCheck,
+  IconUser,
+  IconHistory,
+  IconAlert,
+} from "./Icons";
 
 function stamp(ms: number): string {
   if (!Number.isFinite(ms)) return "—";
@@ -28,11 +37,14 @@ export default function IncidentPanel({
   analyst,
   onTransition,
   onClose,
+  onSelectSession,
 }: {
   incident: Incident;
   analyst: string;
   onTransition: (t: TransitionRequest) => Promise<string | null>;
   onClose: () => void;
+  /** Show every detection from this agent session in the queue. */
+  onSelectSession?: (sessionId: string) => void;
 }) {
   const status = incident.triage?.status ?? "new";
   const accent = MODULE_ACCENT[incident.module] ?? "var(--ink-faint)";
@@ -42,6 +54,7 @@ export default function IncidentPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [audit, setAudit] = useState<AuditEntry[] | null>(null);
+  const [session, setSession] = useState<SessionView | null>(null);
 
   // Reset the draft when switching incidents — a note typed for one incident
   // must never be carried into another.
@@ -50,6 +63,24 @@ export default function IncidentPanel({
     setResolution("true_positive");
     setError(null);
     setAudit(null);
+    setSession(null);
+  }, [incident.event_id]);
+
+  // What else this agent session did. A 404 means the event carries no session
+  // and simply cannot be correlated — not an error worth showing.
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/incidents/${incident.event_id}/session`)
+      .then((r) => (r.ok ? r.json() : { session: null }))
+      .then((d) => {
+        if (!cancelled) setSession(d.session ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setSession(null);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [incident.event_id]);
 
   useEffect(() => {
@@ -111,6 +142,55 @@ export default function IncidentPanel({
           <div className="panel-assignee">
             <IconUser size={13} /> Assigned to {incident.triage.assignee}
           </div>
+        ) : null}
+
+        {session ? (
+          <>
+            <div className="panel-label">Agent session</div>
+            {session.cross_layer ? (
+              // The finding no single module can make: one agent tripped more
+              // than one layer of the defense.
+              <div className="cross-layer">
+                <span className="cl-head">
+                  <IconAlert size={14} />
+                  {session.layers.length} of 3 layers flagged this session
+                </span>
+                <span className="cl-sub">
+                  A single detection is an incident. The same agent tripping the
+                  tool, memory and reasoning layers is a compromised session —
+                  escalate rather than triage each in isolation.
+                </span>
+              </div>
+            ) : null}
+            <div className="session-layers">
+              {session.layers.map((l) => (
+                <div
+                  className="session-layer"
+                  key={l.module}
+                  style={{ ["--accent-mod" as string]: MODULE_ACCENT[l.module] ?? "var(--ink-faint)" }}
+                >
+                  <span className="sl-ic"><ModuleGlyph module={l.module} size={15} /></span>
+                  <span className="sl-main">
+                    <span className="sl-name">{MODULE_LABELS[l.module] ?? l.module}</span>
+                    <span className="sl-layer">{MODULE_LAYER[l.module] ?? "unknown layer"}</span>
+                  </span>
+                  <span className={`sev ${l.worst}`}>
+                    <SevIcon severity={l.worst} />
+                    {l.worst}
+                  </span>
+                  <span className="sl-n num">{l.events}</span>
+                </div>
+              ))}
+            </div>
+            <div className="session-foot">
+              <span className="mono-id">{session.session_id}</span>
+              {onSelectSession ? (
+                <button className="ghost-btn" onClick={() => onSelectSession(session.session_id)}>
+                  Show all {session.total}
+                </button>
+              ) : null}
+            </div>
+          </>
         ) : null}
 
         <div className="panel-label">Evidence</div>

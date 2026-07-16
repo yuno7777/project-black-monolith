@@ -64,6 +64,24 @@ export interface AuditEntry {
   note?: string;
 }
 
+/** One defense layer's contribution to a single agent session. */
+export interface SessionLayer {
+  module: string;
+  events: number;
+  worst: Severity;
+}
+
+/** An agent session as seen across all three layers at once. */
+export interface SessionView {
+  session_id: string;
+  agent_id?: string;
+  layers: SessionLayer[];
+  total: number;
+  cross_layer: boolean;
+  first_ms: number;
+  last_ms: number;
+}
+
 export const INCIDENT_STATUSES: IncidentStatus[] = ["new", "acknowledged", "resolved"];
 
 export const STATUS_LABELS: Record<IncidentStatus, string> = {
