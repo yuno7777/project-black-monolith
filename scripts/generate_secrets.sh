@@ -37,6 +37,11 @@ MONOLITH_POSTGRES_PASSWORD=$(gen)
 MONOLITH_EVENT_TOKEN_MCP_SHIELD=$(gen)
 MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR=$(gen)
 MONOLITH_EVENT_TOKEN_TRACE_AUDIT=$(gen)
+# The human operator's credential for the investigation queue. Separate from the
+# module tokens above: those identify modules, and a module must not be able to
+# close its own findings. The name is what the audit trail records.
+MONOLITH_OPERATOR_NAME=operator
+MONOLITH_OPERATOR_TOKEN=$(gen)
 EOF
 
-echo "wrote .env with 4 random secrets (values not printed)"
+echo "wrote .env with 5 random secrets (values not printed)"

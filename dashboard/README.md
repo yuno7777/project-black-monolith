@@ -117,12 +117,29 @@ Design notes:
   surface, and re-sorting rows under an analyst's cursor mid-triage would be
   hostile.
 
+## Operator authentication
+
+Triage is authenticated with an **operator token** (`OPERATOR_TOKENS_JSON`, an
+operator-name-to-token map; `scripts/generate_secrets.sh` writes one). This is
+deliberately separate from the per-module ingest tokens: those identify a
+*module*, and if one worked here any module could close its own findings.
+
+The property that matters is that **the actor is derived from the token and is
+never read from the request body**. An actor a caller can name itself records
+only what it wished to be called — that is not evidence, and it is worse than an
+empty trail because it looks like one. For the same reason the client cannot
+assign work to itself by name: "take this" is sent as `assign_to_me: true` and
+the server resolves it to whoever the credential authenticates as.
+
+If `OPERATOR_TOKENS_JSON` is missing or malformed the endpoint returns **503 and
+refuses every write**. An authenticator that was never configured must never be
+mistaken for one that passed.
+
 > [!IMPORTANT]
-> **`/api/incidents` is unauthenticated, and the analyst name is not a login.**
-> The ingest endpoints authenticate *modules* with per-module bearer tokens, but
-> this dashboard has no user model, and a module token would be the wrong
-> credential for a human. The analyst name is a self-declared attribution label
-> in `localStorage` so the audit trail reads as something other than a wall of
-> "unknown" on a single-operator stack. Anything multi-user, or anything exposed
-> beyond localhost, needs a real identity layer in front of these routes — the
-> audit trail is only as trustworthy as the identity feeding it.
+> **Known gaps.** `GET /api/incidents` is *not* authenticated — the read path
+> exposes only what the dashboard already renders on a single-operator local
+> stack, but it is a real hole anywhere else. The token is a bearer credential
+> held in `localStorage`, so anything with access to the browser profile has it,
+> and there is no session management, expiry, or rotation. This is honest
+> single-operator auth, not an identity layer; a multi-user deployment needs
+> real sessions in front of these routes.

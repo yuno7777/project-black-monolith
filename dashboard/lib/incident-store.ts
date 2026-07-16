@@ -310,8 +310,10 @@ function text(value: unknown, max: number, field: string): string | undefined {
 export interface TransitionInput {
   event_id: unknown;
   status: unknown;
-  actor: unknown;
   assignee?: unknown;
+  /** Assign to the authenticated operator. The client cannot name itself, so
+   *  "take this" has to be a request rather than a value it supplies. */
+  assign_to_me?: unknown;
   note?: unknown;
   resolution?: unknown;
 }
@@ -325,7 +327,15 @@ export interface Transition {
   resolution?: Resolution;
 }
 
-export function normalizeTransition(raw: unknown): Transition {
+/**
+ * Validate a triage transition.
+ *
+ * `actor` is supplied by the caller from the authenticated credential and is
+ * deliberately NOT read from the request body: a self-declared actor records
+ * only what the caller wished to be called, which is worse than no audit trail,
+ * because it looks like evidence.
+ */
+export function normalizeTransition(raw: unknown, actor: string): Transition {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new IncidentInputError("body must be a JSON object");
   }
@@ -340,8 +350,8 @@ export function normalizeTransition(raw: unknown): Transition {
   }
   const status = value.status as IncidentStatus;
 
-  const actor = text(value.actor, MAX_ACTOR, "actor");
-  if (!actor) throw new IncidentInputError("actor is required");
+  const resolvedActor = text(actor, MAX_ACTOR, "actor");
+  if (!resolvedActor) throw new IncidentInputError("actor is required");
 
   const resolution = text(value.resolution, 32, "resolution") as Resolution | undefined;
   if (resolution && !RESOLUTIONS.includes(resolution)) {
@@ -356,11 +366,19 @@ export function normalizeTransition(raw: unknown): Transition {
     throw new IncidentInputError("resolution only applies when resolving");
   }
 
+  // "Take this" resolves to the authenticated operator server-side, for the
+  // same reason `actor` does: the client has no trustworthy name for itself.
+  const assignToMe = value.assign_to_me === true;
+  const explicitAssignee = text(value.assignee, MAX_ASSIGNEE, "assignee");
+  if (assignToMe && explicitAssignee) {
+    throw new IncidentInputError("assign_to_me and assignee are mutually exclusive");
+  }
+
   return {
     event_id: eventId,
     status,
-    actor,
-    assignee: text(value.assignee, MAX_ASSIGNEE, "assignee"),
+    actor: resolvedActor,
+    assignee: assignToMe ? resolvedActor : explicitAssignee,
     note: text(value.note, MAX_NOTE, "note"),
     resolution,
   };

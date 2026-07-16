@@ -28,19 +28,19 @@ function stamp(ms: number): string {
 export interface TransitionRequest {
   status: IncidentStatus;
   assignee?: string;
+  /** Assign to whoever the operator token authenticates as. */
+  assign_to_me?: boolean;
   note?: string;
   resolution?: Resolution;
 }
 
 export default function IncidentPanel({
   incident,
-  analyst,
   onTransition,
   onClose,
   onSelectSession,
 }: {
   incident: Incident;
-  analyst: string;
   onTransition: (t: TransitionRequest) => Promise<string | null>;
   onClose: () => void;
   /** Show every detection from this agent session in the queue. */
@@ -219,7 +219,7 @@ export default function IncidentPanel({
           <button
             className="act"
             disabled={busy || status === "acknowledged"}
-            onClick={() => run({ status: "acknowledged", assignee: analyst, note: note || undefined })}
+            onClick={() => run({ status: "acknowledged", assign_to_me: true, note: note || undefined })}
           >
             <IconEye size={14} />
             {status === "acknowledged" ? "Acknowledged" : "Acknowledge & take"}
@@ -243,12 +243,9 @@ export default function IncidentPanel({
               className="act primary"
               disabled={busy}
               onClick={() =>
-                run({
-                  status: "resolved",
-                  resolution,
-                  assignee: incident.triage?.assignee ?? analyst,
-                  note: note || undefined,
-                })
+                // No assignee: omitting it leaves the existing owner alone, and
+                // resolving someone else's case must not silently reassign it.
+                run({ status: "resolved", resolution, note: note || undefined })
               }
             >
               <IconCheck size={14} />

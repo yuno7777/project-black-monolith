@@ -586,3 +586,8 @@ html, body {
 .session-chip .sc-x {
   color: var(--ink-faint); border-left: 1px solid var(--line); padding-left: 7px; margin-left: 1px;
 }
+
+/* An operator token that has not been pasted yet: the queue is readable but
+   nothing can be triaged, so say so quietly rather than failing on click. */
+.analyst.unset { border-color: color-mix(in srgb, var(--sev-warning) 45%, var(--line)); }
+.analyst input[type="password"] { letter-spacing: 1px; }

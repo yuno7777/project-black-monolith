@@ -189,7 +189,7 @@ are gated in CI.
 bash mcp-shield/fixtures/verify_outbox.sh   # (from mcp-shield/) no Docker needed
 bash scripts/verify_ingest.sh               # 16 checks against the ingest contract
 bash scripts/verify_recovery.sh             # kills the dashboard, proves nothing is lost
-bash scripts/verify_incidents.sh            # 27 checks on the incident lifecycle
+bash scripts/verify_incidents.sh            # 33 checks on the incident lifecycle
 bash scripts/verify_correlation.sh          # 13 checks on cross-layer correlation
 ```
 
