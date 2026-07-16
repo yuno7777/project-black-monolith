@@ -127,7 +127,7 @@ All three modules emit a single JSON shape, so the dashboard consumes every feed
 | `severity` | string | `info` · `warning` · `critical` |
 | `details` | object | Module-specific payload (hashes, scores, previews, latency) |
 
-Modules deliver events by POSTing them to the dashboard's ingest endpoint (`MONOLITH_DASHBOARD_URL`); the dashboard fans them out to the browser over Server-Sent Events. Best-effort and fire-and-forget — a module never blocks on the dashboard being reachable.
+Modules deliver events by POSTing them to the dashboard's ingest endpoint (`MONOLITH_DASHBOARD_URL`) with a per-module bearer token. Each module first spools the event to a **durable on-disk outbox**, then delivers it asynchronously with exponential backoff, so a dashboard outage costs delivery latency rather than evidence — a security tool must not lose a detection because the collector was restarting. Emission never blocks the detection path. The dashboard persists every event to a Postgres ledger before fanning it out to the browser over Server-Sent Events; `event_id` is the idempotency key, so a redelivered event is deduplicated rather than double-counted.
 
 ---
 
@@ -168,6 +168,42 @@ Seeds a clean corpus, runs on-topic queries that flag nothing, injects one "univ
 Streams a prompt that pushes the model into off-distribution reasoning; KL divergence climbs past the threshold and the stream is **terminated** early with a safe refusal (`reasoning_divergence_terminate`, critical). A second prompt whose context holds a fake credential and email has both **redacted** in the trace before they reach the client or the logs (`pii_redacted`, warning).
 
 Each detection reaches the dashboard within a second, tagged by module and severity, with an expandable full payload.
+
+---
+
+## Verifying the delivery guarantees
+
+The demo shows detections *working*; these three scripts show the delivery path
+holding up when the collector does not. All three run against the live stack and
+are gated in CI.
+
+```bash
+bash mcp-shield/fixtures/verify_outbox.sh   # (from mcp-shield/) no Docker needed
+bash scripts/verify_ingest.sh               # 16 checks against the ingest contract
+bash scripts/verify_recovery.sh             # kills the dashboard, proves nothing is lost
+bash scripts/verify_incidents.sh            # 27 checks on the incident lifecycle
+```
+
+- **`verify_outbox.sh`** drives MCP-Shield's spool through three phases against
+  a local stub dashboard: unreachable (events persist, the proxy keeps serving),
+  reachable (the previous run's backlog drains — the claim that matters for a
+  short-lived process), and rejecting with 401 (events dead-letter instead of
+  retrying forever). It also asserts every delivered envelope carried a bearer
+  token, a v4 UUID `event_id`, and `schema_version: 2`.
+- **`verify_ingest.sh`** covers the ingestion contract: token scoping (one
+  module's credential cannot forge another's events), idempotent redelivery,
+  the validation rejections that must be permanent rather than retryable, batch
+  acceptance, and that a newly connected SSE client is replayed persisted
+  history rather than an in-memory buffer.
+- **`verify_recovery.sh`** stops the dashboard container, drives real
+  retrievals, and asserts the events sit in VectorAnchor's SQLite spool with the
+  ledger frozen — then restarts it and asserts the spool drains into the ledger.
+  It restarts a container but removes no data.
+- **`verify_incidents.sh`** walks an incident through its lifecycle and asserts
+  the constraints that keep the queue honest: an untriaged event still reaches
+  the queue, resolving demands a verdict, omitting a field never silently clears
+  it, the underlying event is never mutated by triage, and the audit trail
+  rejects `UPDATE` and `DELETE` outright.
 
 ---
 
@@ -239,7 +275,7 @@ See [trace-audit/README.md](trace-audit/README.md) for the mock/Ollama backends 
 
 ### Dashboard &nbsp;<sub>Next.js 15 · React 19</sub>
 
-An in-memory ingest broker plus a Server-Sent Events stream. Modules POST events to `/api/ingest`; the browser subscribes to `/api/events`. The UI presents a unified feed color-coded by module and severity, per-module status cards, and a live session summary — total events, severity distribution, per-layer breakdown, and average detection latency. See [dashboard/README.md](dashboard/README.md).
+An authenticated ingest endpoint over a Postgres event ledger, plus a Server-Sent Events stream. Modules POST events to `/api/ingest` with a per-module bearer token; events are persisted before publication and keyed by `event_id` for idempotent redelivery. The browser subscribes to `/api/events` and is replayed the persisted history on connect, so a client that joins late — or after a restart — still sees what it missed. The UI presents a unified feed color-coded by module and severity, severity and module breakdowns, and average detection latency, on a pitch-black console with an optional light theme. See [dashboard/README.md](dashboard/README.md).
 
 ---
 
@@ -259,7 +295,7 @@ cd trace-audit   && pip install -r requirements.txt && python -m pytest tests/ &
 cd dashboard     && npm install && npm run build
 ```
 
-Continuous integration runs `cargo build` + `cargo test` for MCP-Shield, `pytest` for VectorAnchor and TraceAudit, and a Next.js build for the dashboard on every push and pull request to `main`.
+Continuous integration runs `cargo build` + `cargo test` for MCP-Shield, `pytest` for VectorAnchor and TraceAudit, and a Next.js build for the dashboard on every push and pull request to `main`. Once those are green, an **integration job** builds the full Compose stack and runs the ingest-contract, outage-recovery and end-to-end demo scripts against it, so the delivery guarantees are gated rather than asserted.
 
 ### Project structure
 
@@ -271,6 +307,7 @@ project-black-monolith/
 ├── dashboard/           Next.js 15 real-time SSE threat feed
 ├── docker-compose.yml   One-command full stack
 ├── run_full_demo.sh     End-to-end integration demo
+├── scripts/             Secret generation · ingest-contract and recovery verification
 └── .github/             CI workflow · issue & pull-request templates
 ```
 

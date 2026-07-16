@@ -5,11 +5,14 @@
 //!
 //! ```json
 //! {
+//!   "event_id": "6f1c0f6a-2a1e-4b7d-9c3f-2f6b8d4e1a90",
+//!   "schema_version": 2,
 //!   "timestamp_ms": 1770000000000,
 //!   "module": "mcp-shield",
 //!   "event_type": "schema_mismatch",
 //!   "severity": "critical",
-//!   "details": { ... }
+//!   "details": { ... },
+//!   "source": "module"
 //! }
 //! ```
 //!
@@ -18,19 +21,27 @@
 //! are logged under the `monolith_event` tracing target, which makes them
 //! easy to filter (e.g. `RUST_LOG=monolith_event=info`).
 //!
-//! Dashboard integration: if `MONOLITH_DASHBOARD_URL` is set (e.g.
-//! `http://dashboard:3000/api/ingest`), each event is additionally POSTed to
-//! that endpoint on a best-effort, fire-and-forget basis. Delivery failures
-//! never affect the proxy path — the dashboard being down just means the
-//! event isn't mirrored there.
+//! `event_id` is the ingest endpoint's idempotency key: redelivering an event
+//! after an uncertain failure is a no-op rather than a duplicate row.
+//!
+//! Dashboard integration: when `MONOLITH_DASHBOARD_URL` and
+//! `MONOLITH_EVENT_TOKEN` are set, each event is durably spooled by
+//! [`crate::outbox`] and delivered asynchronously. Emission never blocks and
+//! never fails the proxy path — a dashboard outage costs delivery latency,
+//! not events.
 
+use crate::outbox;
 use serde::Serialize;
 use serde_json::Value;
-use std::sync::OnceLock;
+use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::io::AsyncWriteExt;
 
 pub const MODULE: &str = "mcp-shield";
+
+/// Current event-contract version. The dashboard accepts 1 and 2; 2 adds the
+/// correlation/evidence fields and `event_id`.
+const SCHEMA_VERSION: u8 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -42,11 +53,14 @@ pub enum Severity {
 
 #[derive(Debug, Serialize)]
 pub struct ShieldEvent<'a> {
+    pub event_id: String,
+    pub schema_version: u8,
     pub timestamp_ms: u128,
     pub module: &'static str,
     pub event_type: &'a str,
     pub severity: Severity,
     pub details: Value,
+    pub source: &'static str,
 }
 
 /// Milliseconds since the Unix epoch (0 if the system clock is broken —
@@ -58,15 +72,62 @@ pub fn now_ms() -> u128 {
         .unwrap_or(0)
 }
 
+/// Generate a syntactically valid RFC 4122 version-4 UUID.
+///
+/// The event ledger types `event_id` as a Postgres `uuid`, so any other
+/// string shape would be rejected at insert time. MCP-Shield has no `uuid`
+/// or `rand` dependency, so the 122 free bits are filled from a SHA-256 of
+/// values that cannot repeat within or across runs: the process id, a
+/// nanosecond timestamp, a monotonic counter, and an ASLR-provided stack
+/// address (which distinguishes two processes started in the same nanosecond
+/// after a pid is reused).
+///
+/// This is a uniqueness primitive, not a secrecy one — event ids are not
+/// secrets and nothing authenticates on them.
+fn new_event_id() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let stack_marker = &counter as *const u64 as usize;
+
+    let mut hasher = Sha256::new();
+    hasher.update(nanos.to_le_bytes());
+    hasher.update(std::process::id().to_le_bytes());
+    hasher.update(counter.to_le_bytes());
+    hasher.update(stack_marker.to_le_bytes());
+    let digest = hasher.finalize();
+
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC 4122 variant
+
+    let hex = hex::encode(bytes);
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
+}
+
 /// Emit one structured security event. Serialization failures are logged
 /// rather than propagated: event emission must never break the proxy path.
 pub fn emit(event_type: &str, severity: Severity, details: Value) {
     let event = ShieldEvent {
+        event_id: new_event_id(),
+        schema_version: SCHEMA_VERSION,
         timestamp_ms: now_ms(),
         module: MODULE,
         event_type,
         severity,
         details,
+        source: "module",
     };
     let json = match serde_json::to_string(&event) {
         Ok(j) => j,
@@ -80,78 +141,68 @@ pub fn emit(event_type: &str, severity: Severity, details: Value) {
         Severity::Warning => tracing::warn!(target: "monolith_event", event = %json),
         Severity::Critical => tracing::error!(target: "monolith_event", event = %json),
     }
-    forward_to_dashboard(json);
-}
-
-/// Parsed `http://host:port/path` dashboard ingest target, resolved once.
-struct DashboardTarget {
-    host: String,
-    port: u16,
-    path: String,
-}
-
-fn dashboard_target() -> Option<&'static DashboardTarget> {
-    static TARGET: OnceLock<Option<DashboardTarget>> = OnceLock::new();
-    TARGET
-        .get_or_init(|| {
-            let url = std::env::var("MONOLITH_DASHBOARD_URL").ok()?;
-            parse_http_url(&url).or_else(|| {
-                tracing::warn!(url = %url, "MONOLITH_DASHBOARD_URL is not a parseable http:// URL; dashboard forwarding disabled");
-                None
-            })
-        })
-        .as_ref()
-}
-
-/// Minimal `http://host[:port]/path` parser (no external URL crate).
-fn parse_http_url(url: &str) -> Option<DashboardTarget> {
-    let rest = url.strip_prefix("http://")?;
-    let (authority, path) = match rest.find('/') {
-        Some(i) => (&rest[..i], &rest[i..]),
-        None => (rest, "/"),
-    };
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((h, p)) => (h.to_string(), p.parse().ok()?),
-        None => (authority.to_string(), 80u16),
-    };
-    if host.is_empty() {
-        return None;
-    }
-    Some(DashboardTarget {
-        host,
-        port,
-        path: path.to_string(),
-    })
-}
-
-/// Best-effort, fire-and-forget POST of the event JSON to the dashboard.
-/// Only runs when a tokio runtime is active (it always is on the proxy
-/// path; unit tests that call `emit` outside a runtime simply skip this).
-fn forward_to_dashboard(json: String) {
-    let Some(target) = dashboard_target() else {
-        return;
-    };
-    let Ok(handle) = tokio::runtime::Handle::try_current() else {
-        return;
-    };
-    handle.spawn(async move {
-        if let Err(e) = post_event(target, &json).await {
-            tracing::debug!(error = %e, "dashboard event forwarding failed (best-effort)");
+    if let Some(outbox) = outbox::outbox() {
+        // stderr already carries the event; a spool failure degrades delivery
+        // but must not take down the proxy.
+        if let Err(e) = outbox.enqueue(&event.event_id, &json) {
+            tracing::error!(error = %e, event_id = %event.event_id, "cannot spool security event for the dashboard");
         }
-    });
+    }
 }
 
-async fn post_event(target: &DashboardTarget, body: &str) -> std::io::Result<()> {
-    let mut stream =
-        tokio::net::TcpStream::connect((target.host.as_str(), target.port)).await?;
-    let request = format!(
-        "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        target.path,
-        target.host,
-        body.len(),
-        body
-    );
-    stream.write_all(request.as_bytes()).await?;
-    stream.flush().await?;
-    Ok(())
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn is_uuid_v4(id: &str) -> bool {
+        let groups: Vec<&str> = id.split('-').collect();
+        if groups.len() != 5 {
+            return false;
+        }
+        if [8, 4, 4, 4, 12] != groups.iter().map(|g| g.len()).collect::<Vec<_>>()[..] {
+            return false;
+        }
+        if !id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+            return false;
+        }
+        // Version nibble and variant bits per RFC 4122.
+        groups[2].starts_with('4') && matches!(groups[3].as_bytes()[0], b'8' | b'9' | b'a' | b'b')
+    }
+
+    #[test]
+    fn event_ids_are_valid_v4_uuids() {
+        // The ledger's event_id column is a Postgres `uuid`; anything else is
+        // rejected at insert time and would retry forever as a poison pill.
+        for _ in 0..256 {
+            let id = new_event_id();
+            assert!(is_uuid_v4(&id), "{id} is not a valid v4 UUID");
+        }
+    }
+
+    #[test]
+    fn event_ids_are_unique() {
+        let ids: std::collections::HashSet<String> = (0..10_000).map(|_| new_event_id()).collect();
+        assert_eq!(ids.len(), 10_000, "event ids must not collide");
+    }
+
+    #[test]
+    fn the_serialized_envelope_matches_the_shared_contract() {
+        let event = ShieldEvent {
+            event_id: new_event_id(),
+            schema_version: SCHEMA_VERSION,
+            timestamp_ms: 1_770_000_000_000,
+            module: MODULE,
+            event_type: "schema_mismatch",
+            severity: Severity::Critical,
+            details: serde_json::json!({ "tool": "read_file" }),
+            source: "module",
+        };
+        let value: Value = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        assert_eq!(value["module"], "mcp-shield");
+        assert_eq!(value["schema_version"], 2);
+        assert_eq!(value["severity"], "critical");
+        assert_eq!(value["timestamp_ms"], 1_770_000_000_000_u64);
+        assert_eq!(value["source"], "module");
+        assert_eq!(value["details"]["tool"], "read_file");
+    }
 }

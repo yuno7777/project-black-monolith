@@ -22,6 +22,32 @@ from collections import Counter, deque
 
 OTHER = "<other>"
 
+# --- Derived termination threshold -----------------------------------------
+# Calibrated empirically (see fixtures/calibrate.py and
+# fixtures/calibration_results.md), NOT guessed. Method: capture the baseline
+# from 10 benign prompts spanning four styles (factual Q&A, creative writing,
+# step-by-step reasoning, casual conversation), then measure the peak rolling
+# KL of 16 *held-out* benign prompts drawn from those same four styles.
+#
+# Measured benign peak-KL distribution (N=16):
+#     mean = 0.343   std = 0.064   min = 0.247   max = 0.481
+# Divergent test fixture, for reference: peak KL = 3.29.
+#
+# The textbook mean + 2*std = 0.47 sits right at the benign maximum (0.481),
+# leaving no margin — so a strict 2-sigma cut would risk false positives. We
+# therefore set the operating threshold in the wide gap between the two
+# populations:
+#
+#     DEFAULT_KL_THRESHOLD = 1.0
+#
+#   * ~2.1x above the highest observed benign peak (0.481)  -> 0/16 benign FP
+#   * ~0.30x of the divergent fixture peak (3.29)           -> fires decisively
+#
+# The extra headroom over 2-sigma is deliberate: this benign distribution is
+# unusually tight because the default backend is a deterministic mock; a real
+# model backend would show wider benign spread, and 1.0 absorbs that drift.
+DEFAULT_KL_THRESHOLD = 1.0
+
 
 def normalize_token(token: str) -> str:
     """Canonical token key: lowercased, stripped. Empty tokens are ignored by

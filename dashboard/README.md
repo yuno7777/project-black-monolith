@@ -16,10 +16,16 @@ to this dashboard's `/api/ingest` endpoint** (set `MONOLITH_DASHBOARD_URL` on
 each module). No message queue, no log-file tailing, no shared volume.
 
 ```text
-  MCP-Shield ─┐
-  VectorAnchor├─POST /api/ingest─▶  in-memory broker  ─SSE /api/events─▶  browser
-  TraceAudit ─┘   (lib/event-ingest.ts: bounded ring buffer + fan-out)
+  MCP-Shield ─┐                      ┌─▶ Postgres ledger ─┐
+  VectorAnchor├─POST /api/ingest ───▶│   (persist first)  │─SSE /api/events─▶ browser
+  TraceAudit ─┘  Bearer <token>      └─▶ in-process broker┘   (replay + live)
+     │                                    (fan-out only)
+     └── durable on-disk outbox: spool → retry → dead-letter
 ```
+
+Each module spools every event to a local outbox and fsyncs it *before* the
+detection path continues, then delivers asynchronously with exponential
+backoff. The dashboard being down costs delivery latency, not evidence.
 
 - `lib/event-ingest.ts` — process-wide singleton broker: a bounded ring
   buffer of recent events plus a subscriber set. Stored on `globalThis` so it
@@ -31,6 +37,11 @@ each module). No message queue, no log-file tailing, no shared volume.
   clean teardown on disconnect.
 - `app/page.tsx` — client component; subscribes via `EventSource`, de-dupes by
   sequence number, derives all stats client-side.
+- `lib/incident-store.ts` — the investigation queue and incident lifecycle.
+- `app/api/incidents/route.ts` — `GET` the queue (filtered, worst-first), `POST`
+  a triage transition.
+- `app/api/incidents/[eventId]/audit/route.ts` — `GET` one incident's trail.
+- `app/investigate/page.tsx` — the queue UI.
 - `app/components/` — `ThreatFeed` (newest-first, click to expand),
   `ModuleStatusCard` (per-module status + counts), `SessionSummary` (totals,
   severity distribution, per-layer breakdown, avg detection latency),
@@ -61,5 +72,57 @@ root `run_full_demo.sh` against the full Docker stack.
   critical.
 - **Latency** in the summary averages `details.detection_latency_ms` (or
   `latency_ms`) across events that carry it.
-- No auth, no persistence — single-operator local demo. Events live only in
-  the in-memory ring buffer (last 500) and reset on restart.
+- **Ingest is authenticated.** Every POST carries a per-module bearer token
+  (`EVENT_INGEST_TOKENS_JSON`), compared with `timingSafeEqual` and scoped to
+  a single module, so one module's credential cannot forge another's events.
+  An unknown or cross-module token is a 401.
+- **Events are persisted**, not just buffered: they are written to the
+  Postgres ledger before being published to SSE, and a newly connected client
+  is replayed that history. `event_id` is the primary key, so a module that
+  retries an uncertain delivery is deduplicated (`accepted: 0,
+  duplicates: 1`) rather than double-inserted. The in-process broker is now
+  only a live fan-out over the durable store.
+- A supplied `event_id` must be a UUID (the column is a Postgres `uuid`); a
+  malformed one is a permanent 422 rather than a 503 that outboxes would
+  retry forever.
+
+## Investigation queue (`/investigate`)
+
+The live feed answers "what is happening"; the queue answers "what has anyone
+done about it". It reads the persisted ledger — not the SSE stream — filtered by
+status, severity, module, time window and free text, ordered **worst-first then
+newest-first**, and supports assigning, acknowledging and resolving.
+
+Design notes:
+
+- **Triage is stored separately from the event.** `security_events` stays an
+  immutable record of what the detectors saw; `incident_triage` holds human
+  judgement *about* an event. Nothing an analyst does mutates evidence.
+- **An event with no triage row reads as `new`**, synthesized on read. Back-
+  filling a triage row at ingest would put an extra write on the detection path
+  for every event, and the queue treats "never looked at" and "new" alike.
+- **Resolving requires a verdict** (`true_positive` / `false_positive` /
+  `benign` / `duplicate`), enforced by a CHECK constraint as well as the API.
+  Without it a "resolved" queue is just a hidden queue, and the false-positive
+  rate — the number this project is evaluated on — could never be recovered.
+- **`incident_audit` is append-only**, enforced by a trigger rather than a
+  `REVOKE`, because a REVOKE would not bind the table's owner, which is the role
+  the app connects as. Each transition and its resulting state are written in
+  the **same transaction** as the state change.
+- Omitting a field on a transition means "leave it alone", not "clear it" —
+  otherwise resolving an incident without restating the assignee would silently
+  unassign it. `resolution` is the deliberate exception: reopening clears the
+  stale verdict.
+- The queue **polls every 15s rather than subscribing to SSE**. It is a working
+  surface, and re-sorting rows under an analyst's cursor mid-triage would be
+  hostile.
+
+> [!IMPORTANT]
+> **`/api/incidents` is unauthenticated, and the analyst name is not a login.**
+> The ingest endpoints authenticate *modules* with per-module bearer tokens, but
+> this dashboard has no user model, and a module token would be the wrong
+> credential for a human. The analyst name is a self-declared attribution label
+> in `localStorage` so the audit trail reads as something other than a wall of
+> "unknown" on a single-operator stack. Anything multi-user, or anything exposed
+> beyond localhost, needs a real identity layer in front of these routes — the
+> audit trail is only as trustworthy as the identity feeding it.

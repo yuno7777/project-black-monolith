@@ -31,7 +31,11 @@ token stream in real time. It defends the reasoning layer two ways:
 - `src/divergence_monitor.py` — rolling KL-divergence monitor (pure Python).
 - `src/pii_scanner.py` — regex scanner for credential/PII patterns.
 - `src/redaction.py` — span redaction (runs before any logging).
-- `src/events.py` — shared Monolith event shape + dashboard forwarding.
+- `src/events.py` — shared Monolith event shape, delivered through a durable
+  WAL-backed SQLite outbox: events are spooled locally and delivered on a
+  background thread with exponential backoff, so a dashboard outage delays
+  delivery rather than losing the detection. Permanent rejections
+  (401/422/…) are dead-lettered instead of retried forever.
 - `src/main.py` — FastAPI streaming (SSE) app.
 
 ## Design decisions (noted for the reviewer)
@@ -48,9 +52,33 @@ token stream in real time. It defends the reasoning layer two ways:
   identical.
 - **KL over a token-identity distribution** with an `<other>` catch-all for
   tokens unseen in the baseline. Off-baseline reasoning concentrates mass on
-  `<other>` (near-zero baseline mass), which drives KL up sharply. Baseline
-  captured from six normal prompts cleanly separates normal (~0.3–0.45) from
-  divergent (~2.0); default threshold is 1.5.
+  `<other>` (near-zero baseline mass), which drives KL up sharply.
+
+### Threshold calibration
+
+The termination threshold is **derived, not guessed** — see
+[`fixtures/calibration_results.md`](fixtures/calibration_results.md), reproducible
+with `python fixtures/calibrate.py`. The baseline is captured from 10 benign
+prompts spanning four styles (factual Q&A, creative writing, step-by-step
+reasoning, casual conversation); the peak rolling KL of **16 held-out benign
+prompts** from those same styles is then measured:
+
+| | mean | std | min | max | divergent fixture |
+| :-- | ---: | ---: | ---: | ---: | ---: |
+| peak KL | 0.343 | 0.064 | 0.247 | 0.481 | **3.29** |
+
+`mean + 2·std = 0.47` sits right at the benign maximum (0.481), so a strict
+2σ cut leaves no margin. The **operating threshold is `1.0`** — ~2.1× above the
+worst benign peak and ~0.30× of the divergent fixture. **False-positive test
+result: 0 / 16 benign prompts triggered termination**, while the divergent
+fixture (3.29) crosses decisively.
+
+> **Limitation — the baseline is domain-specific.** It was calibrated against
+> the deterministic mock backend and conversational/reasoning prompt styles.
+> A very different distribution — e.g. code generation, or a real model backend
+> (Ollama) with wider benign spread — would shift the benign KL range and needs
+> recalibration (re-run `fixtures/calibrate.py` and update
+> `DEFAULT_KL_THRESHOLD`). The threshold is not a universal constant.
 
 ## Endpoints
 
@@ -72,7 +100,7 @@ or `{type: "done", peak_kl, tokens}`.
 | `MONOLITH_OLLAMA_URL`       | `http://localhost:11434` | Ollama base URL (ollama backend) |
 | `MONOLITH_OLLAMA_MODEL`     | `llama3.2` | model name (ollama backend)                    |
 | `MONOLITH_BASELINE_PATH`    | `./baseline_distribution.json` | baseline distribution file |
-| `MONOLITH_KL_THRESHOLD`     | `1.5`      | divergence threshold for termination           |
+| `MONOLITH_KL_THRESHOLD`     | `1.0`      | divergence threshold for termination (derived; see above) |
 | `MONOLITH_TA_WINDOW`        | `20`       | rolling token window size                      |
 | `MONOLITH_MIN_TOKENS`       | `12`       | minimum tokens before evaluating divergence    |
 | `MONOLITH_MAX_TOKENS`       | `60`       | max tokens generated per request               |
@@ -89,7 +117,7 @@ python -m pytest tests/                   # unit tests, no backend needed
 ```
 
 Expected demo outcome: normal prompts complete; the divergence prompt
-terminates early once KL crosses 1.5 and returns the safe refusal; the PII
+terminates early once KL crosses 1.0 and returns the safe refusal; the PII
 prompt's fake credential and email are redacted in the trace (and never
 appear raw in the client stream). The script prints `DEMO PASSED`.
 

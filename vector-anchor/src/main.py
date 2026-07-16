@@ -37,7 +37,9 @@ class AddDocumentsRequest(BaseModel):
 
 def build_proxy() -> RetrieverProxy:
     cfg = load_config()
-    emit = make_emitter(MODULE_NAME, cfg.dashboard_url)
+    emit = make_emitter(
+        MODULE_NAME, cfg.dashboard_url, cfg.event_token, cfg.event_outbox_path
+    )
     embed_fn = build_embedding_function(cfg)
     collection = get_or_create_collection(cfg, embedding_function=embed_fn)
     tracker = FrequencyTracker(

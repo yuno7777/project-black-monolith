@@ -1,0 +1,12 @@
+.git
+.github
+**/node_modules
+**/.next
+**/target
+**/__pycache__
+**/.pytest_cache
+**/chroma_store
+**/*.pyc
+.env
+.env.*
+!*.env.example

@@ -5,20 +5,61 @@
 #   open http://localhost:3000        # watch detections arrive live
 #
 # ChromaDB runs embedded inside vector-anchor; the TraceAudit model backend
-# defaults to an offline mock, so no Ollama or separate vector DB is required.
-# All three defense modules forward their events to the dashboard's ingest
-# endpoint over the internal Docker network.
+# defaults to an offline mock, so no Ollama or separate vector DB is required
+# (hence no cross-service DB/model race to guard). Startup ordering: the three
+# defense modules wait for the dashboard to be *healthy* before starting, so
+# their first events (service_start) are not emitted before the ingest
+# endpoint can accept them. Each service also has a healthcheck so
+# `docker compose ps` reports real readiness and cold starts are observable.
 
 services:
+  database:
+    image: supabase/postgres:17.6.1.136
+    environment:
+      # The ledger lives in the `monolith` SCHEMA of the `postgres` database,
+      # not in a database of its own. This image bootstraps as the superuser
+      # `supabase_admin` (not `postgres`), so a database created via
+      # POSTGRES_DB is owned by supabase_admin — and a database's default ACL
+      # grants PUBLIC only CONNECT/TEMP, never CREATE. The app's `postgres`
+      # role could therefore connect but not `create schema`, which failed the
+      # migration with "permission denied for database monolith" (42501).
+      # Supabase-hosted projects put application schemas in the `postgres`
+      # database and cannot create new databases, so this also keeps the
+      # migration portable to a real Supabase target.
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD: ${MONOLITH_POSTGRES_PASSWORD:?set MONOLITH_POSTGRES_PASSWORD in .env}
+    volumes:
+      - monolith-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # Deliberately not pg_isready: it only checks that the server accepts
+      # connections — it neither authenticates nor runs a query, so it
+      # reported "healthy" on a database the dashboard could not use at all.
+      # Run a real query instead so health means usable.
+      test: ["CMD-SHELL", "psql -U postgres -d postgres -c 'select 1' > /dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
   dashboard:
-    build: ./dashboard
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
     ports:
       - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://postgres:${MONOLITH_POSTGRES_PASSWORD:?set MONOLITH_POSTGRES_PASSWORD in .env}@database:5432/postgres
+      EVENT_INGEST_TOKENS_JSON: >-
+        {"mcp-shield":"${MONOLITH_EVENT_TOKEN_MCP_SHIELD:?set MONOLITH_EVENT_TOKEN_MCP_SHIELD in .env}","vector-anchor":"${MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR:?set MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR in .env}","trace-audit":"${MONOLITH_EVENT_TOKEN_TRACE_AUDIT:?set MONOLITH_EVENT_TOKEN_TRACE_AUDIT in .env}"}
+    depends_on:
+      database:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/ingest').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 5s
       timeout: 3s
       retries: 20
+      start_period: 20s
 
   vector-anchor:
     build: ./vector-anchor
@@ -26,11 +67,21 @@ services:
       - "8001:8001"
     environment:
       MONOLITH_DASHBOARD_URL: "http://dashboard:3000/api/ingest"
+      MONOLITH_EVENT_TOKEN: ${MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR:?set MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR in .env}
+      MONOLITH_EVENT_OUTBOX_PATH: /var/lib/monolith/outbox.db
       MONOLITH_EMBEDDING: "hash"
       MONOLITH_CHROMA_PATH: "/app/chroma_store"
+    volumes:
+      - vector-anchor-outbox:/var/lib/monolith
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8001/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
     depends_on:
       dashboard:
-        condition: service_started
+        condition: service_healthy
 
   trace-audit:
     build: ./trace-audit
@@ -38,18 +89,50 @@ services:
       - "8002:8002"
     environment:
       MONOLITH_DASHBOARD_URL: "http://dashboard:3000/api/ingest"
+      MONOLITH_EVENT_TOKEN: ${MONOLITH_EVENT_TOKEN_TRACE_AUDIT:?set MONOLITH_EVENT_TOKEN_TRACE_AUDIT in .env}
+      MONOLITH_EVENT_OUTBOX_PATH: /var/lib/monolith/outbox.db
       MONOLITH_MODEL_BACKEND: "mock"
       MONOLITH_BASELINE_PATH: "/app/baseline_distribution.json"
+    volumes:
+      - trace-audit-outbox:/var/lib/monolith
+    # start_period covers the baseline_capture step the entrypoint runs before
+    # uvicorn binds the port.
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8002/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
     depends_on:
       dashboard:
-        condition: service_started
+        condition: service_healthy
 
   mcp-shield:
     build: ./mcp-shield
     environment:
       MONOLITH_DASHBOARD_URL: "http://dashboard:3000/api/ingest"
+      MONOLITH_EVENT_TOKEN: ${MONOLITH_EVENT_TOKEN_MCP_SHIELD:?set MONOLITH_EVENT_TOKEN_MCP_SHIELD in .env}
+      # JSONL spool, not SQLite: this module keeps to the deps already in
+      # Cargo.toml. Same delivery contract as the Python outboxes.
+      MONOLITH_EVENT_OUTBOX_PATH: /var/lib/monolith/outbox.jsonl
       MCP_SHIELD_MODE: "enforce"
       MCP_SHIELD_BASELINE: "/tmp/baseline_hashes.json"
+    volumes:
+      - mcp-shield-outbox:/var/lib/monolith
+    # No HTTP server (invoked on demand); healthcheck just confirms the binary
+    # is present so the container reports healthy.
+    healthcheck:
+      test: ["CMD", "test", "-x", "/usr/local/bin/mcp-shield"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
     depends_on:
       dashboard:
-        condition: service_started
+        condition: service_healthy
+
+volumes:
+  monolith-postgres-data:
+  vector-anchor-outbox:
+  trace-audit-outbox:
+  mcp-shield-outbox:
