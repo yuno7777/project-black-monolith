@@ -30,6 +30,9 @@ node_modules/
 next-env.d.ts
 npm-debug.log*
 
+# ── Local-only agent guidance ────────────────────────────────────────
+CLAUDE.md
+
 # ── Editor / OS ──────────────────────────────────────────────────────
 .DS_Store
 .idea/
