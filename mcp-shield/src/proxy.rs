@@ -329,6 +329,11 @@ fn analyze_tools_list(
     hmac_key: &[u8],
     mode: ShieldMode,
 ) -> Result<AnalysisOutcome> {
+    // One id for this whole exchange. A mismatched schema and the suspicious
+    // description that arrived with it are one finding seen twice, so they must
+    // land in the ledger tied together rather than as unrelated rows.
+    let trace = events::new_trace_id();
+
     let Some(tools) = msg
         .result
         .as_ref()
@@ -338,10 +343,11 @@ fn analyze_tools_list(
         tracing::warn!(
             "MALFORMED tools/list RESPONSE: no result.tools array — analysis anomaly, NOT a clean pass; nothing was fingerprinted or sanitized"
         );
-        events::emit(
+        events::emit_traced(
             "analysis_error",
             Severity::Warning,
             json!({ "reason": "tools/list response missing result.tools array" }),
+            Some(&trace),
         );
         return Ok(AnalysisOutcome::Malformed);
     };
@@ -371,10 +377,11 @@ fn analyze_tools_list(
                     hash = fingerprint::short(&hash),
                     "first sighting; registered trusted baseline fingerprint"
                 );
-                events::emit(
+                events::emit_traced(
                     "baseline_registered",
                     Severity::Info,
                     json!({ "tool": name, "hash": hash }),
+                    Some(&trace),
                 );
             }
             Verdict::Match => {
@@ -420,7 +427,7 @@ fn analyze_tools_list(
                     clean_tools.get_or_insert_with(|| tools.clone())[index] =
                         baseline.tool.clone();
                 }
-                events::emit(
+                events::emit_traced(
                     "schema_mismatch",
                     Severity::Critical,
                     json!({
@@ -432,6 +439,7 @@ fn analyze_tools_list(
                         "mode": if mode == ShieldMode::Enforce { "enforce" } else { "monitor" },
                         "action": if blocked { "rewritten" } else { "forwarded" },
                     }),
+                    Some(&trace),
                 );
             }
         }
@@ -455,10 +463,11 @@ fn analyze_tools_list(
                  \x20   matched patterns:\n{}",
                 summary.join("\n"),
             );
-            events::emit(
+            events::emit_traced(
                 "suspicious_description",
                 Severity::Warning,
                 json!({ "tool": name, "findings": findings }),
+                Some(&trace),
             );
         }
     }

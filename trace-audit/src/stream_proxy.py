@@ -28,7 +28,7 @@ from typing import AsyncIterator
 
 from .config import Config
 from .divergence_monitor import DivergenceMonitor
-from .events import now_ms
+from .events import EventContext, now_ms
 from .pii_scanner import scan
 from .redaction import redact
 
@@ -131,7 +131,15 @@ class StreamAuditor:
         self.baseline_counts = baseline_counts
         self.emit = emit
 
-    async def audit(self, prompt: str, max_tokens: int | None = None) -> AsyncIterator[dict]:
+    async def audit(
+        self,
+        prompt: str,
+        max_tokens: int | None = None,
+        ctx: EventContext | None = None,
+    ) -> AsyncIterator[dict]:
+        """`ctx` carries the caller's correlation identity for this one
+        generation, so a leaked credential or a terminated trace can be tied to
+        detections the other layers made in the same agent session."""
         max_tokens = max_tokens or self.cfg.max_tokens
         start = now_ms()
         monitor = DivergenceMonitor(
@@ -165,6 +173,7 @@ class StreamAuditor:
                             "redacted_as": f"[REDACTED:{m.label}]",
                             "position_tokens": monitor.tokens_seen,
                         },
+                        ctx,
                     )
                     yield {
                         "type": "pii",
@@ -194,6 +203,7 @@ class StreamAuditor:
                         "tokens_seen": monitor.tokens_seen,
                         "detection_latency_ms": now_ms() - start,
                     },
+                    ctx,
                 )
                 yield {
                     "type": "terminated",

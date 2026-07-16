@@ -13,12 +13,12 @@ import json
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from .config import MODULE_NAME, load_config
-from .events import make_emitter
+from .events import context_from_headers, make_emitter
 from .stream_proxy import StreamAuditor
 
 
@@ -39,7 +39,12 @@ def _load_baseline(path: str) -> dict[str, int]:
 async def lifespan(app: FastAPI):
     cfg = load_config()
     emit = make_emitter(
-        MODULE_NAME, cfg.dashboard_url, cfg.event_token, cfg.event_outbox_path
+        MODULE_NAME,
+        cfg.dashboard_url,
+        cfg.event_token,
+        cfg.event_outbox_path,
+        agent_id=cfg.agent_id,
+        session_id=cfg.session_id,
     )
     baseline_counts = _load_baseline(cfg.baseline_path)
     app.state.cfg = cfg
@@ -96,11 +101,15 @@ def stats() -> dict:
 
 
 @app.post("/generate")
-async def generate(req: GenerateRequest) -> StreamingResponse:
+async def generate(req: GenerateRequest, request: Request) -> StreamingResponse:
     auditor: StreamAuditor = app.state.auditor
+    # Read the headers before the response starts streaming: the generator body
+    # runs after the handler returns, and reaching for the request from inside
+    # it would be reading state that is no longer guaranteed to be there.
+    ctx = context_from_headers(request.headers)
 
     async def event_stream():
-        async for evt in auditor.audit(req.prompt, req.max_tokens):
+        async for evt in auditor.audit(req.prompt, req.max_tokens, ctx):
             yield f"data: {json.dumps(evt)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
