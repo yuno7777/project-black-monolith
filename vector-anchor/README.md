@@ -75,9 +75,9 @@ it and serves the next-best clean result instead.
 | `MONOLITH_EMBEDDING`         | `hash`             | `hash` (offline, deterministic) or `default` (ST)   |
 | `MONOLITH_CHROMA_PATH`       | `./chroma_store`   | embedded ChromaDB persistence directory             |
 | `MONOLITH_TOP_K`             | `3`                | results returned to the caller                      |
-| `MONOLITH_TOP_RANK_THRESHOLD`| `3`                | a doc "ranks highly" if in the top this-many        |
+| `MONOLITH_TOP_RANK_THRESHOLD`| `2`                | a doc "ranks highly" if in the top this-many (calibrated) |
 | `MONOLITH_MIN_DISTINCT_TOPICS`| `4`               | distinct topics before a doc is quarantined         |
-| `MONOLITH_TOPIC_SIMILARITY`  | `0.30`             | queries at/above this cosine count as one topic     |
+| `MONOLITH_TOPIC_SIMILARITY`  | `0.20`             | queries at/above this cosine count as one topic (calibrated) |
 | `MONOLITH_WINDOW_SIZE`       | `50`               | rolling window (number of recent queries)           |
 | `MONOLITH_DASHBOARD_URL`     | *(unset)*          | if set, events are also POSTed here                 |
 
@@ -100,8 +100,41 @@ query retrieves the injected document it is quarantined (`anomaly score = 4`),
 withheld from subsequent results, and a `corpus_poison_quarantine` event
 fires. The script prints `DEMO PASSED`.
 
+## Threshold calibration
+
+The detection parameters are **derived from a false-positive sweep**, not
+guessed — see [`fixtures/calibration_results.md`](fixtures/calibration_results.md),
+reproducible with `python fixtures/calibrate.py`. Seeding the 24-document clean
+corpus and running **18 diverse clean queries** across six topics (no poison
+present) yields:
+
+| | distinct-topic score |
+| :-- | ---: |
+| highest **clean** document | 2 |
+| `min_distinct_topics` threshold | **4** |
+| **poison** fixture | 4 |
+
+**False-positive result: 0 / 24 clean documents flagged.** The threshold (4)
+clears the worst clean document (2) by a 2-topic margin and catches the poison.
+
+The original parameters (`top_rank_threshold=3`, `topic_similarity=0.30`) were
+found to be **broken**: a broad single-domain document (`garden-4`) accumulated
+a score of **7** — higher than the poison (5) — because bag-of-words treats
+narrow gardening sub-topics ("prune", "mulch", "compost") as unrelated. No
+threshold can separate 7-vs-5. Tightening to `(2, 0.20)` merges genuinely
+related sub-topic queries (pairwise cosine 0.15–0.30) while keeping the poison's
+truly-unrelated triggers (pairwise ~0.0) separate, restoring a clean margin.
+
 ## Known limitations
 
+- **Slow-drip evasion.** Detection is frequency-based within a *bounded rolling
+  window* (`window_size`, default 50 queries), not persistent long-term
+  tracking. An attacker who spaces retrievals of a bait document so it never
+  reaches `min_distinct_topics` distinct topics *within any single window* —
+  e.g. surfacing it for one unrelated topic per window, letting earlier hits
+  age out — would stay under the threshold and evade detection. Catching that
+  would require long-horizon per-document accumulation, which this window-based
+  approach deliberately trades away for bounded memory and recency.
 - Detection is retrieval-driven: a bait document is only flagged once it has
   actually ranked across enough dissimilar queries. A document that has not
   yet been broadly retrieved is not pre-emptively flagged.

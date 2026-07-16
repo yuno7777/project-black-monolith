@@ -12,6 +12,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from .divergence_monitor import DEFAULT_KL_THRESHOLD
+
 MODULE_NAME = "trace-audit"
 
 
@@ -41,6 +43,8 @@ class Config:
 
     # --- dashboard integration -----------------------------------------
     dashboard_url: str | None
+    event_token: str | None
+    event_outbox_path: str
 
 
 def load_config() -> Config:
@@ -49,10 +53,14 @@ def load_config() -> Config:
         ollama_base_url=os.environ.get("MONOLITH_OLLAMA_URL", "http://localhost:11434"),
         ollama_model=os.environ.get("MONOLITH_OLLAMA_MODEL", "llama3.2"),
         baseline_path=os.environ.get("MONOLITH_BASELINE_PATH", "./baseline_distribution.json"),
-        kl_threshold=float(os.environ.get("MONOLITH_KL_THRESHOLD", "1.5")),
+        kl_threshold=float(
+            os.environ.get("MONOLITH_KL_THRESHOLD", str(DEFAULT_KL_THRESHOLD))
+        ),
         window_size=int(os.environ.get("MONOLITH_TA_WINDOW", "20")),
         min_tokens_before_check=int(os.environ.get("MONOLITH_MIN_TOKENS", "12")),
         smoothing=float(os.environ.get("MONOLITH_SMOOTHING", "0.5")),
         max_tokens=int(os.environ.get("MONOLITH_MAX_TOKENS", "60")),
         dashboard_url=os.environ.get("MONOLITH_DASHBOARD_URL") or None,
+        event_token=os.environ.get("MONOLITH_EVENT_TOKEN") or None,
+        event_outbox_path=os.environ.get("MONOLITH_EVENT_OUTBOX_PATH", "./event_outbox.db"),
     )
