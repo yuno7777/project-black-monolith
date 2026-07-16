@@ -20,12 +20,19 @@
 mod events;
 mod fingerprint;
 mod jsonrpc;
+mod outbox;
 mod proxy;
 mod sanitizer;
 
 use anyhow::{bail, Result};
 use std::io::IsTerminal;
+use std::time::Duration;
 use tracing_subscriber::EnvFilter;
+
+/// Last-chance delivery window for spooled events before the process exits.
+/// Anything still undelivered stays on the spool and is retried by the next
+/// invocation.
+const FINAL_DRAIN_BUDGET: Duration = Duration::from_secs(3);
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -56,14 +63,21 @@ async fn main() -> Result<()> {
         "starting MCP-Shield proxy"
     );
 
+    // Drains any backlog left by a previous run (the spool outlives the
+    // process on a volume), then keeps this run's events flowing to the
+    // dashboard live as they are detected.
+    let flusher = outbox::spawn_flusher();
+
     let result = proxy::run(server_cmd, config).await;
 
-    // This proxy is short-lived (it exits when the agent closes stdin).
-    // Dashboard event forwarding is fire-and-forget on background tasks, so
-    // give any in-flight POSTs a brief grace period to land before exit.
-    if std::env::var("MONOLITH_DASHBOARD_URL").is_ok() {
-        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    // This proxy is short-lived: it exits as soon as the agent closes stdin,
+    // so there is no long-running retry loop to fall back on. Stop the
+    // periodic flusher and make one final forced pass — ignoring backoff,
+    // since a scheduled retry after exit would never happen.
+    if let Some(flusher) = flusher {
+        flusher.abort();
     }
+    outbox::drain(FINAL_DRAIN_BUDGET, true).await;
 
     result
 }

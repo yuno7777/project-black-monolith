@@ -38,7 +38,9 @@ def _load_baseline(path: str) -> dict[str, int]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     cfg = load_config()
-    emit = make_emitter(MODULE_NAME, cfg.dashboard_url)
+    emit = make_emitter(
+        MODULE_NAME, cfg.dashboard_url, cfg.event_token, cfg.event_outbox_path
+    )
     baseline_counts = _load_baseline(cfg.baseline_path)
     app.state.cfg = cfg
     app.state.emit = emit
