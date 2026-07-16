@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import type { Incident, IncidentStatus, MonolithEvent, Severity } from "@/lib/types";
 import { KNOWN_MODULES, MODULE_ACCENT, MODULE_LABELS, STATUS_LABELS } from "@/lib/types";
 import Sidebar, { Rail } from "../components/Sidebar";
@@ -41,16 +42,21 @@ function ago(ms: number): string {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
-export default function InvestigatePage() {
+function InvestigateConsole() {
+  // Arriving from a feed row: /investigate?event=<id>. The default filters
+  // (open, last 24h) would hide a resolved or older event and the panel would
+  // silently never open, so a deep link widens them to "all".
+  const deepLinkId = useSearchParams().get("event");
+
   const [analyst, setAnalyst] = useAnalyst();
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
-  const [status, setStatus] = useState<StatusTab>("open");
+  const [status, setStatus] = useState<StatusTab>(deepLinkId ? "all" : "open");
   const [severity, setSeverity] = useState<Severity | "all">("all");
   const [module, setModule] = useState<string | null>(null);
-  const [windowKey, setWindowKey] = useState("24h");
+  const [windowKey, setWindowKey] = useState(deepLinkId ? "all" : "24h");
   const [query, setQuery] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(deepLinkId);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -260,7 +266,7 @@ export default function InvestigatePage() {
                     return (
                       <button
                         key={i.event_id}
-                        className={`event inc${selectedId === i.event_id ? " on" : ""}`}
+                        className={`event event-hit inc${selectedId === i.event_id ? " on" : ""}`}
                         style={{ ["--accent-mod" as string]: MODULE_ACCENT[i.module] ?? "var(--ink-faint)" }}
                         onClick={() => setSelectedId(selectedId === i.event_id ? null : i.event_id)}
                       >
@@ -302,5 +308,15 @@ export default function InvestigatePage() {
         </main>
       </div>
     </div>
+  );
+}
+
+// useSearchParams needs a Suspense boundary above it, otherwise this route
+// opts out of static prerendering at build time.
+export default function InvestigatePage() {
+  return (
+    <Suspense fallback={null}>
+      <InvestigateConsole />
+    </Suspense>
   );
 }

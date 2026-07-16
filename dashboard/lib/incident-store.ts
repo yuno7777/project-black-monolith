@@ -74,7 +74,7 @@ function toIncident(row: IncidentRow): Incident {
 }
 
 export interface IncidentQuery {
-  status?: IncidentStatus | "open" | "all";
+  status?: IncidentStatus | "open" | "all" | "triaged";
   severity?: Severity | "all";
   module?: string | "all";
   q?: string;
@@ -91,6 +91,11 @@ export async function listIncidents(query: IncidentQuery = {}): Promise<Incident
   if (status === "open") {
     // Untriaged events have no row at all, so "open" must include the null.
     where.push("coalesce(t.status, 'new') in ('new', 'acknowledged')");
+  } else if (status === "triaged") {
+    // Events someone has actually acted on. The overview uses this to badge
+    // its live feed: the triaged set is small, so it can be pulled whole,
+    // whereas "everything, with its status" would mean shipping the ledger.
+    where.push("t.status is not null");
   } else if (status !== "all") {
     where.push(`coalesce(t.status, 'new') = ${add(status)}`);
   }

@@ -29,7 +29,10 @@
 
   --ink: #f2f3f6;
   --ink-dim: #9aa1ad;
-  --ink-faint: #666c78;
+  /* Measured, not eyeballed: the labels this paints (KPI keys, timestamps,
+     card meta) are 10-11.5px, so they are "small text" and need 4.5:1. The
+     previous #666c78 sat at ~3.7:1 on the card surfaces. */
+  --ink-faint: #7c828e;
 
   /* Selected/active chrome. Deliberately colourless: in a security console
      colour should mean something, so it is reserved for module identity and
@@ -82,8 +85,13 @@
   --line-soft: rgba(17, 18, 20, 0.06);
 
   --ink: #16171b;
-  --ink-dim: #6a6f7a;
-  --ink-faint: #9b9fa8;
+  /* Light mode needs materially darker muted text than dark mode does: the old
+     values (#6a6f7a / #9b9fa8) were a straight tonal mirror of the dark set and
+     measured 2.2-2.5:1 against the near-white cards — unreadable, and the worst
+     offender was every timestamp and card subtitle on the page. Both steps move
+     down together so the ink hierarchy stays ordered. */
+  --ink-dim: #4a4f59;
+  --ink-faint: #656a74;
 
   /* Light mode inverts: the selected surface is the near-black slab, which is
      the same idea (a contrast step, not a hue) read the other way up. */
@@ -290,6 +298,8 @@ html, body {
    trains its operator to stop looking. */
 .kpi { transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease; }
 .kpi:hover { border-color: color-mix(in srgb, var(--accent-mod, var(--ink)) 34%, var(--line)); transform: translateY(-1px); }
+.kpi-link { display: block; text-decoration: none; color: inherit; }
+.kpi-link:hover { background: var(--card-2); }
 
 /* ============================ content grid ============================ */
 .content { display: grid; grid-template-columns: 1fr 340px; gap: 11px; align-items: stretch; flex: 1; min-height: 0; }
@@ -364,13 +374,27 @@ html, body {
 .empty { padding: 60px 20px; text-align: center; color: var(--ink-faint); font-size: 13.5px; }
 .empty .empty-ic { color: var(--line); margin-bottom: 12px; display: inline-flex; }
 
+/* .event is the row container (it may hold a button *and* a link); .event-hit
+   is whatever you actually click to expand. The queue's rows are themselves
+   buttons and carry both classes. */
 .event {
-  position: relative; display: block; width: 100%; text-align: left; border: none;
-  border-bottom: 1px solid var(--line-soft); background: transparent; color: inherit;
-  font-family: inherit; padding: 12px 15px 12px 19px; cursor: pointer; transition: background 0.13s ease;
+  position: relative; border-bottom: 1px solid var(--line-soft);
+  background: transparent; color: inherit; transition: background 0.13s ease;
 }
 .event::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent-mod, transparent); }
 .event:hover { background: var(--card-2); }
+.event-hit {
+  display: block; width: 100%; text-align: left; border: none; background: transparent;
+  color: inherit; font-family: inherit; padding: 12px 15px 12px 19px; cursor: pointer;
+}
+.event-open { padding: 0 15px 13px 19px; }
+.event-link {
+  display: inline-flex; align-items: center; gap: 6px; margin-top: 10px;
+  font-size: 12px; font-weight: 600; color: var(--ink-dim); text-decoration: none;
+  border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px;
+  transition: all 0.14s ease;
+}
+.event-link:hover { color: var(--ink); background: var(--card-2); }
 .event-row { display: flex; align-items: center; gap: 9px; }
 .badge {
   display: inline-flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 620; letter-spacing: 0.15px;

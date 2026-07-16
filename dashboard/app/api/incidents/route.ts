@@ -32,7 +32,8 @@ export async function GET(req: Request) {
 
   const status = params.get("status");
   if (status) {
-    if (status !== "open" && status !== "all" && !INCIDENT_STATUSES.includes(status as IncidentStatus)) {
+    const pseudo = status === "open" || status === "all" || status === "triaged";
+    if (!pseudo && !INCIDENT_STATUSES.includes(status as IncidentStatus)) {
       return Response.json({ error: "unknown status filter" }, { status: 422 });
     }
     query.status = status as IncidentQuery["status"];
