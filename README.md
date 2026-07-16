@@ -140,9 +140,17 @@ Modules deliver events by POSTing them to the dashboard's ingest endpoint (`MONO
 git clone https://github.com/yuno7777/project-black-monolith.git
 cd project-black-monolith
 
-docker compose up -d --build     # build and start all four services
-./run_full_demo.sh               # drive all three attack fixtures
+bash scripts/generate_secrets.sh # write a local .env (gitignored) — required
+docker compose up -d --build     # build and start all five services
+./run_full_demo.sh               # drive all three attacks, then verify the ledger
 ```
+
+The stack has **no default credentials**: the database password and the three
+per-module ingest tokens have to exist before anything starts, and Compose
+refuses to start without them rather than falling back to a weak default. That
+is what the first command is for — it writes 24 bytes of CSPRNG output per value
+into `.env`, which is gitignored and must never be committed. See
+[`.env.example`](.env.example) for what it sets and why.
 
 Open **[http://localhost:3000](http://localhost:3000)** and watch detections stream in live as each fixture runs.
 
