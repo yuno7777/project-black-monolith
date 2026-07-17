@@ -36,7 +36,12 @@ def embedding(rng: random.Random) -> list[float]:
     return [rng.random() for _ in range(DIM)]
 
 
-def main() -> None:
+def measure() -> dict[str, float]:
+    """Return the per-retrieval detector overhead percentiles, in microseconds.
+
+    Exposed so the detection benchmark can fold latency into its report without
+    re-implementing the measurement.
+    """
     rng = random.Random(20260717)  # fixed seed: reproducible run to run
     tracker = FrequencyTracker(
         min_distinct_topics=MIN_DISTINCT_TOPICS,
@@ -62,14 +67,26 @@ def main() -> None:
         samples.append((time.perf_counter() - start) * 1_000_000)
 
     samples.sort()
+    return {
+        "mean": statistics.mean(samples),
+        "median": statistics.median(samples),
+        "p50": statistics.median(samples),
+        "p95": samples[int(len(samples) * 0.95)],
+        "p99": samples[int(len(samples) * 0.99)],
+        "max": samples[-1],
+    }
+
+
+def main() -> None:
+    m = measure()
     print(f"VectorAnchor — detector overhead per retrieval (N={ITERATIONS})")
     print(f"  window={WINDOW}  corpus={CORPUS}  embedding_dim={DIM}")
     print()
-    print(f"  mean    {statistics.mean(samples):8.1f} us")
-    print(f"  median  {statistics.median(samples):8.1f} us")
-    print(f"  p95     {samples[int(len(samples) * 0.95)]:8.1f} us")
-    print(f"  p99     {samples[int(len(samples) * 0.99)]:8.1f} us")
-    print(f"  max     {samples[-1]:8.1f} us")
+    print(f"  mean    {m['mean']:8.1f} us")
+    print(f"  median  {m['median']:8.1f} us")
+    print(f"  p95     {m['p95']:8.1f} us")
+    print(f"  p99     {m['p99']:8.1f} us")
+    print(f"  max     {m['max']:8.1f} us")
 
 
 if __name__ == "__main__":
