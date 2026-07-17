@@ -38,3 +38,11 @@ CLAUDE.md
 .idea/
 .vscode/
 *.swp
+
+# ── Local presentation material (not part of the codebase) ───────────
+AEOS_Guard_Project_Overview.pdf
+build_aeos_pdf.py
+_aeos_p*.png
+
+# ── Generated benchmark reports (per-run artifacts, uploaded not stored) ──
+**/fixtures/benchmark_results.json

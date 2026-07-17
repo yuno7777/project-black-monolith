@@ -39,7 +39,12 @@ VOCAB = (
 ).split()
 
 
-def main() -> None:
+def measure() -> dict[str, float]:
+    """Return the per-token auditing overhead percentiles, in microseconds.
+
+    Exposed so the detection benchmark can fold latency into its report without
+    re-implementing the measurement.
+    """
     rng = random.Random(20260717)  # fixed seed: reproducible run to run
     baseline = {token: rng.randint(1, 40) for token in set(VOCAB)}
     monitor = DivergenceMonitor(
@@ -65,16 +70,27 @@ def main() -> None:
         samples.append((time.perf_counter() - start) * 1_000_000)
 
     samples.sort()
+    return {
+        "mean": statistics.mean(samples),
+        "p50": statistics.median(samples),
+        "p95": samples[int(len(samples) * 0.95)],
+        "p99": samples[int(len(samples) * 0.99)],
+        "max": samples[-1],
+    }
+
+
+def main() -> None:
+    m = measure()
     print(f"TraceAudit — auditing overhead per token (N={ITERATIONS})")
-    print(f"  window={WINDOW}  baseline_vocab={len(baseline)}  threshold={DEFAULT_KL_THRESHOLD}")
+    print(f"  window={WINDOW}  threshold={DEFAULT_KL_THRESHOLD}")
     print()
-    print(f"  mean    {statistics.mean(samples):8.1f} us")
-    print(f"  median  {statistics.median(samples):8.1f} us")
-    print(f"  p95     {samples[int(len(samples) * 0.95)]:8.1f} us")
-    print(f"  p99     {samples[int(len(samples) * 0.99)]:8.1f} us")
-    print(f"  max     {samples[-1]:8.1f} us")
+    print(f"  mean    {m['mean']:8.1f} us")
+    print(f"  median  {m['p50']:8.1f} us")
+    print(f"  p95     {m['p95']:8.1f} us")
+    print(f"  p99     {m['p99']:8.1f} us")
+    print(f"  max     {m['max']:8.1f} us")
     print()
-    print(f"  a 60-token response costs ~{statistics.mean(samples) * 60 / 1000:.2f} ms of auditing")
+    print(f"  a 60-token response costs ~{m['mean'] * 60 / 1000:.2f} ms of auditing")
 
 
 if __name__ == "__main__":
