@@ -15,37 +15,22 @@ const base = (size: number): React.SVGProps<SVGSVGElement> => ({
   strokeLinejoin: "round" as const,
 });
 
-// Brand mark: the monolith itself — a hard-edged slab standing in three
-// stacked sections (tool / memory / reasoning), turned a few degrees so the
-// right-hand face catches light.
-//
-// Deliberately not a rounded rectangle with a gradient wash: a monolith is a
-// slab, and rounding the corners made it read as a battery. The only colour is
-// on the side faces, one per module, so the mark carries the same "three
-// independent layers" idea as the rest of the product without a logo-sized
-// rainbow. Everything else inherits currentColor.
-const MONOLITH_SECTIONS = [
-  { y0: 3.4, y1: 11.0, face: "var(--mod-mcp)" },
-  { y0: 12.0, y1: 19.6, face: "var(--mod-vector)" },
-  { y0: 20.6, y1: 28.2, face: "var(--mod-trace)" },
-];
-
-export function Logo({ size = 30 }: IconProps) {
-  // The side face is sheared down by this much, which is what reads as
-  // perspective rather than a flat bar glued to the edge.
-  const skew = 1.8;
+// Brand mark: the PBM monogram. Two theme-specific artworks — a light glyph for
+// the dark UI, a dark glyph for the light UI — keyed to transparent PNGs so they
+// blend seamlessly on either canvas (no logo-square seam). Both are rendered and
+// CSS shows the one matching the active theme, so there is no swap flash. `size`
+// is the rendered HEIGHT in px; width follows the artwork's aspect ratio.
+export function Logo({ size = 30 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 32 32" fill="none" aria-hidden>
-      {MONOLITH_SECTIONS.map((s) => (
-        <g key={s.y0}>
-          <rect x="10.4" y={s.y0} width="9.6" height={s.y1 - s.y0} fill="currentColor" />
-          <path
-            d={`M20 ${s.y0} L23.6 ${s.y0 + skew} L23.6 ${s.y1 + skew} L20 ${s.y1} Z`}
-            fill={s.face}
-          />
-        </g>
-      ))}
-    </svg>
+    <span
+      className="logo"
+      style={{ ["--logo-h" as string]: `${size}px` }}
+      role="img"
+      aria-label="Project Black Monolith"
+    >
+      <img className="logo-img logo-dark" src="/logo-dark.png" alt="" aria-hidden />
+      <img className="logo-img logo-light" src="/logo-light.png" alt="" aria-hidden />
+    </span>
   );
 }
 
