@@ -591,3 +591,75 @@ html, body {
    nothing can be triaged, so say so quietly rather than failing on click. */
 .analyst.unset { border-color: color-mix(in srgb, var(--sev-warning) 45%, var(--line)); }
 .analyst input[type="password"] { letter-spacing: 1px; }
+
+/* ============================ benchmarks page ============================ */
+/* A two-column shell (rail + main) — no per-module event sidebar here. */
+.app.two-col { grid-template-columns: 64px 1fr; }
+@media (max-width: 1100px) { .app.two-col { grid-template-columns: 64px 1fr; } }
+
+/* The page scrolls as a whole rather than a single feed card. */
+.content-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-right: 2px; }
+
+.bm-section { margin-bottom: 22px; }
+.bm-section-head {
+  display: flex; align-items: center; gap: 9px; padding: 2px 2px 10px;
+  border-bottom: 1px solid var(--line-soft); margin-bottom: 12px;
+}
+.bm-sec-ic {
+  width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 8px; color: var(--accent-mod);
+  background: color-mix(in srgb, var(--accent-mod) 14%, transparent);
+}
+.bm-sec-name { font-size: 14px; font-weight: 660; color: var(--ink); }
+.bm-sec-layer { font-size: 11.5px; color: var(--ink-faint); margin-left: 2px; }
+
+.bm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 11px; }
+
+.bm-card { padding: 14px 15px 13px; }
+.bm-head { display: flex; align-items: center; gap: 9px; }
+.bm-ic {
+  width: 28px; height: 28px; flex: none; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 8px; color: var(--accent-mod);
+  background: color-mix(in srgb, var(--accent-mod) 14%, transparent);
+}
+.bm-title { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.bm-name { font-size: 13.5px; font-weight: 620; color: var(--ink); text-transform: capitalize; }
+.bm-para { font-size: 10.5px; color: var(--ink-faint); }
+.bm-samples { font-size: 10.5px; color: var(--ink-faint); white-space: nowrap; }
+
+.bm-exact {
+  margin-top: 10px; font-size: 11.5px; line-height: 1.5; color: var(--ink-dim);
+  background: var(--card-inset); border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm); padding: 7px 10px;
+}
+.bm-exact b { color: var(--ink); }
+
+.bm-metrics { margin-top: 12px; display: flex; flex-direction: column; gap: 7px; }
+.bm-metric-top { display: flex; align-items: baseline; justify-content: space-between; }
+.bm-metric-k { font-size: 11.5px; color: var(--ink-dim); }
+.bm-metric-v { font-size: 12.5px; font-weight: 640; color: var(--ink); }
+.bm-bar { height: 4px; border-radius: 3px; background: var(--card-inset); overflow: hidden; margin-top: 3px; }
+.bm-bar span { display: block; height: 100%; border-radius: 3px; transition: width 0.3s ease; }
+
+.bm-lower { display: flex; gap: 12px; margin-top: 13px; align-items: stretch; }
+.cm-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; flex: 1; }
+.cm-cell {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  padding: 7px 4px; border-radius: 8px; border: 1px solid var(--line-soft);
+}
+.cm-cell.good { background: color-mix(in srgb, var(--ok) 9%, transparent); }
+.cm-cell.bad { background: color-mix(in srgb, var(--sev-warning) 9%, transparent); }
+.cm-n { font-size: 15px; font-weight: 680; color: var(--ink); }
+.cm-l { font-size: 9px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--ink-faint); }
+
+.bm-latency {
+  display: flex; flex-direction: column; justify-content: center; gap: 2px;
+  min-width: 120px; padding: 8px 11px; border-radius: var(--r-sm);
+  background: var(--card-inset); border: 1px solid var(--line-soft);
+}
+.bm-lat-k { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--ink-faint); }
+.bm-lat-v { font-size: 16px; font-weight: 680; color: var(--ink); }
+.bm-lat-x { font-size: 10px; font-weight: 500; color: var(--ink-faint); }
+.bm-lat-sub { font-size: 10.5px; color: var(--ink-dim); }
+
+.bm-notes { margin-top: 12px; font-size: 11px; line-height: 1.5; color: var(--ink-faint); }
