@@ -203,7 +203,18 @@ html, body {
   text-transform: uppercase; color: var(--ink-faint); margin-bottom: 1px;
 }
 .brand-sub { font-size: 11px; color: var(--ink-faint); margin-top: 3px; }
-.rail-logo { color: var(--ink); margin-bottom: 10px; display: inline-flex; }
+.rail-logo { margin-bottom: 12px; display: inline-flex; }
+.brand-logo { display: block; margin-bottom: 12px; }
+
+/* PBM monogram logo. Two theme-specific transparent artworks; CSS shows the one
+   matching the active theme (data-theme is stamped before paint, so no flash).
+   `--logo-h` is the rendered height; width follows the artwork aspect ratio. */
+.logo { display: inline-flex; align-items: center; line-height: 0; }
+.logo-img { height: var(--logo-h, 30px); width: auto; }
+.logo-dark { display: block; }
+.logo-light { display: none; }
+:root[data-theme="light"] .logo-dark { display: none; }
+:root[data-theme="light"] .logo-light { display: block; }
 
 .nav-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1.3px; color: var(--ink-faint); padding: 14px 8px 6px; }
 .nav-item {

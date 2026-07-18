@@ -12,7 +12,7 @@ export function Rail() {
   const path = usePathname();
   return (
     <nav className="rail" aria-label="Sections">
-      <span className="rail-logo"><Logo size={30} /></span>
+      <span className="rail-logo"><Logo size={40} /></span>
       <Link
         href="/"
         className={`rail-btn${path === "/" ? " on" : ""}`}
@@ -63,6 +63,7 @@ export default function Sidebar({
   return (
     <aside className="sidebar">
       <div className="brand">
+        <span className="brand-logo"><Logo size={52} /></span>
         <div className="brand-name">
           <span className="brand-project">Project</span>
           Black Monolith
