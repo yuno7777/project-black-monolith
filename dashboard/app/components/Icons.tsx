@@ -212,6 +212,18 @@ export function IconLedger({ size = 18, className }: IconProps) {
   );
 }
 
+// Rail: benchmarks — a gauge/meter reading a measured value.
+export function IconGauge({ size = 18, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className} aria-hidden>
+      <path d="M4 15.5a8 8 0 0116 0" />
+      <path d="M4 15.5h1.6M18.4 15.5H20M12 5.6V7" />
+      <path d="M12 15.5l4-3" />
+      <circle cx="12" cy="15.5" r="1.3" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 // Rail: settings.
 export function IconGear({ size = 18, className }: IconProps) {
   return (

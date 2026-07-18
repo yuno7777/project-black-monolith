@@ -11,7 +11,13 @@ import SeverityDonut from "./components/SeverityDonut";
 import ThemeToggle from "./components/ThemeToggle";
 import { IconIntercept, IconActivity, IconAlert, IconBolt, IconSearch, IconLedger } from "./components/Icons";
 
-function avgLatency(events: MonolithEvent[]): number | null {
+// End-to-end latency, as reported by the detectors: this averages
+// `details.detection_latency_ms`, which is wall-clock time INSIDE the detector
+// path and so includes the wrapped operation (the model streaming, the vector
+// query) — not the detector's own overhead. The isolated detector cost
+// (microseconds) is measured separately on the Benchmarks page; labelling this
+// "detection latency" outright would wrongly imply the defence is the slow part.
+function avgEndToEndLatency(events: MonolithEvent[]): number | null {
   const s: number[] = [];
   for (const e of events) {
     const d = e.details ?? {};
@@ -133,7 +139,7 @@ export default function Page() {
   );
 
   const intercepted = severityCounts.critical + severityCounts.warning;
-  const latency = avgLatency(events);
+  const latency = avgEndToEndLatency(events);
 
   const kpis = [
     {
@@ -165,12 +171,15 @@ export default function Page() {
       chip: null,
     },
     {
-      k: "Avg detection latency",
+      k: "Avg end-to-end latency",
       v: latency === null ? "—" : latency.toFixed(1),
-      sub: latency === null ? "no timing data" : "milliseconds",
+      // Named honestly: this includes the wrapped operation, not just the
+      // detector. The isolated detector overhead is on the Benchmarks page.
+      sub: latency === null ? "no timing data" : "ms incl. wrapped op",
       icon: <IconBolt />,
       accent: "var(--mod-trace)",
       chip: null,
+      href: "/benchmarks",
     },
   ];
 

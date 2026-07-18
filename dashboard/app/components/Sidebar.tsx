@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { MonolithEvent } from "@/lib/types";
 import { KNOWN_MODULES, MODULE_ACCENT, MODULE_LABELS, MODULE_LAYER } from "@/lib/types";
-import { Logo, ModuleGlyph, IconActivity, IconGrid, IconLedger, IconGear } from "./Icons";
+import { Logo, ModuleGlyph, IconActivity, IconGrid, IconLedger, IconGauge, IconGear } from "./Icons";
 
 /** The narrow icon rail. Settings does not exist yet, so it is not presented
  *  as if it does. */
@@ -30,6 +30,15 @@ export function Rail() {
         title="Investigation queue"
       >
         <IconLedger />
+      </Link>
+      <Link
+        href="/benchmarks"
+        className={`rail-btn${path === "/benchmarks" ? " on" : ""}`}
+        aria-label="Detection benchmarks"
+        aria-current={path === "/benchmarks" ? "page" : undefined}
+        title="Detection benchmarks"
+      >
+        <IconGauge />
       </Link>
       <div className="rail-foot">
         <button className="rail-btn" aria-label="Settings (coming soon)" title="Settings — not built yet" disabled>
