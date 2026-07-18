@@ -1,0 +1,23 @@
+# GitGuardian configuration.
+#
+# The detection-test fixtures deliberately contain fabricated, obviously-fake
+# "secrets" so the PII / credential detectors have something to catch — this is
+# core to what the project tests, and CLAUDE.md documents that all such material
+# is inert local fixture data that targets no real system.
+#
+# These are ignored by EXACT MATCH, not by path: a genuine secret accidentally
+# committed to a fixture file would still be flagged. Every value below is a
+# documented example (AWS/Visa test values) or a hand-typed placeholder.
+version: 2
+secret:
+  ignored-matches:
+    - name: Fake bearer token — TraceAudit PII benchmark fixture
+      match: abcdefghijklmnopqrstuvwxyz012345.signature99
+    - name: Fake OpenAI-style API key — TraceAudit PII benchmark fixture
+      match: sk-abcd1234efgh5678ijkl9012mnop3456
+    - name: AWS documented example access key — PII detector fixture
+      match: AKIAIOSFODNN7EXAMPLE
+    - name: Visa test card number — PII detector fixture
+      match: 4111 1111 1111 1111
+    - name: Placeholder SSN — PII detector fixture
+      match: 123-45-6789
