@@ -391,6 +391,62 @@ so the hierarchy stays ordered.
 
 ---
 
+## 10. Detection accuracy — the unified benchmark
+
+Sections 1–3 justified each threshold and counted false positives; §7 measured
+the evasions. This section closes the loop with a **single labelled-corpus
+benchmark that scores every detector into a confusion matrix** — detection rate,
+false-positive rate, precision, recall, F1 — persists each run to a Postgres
+ledger, and surfaces it on the dashboard's Benchmarks page. It is the difference
+between "the detector fired once" and "here is its measured accuracy."
+
+Each detector is scored **the way its design allows**, because pretending one
+metric fits all would be the dishonesty this project argues against.
+
+| Module · detector | Paradigm | Detection | Precision | FPR | F1 |
+| :-- | :-- | ---: | ---: | ---: | ---: |
+| VectorAnchor · frequency anomaly | threshold | **75%** | 100% | 0% | 0.857 |
+| TraceAudit · reasoning divergence | threshold | 100% | 100% | 0% | 1.000 |
+| TraceAudit · PII scanner | regex | 100% | **85.7%** | 11.1% | 0.923 |
+| MCP-Shield · description sanitizer | regex | **71.4%** | 100% | 0% | 0.833 |
+| MCP-Shield · schema fingerprint | exact | 100% | 100% | 0% | 1.000 |
+
+The numbers that are **below 100% are the honest ones**, and each has a reason
+baked into the corpus rather than smoothed away:
+
+- **VectorAnchor 75%** — of four engineered bait documents, the three that
+  actually rank broadly are caught; a deliberately subtle bait that never ranks
+  across enough topics is missed. Labelled by intent, so that miss counts.
+- **PII precision 85.7%** — a 16-digit shipment tracking number is
+  indistinguishable from a card number to the regex and is flagged. The
+  false positive is kept in the corpus on purpose, so the over-match is
+  reported, not hidden.
+- **Sanitizer 71.4%** — it catches known injection markers but misses two novel
+  phrasings with no marker. Pattern detection is precise (100%) but incomplete,
+  and the corpus says so.
+- **Fingerprint 100%** is **by construction** (exact HMAC comparison), labelled
+  as such on the dashboard and here — not presented as a tuned detector.
+
+**Integrity of the ledger.** The API recomputes every metric from the confusion
+matrix on ingest rather than trusting the client, so a run cannot report a rate
+its own counts contradict — verified by posting a run that claims 100% detection
+with a 1-of-2 matrix and confirming it stores 0.50. Benchmark results are
+evaluation metadata: they are authenticated with the operator credential, and
+`scripts/verify_benchmarks.sh` (12 checks) confirms they **never enter the event
+ledger or count as detections**.
+
+**Reproduce:** `bash scripts/run_benchmarks.sh` (computes offline, uploads to the
+dashboard); the per-detector gates also run in the unit suites, and
+`scripts/verify_benchmarks.sh` gates the ledger contract in CI.
+
+> **Limitation (honest).** The corpora are small, synthetic, offline
+> detection-test fixtures sized for a reproducible demo, not a
+> production-representative dataset. The numbers establish that each detector is
+> scored end-to-end with a real confusion matrix; they are not a claim of
+> field accuracy, and a real deployment would rescore against its own traffic.
+
+---
+
 ## Reproduce everything
 
 ```bash
@@ -424,6 +480,10 @@ bash scripts/verify_ingest.sh            # 16 ingest-contract checks
 bash scripts/verify_recovery.sh          # stops/restarts the dashboard; removes no data
 bash scripts/verify_incidents.sh         # 33 incident-lifecycle checks
 bash scripts/verify_correlation.sh       # 13 cross-layer correlation checks
+bash scripts/verify_benchmarks.sh        # 12 benchmark-ledger checks
+
+# Detection-accuracy benchmark: score every detector + upload to the dashboard.
+bash scripts/run_benchmarks.sh           # computes offline, POSTs the run
 
 # Full end-to-end integration WITHOUT Docker (dashboard + all 3 modules + attacks)
 ./scripts/run_local_demo.sh            # holds services up; open http://localhost:3000

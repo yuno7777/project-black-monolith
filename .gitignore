@@ -46,3 +46,6 @@ _aeos_p*.png
 
 # ── Generated benchmark reports (per-run artifacts, uploaded not stored) ──
 **/fixtures/benchmark_results.json
+
+# ── Local Compose overrides (e.g. an alternate host port) ────────────
+docker-compose.override.yml
