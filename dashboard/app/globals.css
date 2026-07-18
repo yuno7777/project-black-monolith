@@ -52,6 +52,12 @@
   --tooltip-ink: #f2f3f6;
   --tooltip-dim: rgba(242, 243, 246, 0.6);
 
+  /* Native <select> option popups are OS-drawn and ignore the translucent card
+     surfaces, so their background must be a SOLID colour or the options render
+     light-on-light and unreadable. */
+  --popover: #1c1d22;
+  --popover-ink: #f2f3f6;
+
   --mod-mcp: #5b9dff;
   --mod-vector: #2dd4bf;
   --mod-trace: #a78bfa;
@@ -106,6 +112,9 @@
   --tooltip: rgba(22, 23, 27, 0.96);
   --tooltip-ink: #f7f7f8;
   --tooltip-dim: rgba(247, 247, 248, 0.62);
+
+  --popover: #ffffff;
+  --popover-ink: #16171b;
 
   --mod-mcp: #3b82f6;
   --mod-vector: #0d9488;
@@ -510,9 +519,18 @@ html, body {
 .act.primary { background: var(--emphasis); border-color: var(--emphasis-line); color: var(--emphasis-ink); }
 .act.primary:hover:not(:disabled) { background: var(--accent); border-color: transparent; color: var(--accent-ink); }
 .panel-select {
-  border: 1px solid var(--line); background: var(--card); color: var(--ink);
+  border: 1px solid var(--line); background: var(--popover); color: var(--popover-ink);
   border-radius: 999px; padding: 0 10px; font-family: inherit; font-size: 12px; outline: none;
   cursor: pointer;
+}
+/* The open option list is OS-drawn and does not inherit the app's translucent
+   surfaces, so give every <option> a solid, theme-aware background and readable
+   text. Without this the native popup renders light-on-light. Applied to all
+   options, not just this select, so any future dropdown is covered. The root's
+   color-scheme already themes the control chrome (arrow, scrollbar). */
+option {
+  background: var(--popover);
+  color: var(--popover-ink);
 }
 .ghost-btn {
   border: 1px solid var(--line); background: transparent; color: var(--ink-dim);
