@@ -26,8 +26,21 @@ research project there is no formal SLA, but reports are taken seriously.
 
 ## Scope notes
 
-- This is a **single-operator local research/demo system**: it has no
-  authentication, user accounts, or multi-tenant isolation by design. Do not
-  expose the services to untrusted networks.
+- Dashboard reads and writes require a tenant-scoped operator identity.
+  Browser sessions are opaque, HttpOnly, expiring, and revocable; API scripts
+  may use the configured operator bootstrap token directly.
+- Module ingest credentials are scoped by both tenant and module.
+  VectorAnchor quarantine/configuration reads and corpus mutations, plus
+  TraceAudit detector metadata, use a separate administrative token.
+- The dashboard sheds its migration privileges at runtime with a least-
+  privilege PostgreSQL role. Every store operation binds a transaction-local
+  tenant context; RLS independently checks it in addition to the application's
+  explicit tenant predicates.
+- VectorAnchor `/retrieve` and TraceAudit `/generate` are service-to-service
+  interfaces intended for a trusted network. Their `X-Monolith-*` headers
+  provide attribution, not end-user authentication.
 - The default MCP-Shield HMAC key and the offline mock model backend are for
   local development only; see the module READMEs before any real use.
+
+See [Identity and access model](docs/IDENTITY_AND_ACCESS.md) for the exact
+principal, role, credential, and route contracts.

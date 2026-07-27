@@ -27,16 +27,16 @@ Each module spools every event to a local outbox and fsyncs it *before* the
 detection path continues, then delivers asynchronously with exponential
 backoff. The dashboard being down costs delivery latency, not evidence.
 
-- `lib/event-ingest.ts` — process-wide singleton broker: a bounded ring
-  buffer of recent events plus a subscriber set. Stored on `globalThis` so it
-  survives dev hot-reloads and is shared across route handlers.
+- `lib/event-ingest.ts` — process-wide, tenant-aware live fan-out broker.
+  History comes from Postgres; the broker retains no evidence or cross-tenant
+  replay buffer. It lives on `globalThis` so dev hot-reloads share subscribers.
 - `app/api/ingest/route.ts` — `POST` accepts one event or an array; `GET` is a
   liveness probe.
 - `app/api/events/route.ts` — `GET` SSE stream: replays the recent buffer to a
   newly-connected client, then streams new events live, with keep-alives and
   clean teardown on disconnect.
 - `app/page.tsx` — client component; subscribes via `EventSource`, de-dupes by
-  sequence number, derives all stats client-side.
+  durable `event_id`, derives all stats client-side.
 - `lib/incident-store.ts` — the investigation queue and incident lifecycle.
 - `app/api/incidents/route.ts` — `GET` the queue (filtered, worst-first), `POST`
   a triage transition.
@@ -105,10 +105,10 @@ Design notes:
   `benign` / `duplicate`), enforced by a CHECK constraint as well as the API.
   Without it a "resolved" queue is just a hidden queue, and the false-positive
   rate — the number this project is evaluated on — could never be recovered.
-- **`incident_audit` is append-only**, enforced by a trigger rather than a
-  `REVOKE`, because a REVOKE would not bind the table's owner, which is the role
-  the app connects as. Each transition and its resulting state are written in
-  the **same transaction** as the state change.
+- **`incident_audit` is append-only** at two layers: the runtime role has no
+  `UPDATE`/`DELETE` grant, and a trigger also binds the table owner or an
+  administrative connection. Each transition and its resulting state are
+  written in the **same transaction** as the state change.
 - Omitting a field on a transition means "leave it alone", not "clear it" —
   otherwise resolving an incident without restating the assignee would silently
   unassign it. `resolution` is the deliberate exception: reopening clears the
@@ -119,10 +119,16 @@ Design notes:
 
 ## Operator authentication
 
-Triage is authenticated with an **operator token** (`OPERATOR_TOKENS_JSON`, an
-operator-name-to-token map; `scripts/generate_secrets.sh` writes one). This is
-deliberately separate from the per-module ingest tokens: those identify a
-*module*, and if one worked here any module could close its own findings.
+All dashboard reads are authenticated. `OPERATOR_TOKENS_JSON` maps each
+operator to a bootstrap token, role (`viewer`, `analyst`, or `admin`) and
+tenant. The login page exchanges that credential for an opaque, revocable,
+expiring HttpOnly browser session; the bootstrap token is never stored in
+`localStorage`. Scripts may still use it directly as a bearer credential.
+
+This credential is deliberately separate from the per-module ingest tokens:
+those identify a *module*, and if one worked here any module could close its
+own findings. VectorAnchor administrative routes use a third credential,
+`MONOLITH_ADMIN_TOKEN`.
 
 The property that matters is that **the actor is derived from the token and is
 never read from the request body**. An actor a caller can name itself records
@@ -132,14 +138,15 @@ assign work to itself by name: "take this" is sent as `assign_to_me: true` and
 the server resolves it to whoever the credential authenticates as.
 
 If `OPERATOR_TOKENS_JSON` is missing or malformed the endpoint returns **503 and
-refuses every write**. An authenticator that was never configured must never be
+refuses access**. An authenticator that was never configured must never be
 mistaken for one that passed.
 
 > [!IMPORTANT]
-> **Known gaps.** `GET /api/incidents` is *not* authenticated — the read path
-> exposes only what the dashboard already renders on a single-operator local
-> stack, but it is a real hole anywhere else. The token is a bearer credential
-> held in `localStorage`, so anything with access to the browser profile has it,
-> and there is no session management, expiry, or rotation. This is honest
-> single-operator auth, not an identity layer; a multi-user deployment needs
-> real sessions in front of these routes.
+> Tenant scoping is enforced twice: explicit authenticated application queries,
+> plus transaction-local Postgres context checked by RLS. Missing context
+> matches no tenant, and pooled connections cannot carry context across
+> transactions.
+
+See [the identity and access model](../docs/IDENTITY_AND_ACCESS.md) for the
+credential formats, route authorization matrix, session controls, correlation
+identity, and database-isolation boundary.

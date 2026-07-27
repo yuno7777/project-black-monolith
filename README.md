@@ -111,23 +111,36 @@ All three modules emit a single JSON shape, so the dashboard consumes every feed
 
 ```json
 {
+  "event_id": "019fa2d0-27f9-7e41-8d6e-079867c5556e",
+  "schema_version": 2,
   "timestamp_ms": 1770000000000,
   "module": "mcp-shield",
   "event_type": "schema_mismatch",
   "severity": "critical",
+  "tenant_id": "default",
+  "agent_id": "agent-7",
+  "session_id": "session-42",
+  "trace_id": "trace-9",
+  "correlation_id": "workflow-3",
   "details": { "tool": "read_file", "action": "rewritten" }
 }
 ```
 
 | Field | Type | Description |
 | :--- | :--- | :--- |
+| `event_id` | UUID | Idempotency key generated at the source |
+| `schema_version` | number | Envelope version; current emitters use `2` |
 | `timestamp_ms` | number | Unix epoch milliseconds at detection time |
 | `module` | string | `mcp-shield` · `vector-anchor` · `trace-audit` |
 | `event_type` | string | e.g. `schema_mismatch`, `corpus_poison_quarantine`, `reasoning_divergence_terminate` |
 | `severity` | string | `info` · `warning` · `critical` |
+| `tenant_id` | string | Required tenant boundary; `default` for local single-tenant runs |
+| `agent_id` + `session_id` | string | Together with tenant, the cross-layer session identity |
+| `trace_id` | string | One operation or request within the session |
+| `correlation_id` | string | Optional broader workflow or causal grouping |
 | `details` | object | Module-specific payload (hashes, scores, previews, latency) |
 
-Modules deliver events by POSTing them to the dashboard's ingest endpoint (`MONOLITH_DASHBOARD_URL`) with a per-module bearer token. Each module first spools the event to a **durable on-disk outbox**, then delivers it asynchronously with exponential backoff, so a dashboard outage costs delivery latency rather than evidence — a security tool must not lose a detection because the collector was restarting. Emission never blocks the detection path. The dashboard persists every event to a Postgres ledger before fanning it out to the browser over Server-Sent Events; `event_id` is the idempotency key, so a redelivered event is deduplicated rather than double-counted.
+Modules deliver events by POSTing them to the dashboard's ingest endpoint (`MONOLITH_DASHBOARD_URL`) with a per-tenant, per-module bearer token. Each module first spools the event to a **durable on-disk outbox**, then delivers it asynchronously with exponential backoff, so a dashboard outage costs delivery latency rather than evidence — a security tool must not lose a detection because the collector was restarting. Emission never blocks the detection path. The dashboard persists every event to a Postgres ledger before fanning it out to the browser over Server-Sent Events; `event_id` is the idempotency key, so a redelivered event is deduplicated rather than double-counted.
 
 ---
 
@@ -145,14 +158,16 @@ docker compose up -d --build     # build and start all five services
 ./run_full_demo.sh               # drive all three attacks, then verify the ledger
 ```
 
-The stack has **no default credentials**: the database password and the three
-per-module ingest tokens have to exist before anything starts, and Compose
-refuses to start without them rather than falling back to a weak default. That
-is what the first command is for — it writes 24 bytes of CSPRNG output per value
-into `.env`, which is gitignored and must never be committed. See
-[`.env.example`](.env.example) for what it sets and why.
+The stack has **no default credentials**: the database password, three
+per-module ingest tokens, operator token, and VectorAnchor admin token have to
+exist before anything starts. Compose refuses to start without them rather than
+falling back to a weak default. The first command writes 24 bytes of CSPRNG
+output per secret into `.env`, which is gitignored and must never be committed.
+See [`.env.example`](.env.example) for what it sets and why.
 
-Open **[http://localhost:3000](http://localhost:3000)** and watch detections stream in live as each fixture runs.
+Open **[http://localhost:3000](http://localhost:3000)** and sign in with
+`MONOLITH_OPERATOR_TOKEN` from the generated `.env`. The browser exchanges it
+for a revocable HttpOnly session and never stores the bootstrap token.
 
 | Service | Port | Interface |
 | :--- | :--- | :--- |
@@ -190,7 +205,7 @@ bash mcp-shield/fixtures/verify_outbox.sh   # (from mcp-shield/) no Docker neede
 bash scripts/verify_ingest.sh               # 16 checks against the ingest contract
 bash scripts/verify_recovery.sh             # kills the dashboard, proves nothing is lost
 bash scripts/verify_incidents.sh            # 33 checks on the incident lifecycle
-bash scripts/verify_correlation.sh          # 13 checks on cross-layer correlation
+bash scripts/verify_correlation.sh          # 16 checks on cross-layer correlation
 ```
 
 - **`verify_outbox.sh`** drives MCP-Shield's spool through three phases against
@@ -290,7 +305,13 @@ See [trace-audit/README.md](trace-audit/README.md) for the mock/Ollama backends 
 
 ### Dashboard &nbsp;<sub>Next.js 15 · React 19</sub>
 
-An authenticated ingest endpoint over a Postgres event ledger, plus a Server-Sent Events stream. Modules POST events to `/api/ingest` with a per-module bearer token; events are persisted before publication and keyed by `event_id` for idempotent redelivery. The browser subscribes to `/api/events` and is replayed the persisted history on connect, so a client that joins late — or after a restart — still sees what it missed. The UI presents a unified feed color-coded by module and severity, severity and module breakdowns, and average detection latency, on a pitch-black console with an optional light theme. See [dashboard/README.md](dashboard/README.md).
+An authenticated, tenant-scoped control plane over a Postgres event ledger,
+plus a Server-Sent Events stream. Modules POST events to `/api/ingest` with a
+tenant/module bearer token. Operators sign in with role-bearing credentials
+that become revocable HttpOnly browser sessions. Events are persisted before
+publication and keyed by `event_id` for idempotent redelivery. See
+[dashboard/README.md](dashboard/README.md) and the
+[identity and access model](docs/IDENTITY_AND_ACCESS.md).
 
 ---
 
@@ -345,7 +366,7 @@ project-black-monolith/
 - [x] Unified real-time dashboard and one-command Docker stack
 - [ ] Content-Length framing for MCP-Shield, alongside line-delimited
 - [ ] Semantic embeddings by default for VectorAnchor (sentence-transformers)
-- [ ] Persisted event history and filtering in the dashboard
+- [x] Persisted event history and filtering in the dashboard
 
 ---
 
