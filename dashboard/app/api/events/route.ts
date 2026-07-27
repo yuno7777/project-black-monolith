@@ -4,11 +4,15 @@
 import { getBroker } from "@/lib/event-ingest";
 import { listRecentEvents } from "@/lib/event-store";
 import type { MonolithEvent } from "@/lib/types";
+import { requireOperator } from "@/lib/route-auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
+  const identity = await requireOperator(req);
+  if (identity instanceof Response) return identity;
+
   const broker = getBroker();
   const encoder = new TextEncoder();
 
@@ -26,12 +30,12 @@ export async function GET(req: Request) {
       const send = (event: MonolithEvent) =>
         safeEnqueue(`data: ${JSON.stringify(event)}\n\n`);
 
-      const unsubscribe = broker.subscribe(send);
+      const unsubscribe = broker.subscribe(identity.tenant_id, send);
 
       // Subscribe first, then replay the committed ledger. The client dedupes
       // by event_id, so an event committed during the query cannot be missed.
       try {
-        const history = await listRecentEvents();
+        const history = await listRecentEvents(identity.tenant_id);
         for (const event of history.reverse()) send(event);
       } catch {
         safeEnqueue(`event: system\ndata: {"error":"history unavailable"}\n\n`);
