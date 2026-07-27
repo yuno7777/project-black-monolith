@@ -12,14 +12,19 @@ import {
   normalizeRun,
   persistRun,
 } from "@/lib/benchmark-store";
-import { authenticateOperator, OperatorAuthUnavailable } from "@/lib/operator-auth";
+import { requireOperator } from "@/lib/route-auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(req: Request) {
+  const identity = await requireOperator(req);
+  if (identity instanceof Response) return identity;
   try {
-    const [run, history] = await Promise.all([latestRun(), detectorHistory()]);
+    const [run, history] = await Promise.all([
+      latestRun(identity.tenant_id),
+      detectorHistory(identity.tenant_id),
+    ]);
     return Response.json({ run, history });
   } catch (error) {
     console.error("failed to read benchmark runs", error);
@@ -29,19 +34,8 @@ export async function GET() {
 
 export async function POST(req: Request) {
   // Authenticate before parsing, and fail closed if auth was never configured.
-  let actor: string | null;
-  try {
-    actor = authenticateOperator(req);
-  } catch (error) {
-    if (error instanceof OperatorAuthUnavailable) {
-      console.error("operator authentication is misconfigured", error);
-      return Response.json({ error: "operator authentication is unavailable" }, { status: 503 });
-    }
-    throw error;
-  }
-  if (!actor) {
-    return Response.json({ error: "invalid operator credential" }, { status: 401 });
-  }
+  const identity = await requireOperator(req, "analyst");
+  if (identity instanceof Response) return identity;
 
   let body: unknown;
   try {
@@ -56,7 +50,7 @@ export async function POST(req: Request) {
 
   let run;
   try {
-    run = normalizeRun(body);
+    run = normalizeRun(body, identity.tenant_id);
   } catch (error) {
     if (error instanceof BenchmarkInputError) {
       return Response.json({ error: error.message }, { status: 422 });
