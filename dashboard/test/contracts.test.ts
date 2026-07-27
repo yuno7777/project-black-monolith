@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { BenchmarkInputError, normalizeRun } from "../lib/benchmark-store";
 import { normalizeEvent } from "../lib/event-store";
 import { authenticateIngest } from "../lib/ingest-auth";
@@ -237,7 +241,12 @@ test("trust-model migration keeps the runtime role least-privileged", () => {
   const dbSource = readFileSync(new URL("../lib/db.ts", import.meta.url), "utf8");
   assert.match(
     sql,
-    /create role monolith_app\s+nologin\s+nosuperuser\s+nocreatedb\s+nocreaterole\s+noinherit\s+nobypassrls/i,
+    /create role monolith_app\s+nologin\s+nosuperuser\s+nocreatedb\s+nocreaterole\s+noinherit\s+noreplication\s+nobypassrls/i,
+  );
+  assert.doesNotMatch(sql, /^\s*(?:alter|drop)\s+(?:role|user)\b/im);
+  assert.match(
+    sql,
+    /from pg_roles[\s\S]*rolcanlogin[\s\S]*rolsuper[\s\S]*rolbypassrls[\s\S]*raise exception/i,
   );
   assert.match(sql, /on monolith\.security_events\s+for select\s+to monolith_app/i);
   assert.match(sql, /on monolith\.security_events\s+for insert\s+to monolith_app/i);
@@ -254,4 +263,29 @@ test("trust-model migration keeps the runtime role least-privileged", () => {
     dbSource,
     /set_config\('monolith\.session_hash', \$1, true\)/i,
   );
+});
+
+test("migration policy rejects privileged role mutations", () => {
+  const migrationsDir = mkdtempSync(join(tmpdir(), "monolith-migrations-"));
+  try {
+    writeFileSync(
+      join(migrationsDir, "unsafe.sql"),
+      "alter role monolith_app nosuperuser;\n",
+      "utf8",
+    );
+    const result = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL("../scripts/check-migrations.mjs", import.meta.url))],
+      {
+        encoding: "utf8",
+        env: { ...process.env, DATABASE_MIGRATIONS_DIR: migrationsDir },
+      },
+    );
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Privileged role DDL is not allowed/);
+    assert.match(result.stderr, /unsafe\.sql/);
+  } finally {
+    rmSync(migrationsDir, { recursive: true, force: true });
+  }
 });
