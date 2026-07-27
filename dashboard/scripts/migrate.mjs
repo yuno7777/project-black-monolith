@@ -32,6 +32,7 @@ try {
     if (applied.rowCount) continue;
 
     const sql = await readFile(join(migrationsDir, file), "utf8");
+    console.log(`[migrate] Applying ${file}`);
     await client.query("begin");
     try {
       await client.query(sql);
@@ -40,8 +41,14 @@ try {
         [file],
       );
       await client.query("commit");
+      console.log(`[migrate] Applied ${file}`);
     } catch (error) {
       await client.query("rollback");
+      const code =
+        typeof error === "object" && error !== null && "code" in error
+          ? ` (${String(error.code)})`
+          : "";
+      console.error(`[migrate] ${file} failed${code}`);
       throw error;
     }
   }
