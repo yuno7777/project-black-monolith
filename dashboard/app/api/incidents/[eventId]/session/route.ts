@@ -10,22 +10,25 @@
 // inventing a grouping.
 
 import { sessionForEvent } from "@/lib/incident-store";
+import { requireOperator } from "@/lib/route-auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export async function GET(_req: Request, context: { params: Promise<{ eventId: string }> }) {
+export async function GET(req: Request, context: { params: Promise<{ eventId: string }> }) {
+  const identity = await requireOperator(req);
+  if (identity instanceof Response) return identity;
   const { eventId } = await context.params;
   if (!UUID_PATTERN.test(eventId)) {
     return Response.json({ error: "event_id must be a UUID" }, { status: 422 });
   }
   try {
-    const session = await sessionForEvent(eventId);
+    const session = await sessionForEvent(eventId, identity.tenant_id);
     if (!session) {
       return Response.json(
-        { error: "this event carries no session id, so it cannot be correlated" },
+        { error: "this event carries no complete agent/session identity, so it cannot be correlated" },
         { status: 404 },
       );
     }
