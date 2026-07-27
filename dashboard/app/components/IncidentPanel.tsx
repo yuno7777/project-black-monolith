@@ -36,15 +36,17 @@ export interface TransitionRequest {
 
 export default function IncidentPanel({
   incident,
+  canTransition,
   onTransition,
   onClose,
   onSelectSession,
 }: {
   incident: Incident;
+  canTransition: boolean;
   onTransition: (t: TransitionRequest) => Promise<string | null>;
   onClose: () => void;
   /** Show every detection from this agent session in the queue. */
-  onSelectSession?: (sessionId: string) => void;
+  onSelectSession?: (sessionId: string, agentId: string) => void;
 }) {
   const status = incident.triage?.status ?? "new";
   const accent = MODULE_ACCENT[incident.module] ?? "var(--ink-faint)";
@@ -185,7 +187,10 @@ export default function IncidentPanel({
             <div className="session-foot">
               <span className="mono-id">{session.session_id}</span>
               {onSelectSession ? (
-                <button className="ghost-btn" onClick={() => onSelectSession(session.session_id)}>
+                <button
+                  className="ghost-btn"
+                  onClick={() => onSelectSession(session.session_id, session.agent_id)}
+                >
                   Show all {session.total}
                 </button>
               ) : null}
@@ -204,6 +209,11 @@ export default function IncidentPanel({
         ) : null}
 
         <div className="panel-label">Triage</div>
+        {!canTransition ? (
+          <div className="panel-muted">
+            Viewer access — an analyst or admin role is required to change incident state.
+          </div>
+        ) : null}
         <textarea
           className="panel-input"
           rows={2}
@@ -211,6 +221,7 @@ export default function IncidentPanel({
           onChange={(e) => setNote(e.target.value)}
           placeholder="Add a note (recorded in the audit trail)…"
           maxLength={2000}
+          disabled={!canTransition}
         />
 
         {error ? <div className="panel-error">{error}</div> : null}
@@ -218,7 +229,7 @@ export default function IncidentPanel({
         <div className="panel-actions">
           <button
             className="act"
-            disabled={busy || status === "acknowledged"}
+            disabled={!canTransition || busy || status === "acknowledged"}
             onClick={() => run({ status: "acknowledged", assign_to_me: true, note: note || undefined })}
           >
             <IconEye size={14} />
@@ -231,7 +242,7 @@ export default function IncidentPanel({
               value={resolution}
               onChange={(e) => setResolution(e.target.value as Resolution)}
               aria-label="Resolution"
-              disabled={busy}
+              disabled={!canTransition || busy}
             >
               {RESOLUTIONS.map((r) => (
                 <option key={r} value={r}>
@@ -241,7 +252,7 @@ export default function IncidentPanel({
             </select>
             <button
               className="act primary"
-              disabled={busy}
+              disabled={!canTransition || busy}
               onClick={() =>
                 // No assignee: omitting it leaves the existing owner alone, and
                 // resolving someone else's case must not silently reassign it.
@@ -256,7 +267,7 @@ export default function IncidentPanel({
           {status === "resolved" ? (
             <button
               className="act"
-              disabled={busy}
+              disabled={!canTransition || busy}
               onClick={() => run({ status: "new", note: note || undefined })}
             >
               Reopen

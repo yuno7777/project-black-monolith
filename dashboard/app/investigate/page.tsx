@@ -7,7 +7,7 @@ import { KNOWN_MODULES, MODULE_ACCENT, MODULE_LABELS, STATUS_LABELS } from "@/li
 import Sidebar, { Rail } from "../components/Sidebar";
 import ThemeToggle from "../components/ThemeToggle";
 import IncidentPanel, { type TransitionRequest } from "../components/IncidentPanel";
-import { useOperatorToken } from "../components/useOperatorToken";
+import OperatorBadge from "../components/OperatorBadge";
 import { ModuleGlyph, SevIcon, IconSearch, IconUser, IconLedger } from "../components/Icons";
 
 type StatusTab = IncidentStatus | "open" | "all";
@@ -48,7 +48,6 @@ function InvestigateConsole() {
   // silently never open, so a deep link widens them to "all".
   const deepLinkId = useSearchParams().get("event");
 
-  const [token, setToken] = useOperatorToken();
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [status, setStatus] = useState<StatusTab>(deepLinkId ? "all" : "open");
@@ -56,8 +55,9 @@ function InvestigateConsole() {
   const [module, setModule] = useState<string | null>(null);
   const [windowKey, setWindowKey] = useState(deepLinkId ? "all" : "24h");
   const [query, setQuery] = useState("");
-  const [sessionFilter, setSessionFilter] = useState<string | null>(null);
+  const [sessionFilter, setSessionFilter] = useState<{ session: string; agent: string } | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(deepLinkId);
+  const [canTriage, setCanTriage] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -77,7 +77,10 @@ function InvestigateConsole() {
     const params = new URLSearchParams({ status, severity, limit: "300" });
     if (module) params.set("module", module);
     if (debouncedQuery) params.set("q", debouncedQuery);
-    if (sessionFilter) params.set("session", sessionFilter);
+    if (sessionFilter) {
+      params.set("session", sessionFilter.session);
+      params.set("agent", sessionFilter.agent);
+    }
     const win = WINDOWS.find((w) => w.key === windowKey);
     if (win?.ms) params.set("since_ms", String(Date.now() - win.ms));
 
@@ -101,6 +104,23 @@ function InvestigateConsole() {
     load();
   }, [load]);
 
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/auth/session")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((identity) => {
+        if (!cancelled) {
+          setCanTriage(identity?.role === "analyst" || identity?.role === "admin");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setCanTriage(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // The queue is a working surface, not a live feed: re-sorting under an
   // analyst's cursor mid-triage would be hostile. Pick up new events on a slow
   // poll instead of subscribing to the SSE stream.
@@ -123,14 +143,10 @@ function InvestigateConsole() {
 
   const transition = useCallback(
     async (eventId: string, t: TransitionRequest): Promise<string | null> => {
-      if (!token) return "paste your operator token first — triage is authenticated";
       try {
         const res = await fetch("/api/incidents", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
+          headers: { "Content-Type": "application/json" },
           // No actor: the server derives it from the token, so this request
           // cannot claim to be someone else.
           body: JSON.stringify({ ...t, event_id: eventId }),
@@ -149,7 +165,7 @@ function InvestigateConsole() {
         return "could not reach the ledger";
       }
     },
-    [token, load],
+    [load],
   );
 
   const openCount = counts.open ?? 0;
@@ -159,8 +175,8 @@ function InvestigateConsole() {
   // does: the point is to see everything that agent did, and a 24h/open default
   // would hide exactly the older or already-resolved events that make the
   // session worth looking at.
-  const focusSession = (id: string) => {
-    setSessionFilter(id);
+  const focusSession = (session: string, agent: string) => {
+    setSessionFilter({ session, agent });
     setStatus("all");
     setWindowKey("all");
   };
@@ -194,19 +210,7 @@ function InvestigateConsole() {
             </div>
 
             <div className="topbar-right">
-              <span className={`analyst${token ? "" : " unset"}`}>
-                <IconUser size={13} />
-                <input
-                  type="password"
-                  value={token}
-                  onChange={(e) => setToken(e.target.value)}
-                  placeholder="operator token"
-                  aria-label="Operator token"
-                  title="Authenticates your triage actions. The name recorded in the audit trail is derived from this token."
-                  spellCheck={false}
-                  autoComplete="off"
-                />
-              </span>
+              <OperatorBadge />
               <ThemeToggle />
             </div>
           </div>
@@ -219,7 +223,8 @@ function InvestigateConsole() {
                 title="Stop filtering by this agent session"
               >
                 <IconUser size={12} />
-                session <span className="mono-id">{sessionFilter}</span>
+                agent <span className="mono-id">{sessionFilter.agent}</span>
+                session <span className="mono-id">{sessionFilter.session}</span>
                 <span className="sc-x">clear</span>
               </button>
             ) : null}
@@ -335,6 +340,7 @@ function InvestigateConsole() {
               <div className="stack">
                 <IncidentPanel
                   incident={selected}
+                  canTransition={canTriage}
                   onTransition={(t) => transition(selected.event_id, t)}
                   onClose={() => setSelectedId(null)}
                   onSelectSession={focusSession}

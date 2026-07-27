@@ -5,6 +5,7 @@ import { KNOWN_MODULES, MODULE_ACCENT, MODULE_LABELS, MODULE_LAYER } from "@/lib
 import type { BenchmarkDetector, BenchmarkRun } from "@/lib/benchmark-store";
 import { Rail } from "../components/Sidebar";
 import ThemeToggle from "../components/ThemeToggle";
+import OperatorBadge from "../components/OperatorBadge";
 import { ModuleGlyph, IconGauge, IconBolt } from "../components/Icons";
 
 function pct(x: number): string {
@@ -158,6 +159,7 @@ export default function BenchmarksPage() {
               </div>
             </div>
             <div className="topbar-right">
+              <OperatorBadge />
               <ThemeToggle />
             </div>
           </div>
