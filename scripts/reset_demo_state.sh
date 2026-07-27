@@ -13,6 +13,8 @@
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
+if [ -f .env ]; then set -a; . ./.env; set +a; fi
+ADMIN_TOKEN="${MONOLITH_ADMIN_TOKEN:-}"
 
 say() { printf '  %s\n' "$*"; }
 
@@ -32,15 +34,17 @@ if command -v docker >/dev/null 2>&1 && [ -n "$(docker compose ps -q 2>/dev/null
     docker compose exec -T mcp-shield sh -c 'rm -f /tmp/baseline_hashes.json' 2>/dev/null \
         && say "  mcp-shield: baseline reset"
     # VectorAnchor: clear the in-memory tracker + quarantine (corpus is kept).
-    docker compose exec -T vector-anchor curl -fs -X POST \
-        http://localhost:8001/admin/reset-detection >/dev/null 2>&1 \
+    docker compose exec -T vector-anchor sh -c \
+        'curl -fs -X POST http://localhost:8001/admin/reset-detection -H "Authorization: Bearer $MONOLITH_ADMIN_TOKEN"' \
+        >/dev/null 2>&1 \
         && say "  vector-anchor: quarantine + tracker reset"
     # Dashboard event history is an in-memory ring buffer — a restart clears it.
     docker compose restart dashboard >/dev/null 2>&1 \
         && say "  dashboard: event history cleared (restarted)"
 else
     # --- 3. Local (non-Docker) services, if reachable ------------------
-    if curl -fs -X POST http://localhost:8001/admin/reset-detection >/dev/null 2>&1; then
+    if curl -fs -X POST http://localhost:8001/admin/reset-detection \
+        -H "Authorization: Bearer $ADMIN_TOKEN" >/dev/null 2>&1; then
         say "vector-anchor (localhost:8001): quarantine + tracker reset"
     fi
     say "note: the dashboard event history is in-memory; restart the dashboard"

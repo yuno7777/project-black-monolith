@@ -15,6 +15,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
+set -a; . ./.env; set +a
+OP="${MONOLITH_OPERATOR_TOKEN:?set MONOLITH_OPERATOR_TOKEN in .env}"
 
 DASH_PORT="${DASH_PORT:-3000}"
 VA_PORT="${VA_PORT:-8001}"
@@ -91,7 +93,8 @@ MONOLITH_DASHBOARD_URL="$DASH_URL" bash mcp-shield/fixtures/run_demo.sh 2>&1 \
 
 echo; echo "== ATTACK 2/3 — VectorAnchor corpus poisoning =="
 export MONOLITH_SERVICE_URL="http://localhost:${VA_PORT}"
-curl -s -X POST "$MONOLITH_SERVICE_URL/admin/reset-detection" >/dev/null || true
+curl -s -X POST "$MONOLITH_SERVICE_URL/admin/reset-detection" \
+  -H "Authorization: Bearer $MONOLITH_ADMIN_TOKEN" >/dev/null || true
 "$PY" vector-anchor/fixtures/seed_corpus.py
 for q in "how to compost kitchen scraps for my garden" "how do astronomers measure distance to a nebula" \
          "how to sear a steak so the meat stays juicy" "how to pay off high interest credit card debt"; do
@@ -102,7 +105,8 @@ for q in "how do I prune tomato plants in my garden" "what is a red giant star i
          "how long should I boil pasta noodles" "how much emergency fund and savings should I budget"; do
   curl -s -X POST "$MONOLITH_SERVICE_URL/retrieve" -H 'Content-Type: application/json' -d "{\"query\":\"$q\"}" >/dev/null
 done
-echo "  quarantine: $(curl -s "$MONOLITH_SERVICE_URL/quarantine" | "$PY" -c 'import sys,json;d=json.load(sys.stdin);print(d["count"],"doc(s):",[x["doc_id"] for x in d["documents"]])')"
+echo "  quarantine: $(curl -s -H "Authorization: Bearer $MONOLITH_ADMIN_TOKEN" \
+  "$MONOLITH_SERVICE_URL/quarantine" | "$PY" -c 'import sys,json;d=json.load(sys.stdin);print(d["count"],"doc(s):",[x["doc_id"] for x in d["documents"]])')"
 
 echo; echo "== ATTACK 3/3 — TraceAudit divergence + PII =="
 export MONOLITH_SERVICE_URL="http://localhost:${TA_PORT}"
@@ -112,7 +116,8 @@ export MONOLITH_SERVICE_URL="http://localhost:${TA_PORT}"
 # ======================================================================
 sleep 2
 echo; echo "== dashboard received =="
-curl -sN --max-time 3 "http://localhost:${DASH_PORT}/api/events" | grep '^data:' | sed 's/^data: //' \
+curl -sN --max-time 3 -H "Authorization: Bearer $OP" \
+  "http://localhost:${DASH_PORT}/api/events" | grep '^data:' | sed 's/^data: //' \
   | "$PY" -c '
 import sys, json, collections
 mods=collections.Counter(); types=collections.Counter()

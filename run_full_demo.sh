@@ -13,6 +13,9 @@
 
 set -uo pipefail
 cd "$(dirname "$0")"
+set -a; . ./.env; set +a
+OP="${MONOLITH_OPERATOR_TOKEN:?set MONOLITH_OPERATOR_TOKEN in .env}"
+AUTH_HEADER="Authorization: Bearer $OP"
 
 DC="docker compose"
 PAUSE="${DEMO_PAUSE:-3}"   # seconds between phases, so events are easy to follow
@@ -75,7 +78,9 @@ sleep "$PAUSE"
 # ═══════════════════════════════════════════════════════════════════════
 hr; say "ATTACK 2/3 — VectorAnchor: corpus poisoning / universal bait (memory layer)"; hr
 say "  Resetting detection state and seeding a clean corpus…"
-$DC exec -T vector-anchor curl -s -X POST http://localhost:8001/admin/reset-detection >/dev/null || true
+$DC exec -T vector-anchor sh -c \
+    'curl -s -X POST http://localhost:8001/admin/reset-detection -H "Authorization: Bearer $MONOLITH_ADMIN_TOKEN"' \
+    >/dev/null || true
 $DC exec -T vector-anchor python fixtures/seed_corpus.py || true
 
 say "  Running clean, on-topic queries (expect no quarantine)…"
@@ -105,7 +110,9 @@ for q in \
         -d "{\"query\":\"$q\"}" >/dev/null || true
 done
 say "  Quarantine state:"
-$DC exec -T vector-anchor curl -s http://localhost:8001/quarantine || true
+$DC exec -T vector-anchor sh -c \
+    'curl -s http://localhost:8001/quarantine -H "Authorization: Bearer $MONOLITH_ADMIN_TOKEN"' \
+    || true
 echo
 sleep "$PAUSE"
 
@@ -130,7 +137,7 @@ hr; say "VERIFYING — did every attack actually reach the ledger?"; hr
 # so each check is given a few seconds to arrive.
 expect() { # event_type  human-label
     for _ in $(seq 1 20); do
-        if curl -sf "http://localhost:3000/api/incidents?status=all&since_ms=$START_MS&limit=500" 2>/dev/null \
+        if curl -sf -H "$AUTH_HEADER" "http://localhost:3000/api/incidents?status=all&since_ms=$START_MS&limit=500" 2>/dev/null \
              | grep -q "\"$1\""; then
             printf '  \033[32m[OK]\033[0m   %s\n' "$2"; return 0
         fi
@@ -147,7 +154,7 @@ expect pii_redacted                   "TraceAudit redacted the fake credential" 
 
 # The point of the session id is that the three layers correlate. Assert it,
 # rather than trusting that the plumbing held.
-LAYERS=$(curl -sf "http://localhost:3000/api/incidents?status=all&q=$SESSION_ID&limit=500" 2>/dev/null \
+LAYERS=$(curl -sf -H "$AUTH_HEADER" "http://localhost:3000/api/incidents?status=all&q=$SESSION_ID&limit=500" 2>/dev/null \
     | grep -o '"module":"[a-z-]*"' | sort -u | wc -l | tr -d ' ')
 printf '  %s   all three layers reported under one session (%s/3 modules)\n' \
     "$([ "${LAYERS:-0}" -eq 3 ] && printf '\033[32m[OK]\033[0m ' || printf '\033[31m[FAIL]\033[0m')" "${LAYERS:-0}"
