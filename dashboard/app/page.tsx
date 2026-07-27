@@ -9,6 +9,7 @@ import ThreatFeed from "./components/ThreatFeed";
 import ModuleBars from "./components/ModuleBars";
 import SeverityDonut from "./components/SeverityDonut";
 import ThemeToggle from "./components/ThemeToggle";
+import OperatorBadge from "./components/OperatorBadge";
 import { IconIntercept, IconActivity, IconAlert, IconBolt, IconSearch, IconLedger } from "./components/Icons";
 
 // End-to-end latency, as reported by the detectors: this averages
@@ -54,7 +55,7 @@ export default function Page() {
   const [now, setNow] = useState<string>("");
   const [openIncidents, setOpenIncidents] = useState<number | null>(null);
   const [triageByEvent, setTriageByEvent] = useState<Map<string, IncidentStatus>>(new Map());
-  const seen = useRef<Set<number>>(new Set());
+  const seen = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const tick = () => setNow(new Date().toLocaleTimeString([], { hour12: false }));
@@ -70,11 +71,20 @@ export default function Page() {
     es.onmessage = (msg) => {
       try {
         const evt = JSON.parse(msg.data) as MonolithEvent;
-        if (evt.seq !== undefined) {
-          if (seen.current.has(evt.seq)) return;
-          seen.current.add(evt.seq);
-        }
-        setEvents((prev) => [evt, ...prev].slice(0, 500));
+        if (!evt.event_id || seen.current.has(evt.event_id)) return;
+        seen.current.add(evt.event_id);
+        // Subscribe-before-replay prevents gaps, but a just-committed live
+        // event can arrive before older replay frames. Sort by collector time
+        // after de-duplication so that safe ordering cannot put stale evidence
+        // above the latest event.
+        setEvents((prev) =>
+          [evt, ...prev]
+            .sort(
+              (a, b) =>
+                (b.received_ms ?? b.timestamp_ms) - (a.received_ms ?? a.timestamp_ms),
+            )
+            .slice(0, 500),
+        );
       } catch {
         /* ignore malformed frame */
       }
@@ -212,6 +222,7 @@ export default function Page() {
                 <span className={`dot${connected ? " live" : ""}`} />
                 {connected ? "Live" : "Disconnected"}
               </span>
+              <OperatorBadge />
               <ThemeToggle />
             </div>
           </div>

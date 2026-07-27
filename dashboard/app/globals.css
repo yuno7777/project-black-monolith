@@ -692,3 +692,44 @@ option {
 .bm-lat-sub { font-size: 10.5px; color: var(--ink-dim); }
 
 .bm-notes { margin-top: 12px; font-size: 11px; line-height: 1.5; color: var(--ink-faint); }
+
+/* Authenticated operator session ------------------------------------------ */
+.login-shell {
+  min-height: 100vh; display: grid; place-items: center; padding: 28px;
+  background:
+    radial-gradient(circle at 50% 18%, color-mix(in srgb, var(--mod-mcp) 12%, transparent), transparent 34%),
+    var(--canvas);
+}
+.login-theme { position: fixed; top: 22px; right: 22px; }
+.login-card { width: min(440px, 100%); display: grid; gap: 18px; padding: 34px; }
+.login-logo { display: inline-flex; }
+.login-kicker {
+  color: var(--ink-faint); font-size: 11px; font-weight: 700;
+  letter-spacing: .14em; text-transform: uppercase; margin-bottom: 6px;
+}
+.login-card h1 { margin: 0; font-size: 25px; letter-spacing: -.035em; }
+.login-card p { margin: 9px 0 0; color: var(--ink-muted); font-size: 13px; line-height: 1.6; }
+.login-label {
+  color: var(--ink-muted); font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .08em;
+}
+.login-input {
+  width: 100%; border: 1px solid var(--line); border-radius: 7px; padding: 12px 13px;
+  background: var(--card-2); color: var(--ink); font: 13px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace;
+  outline: none;
+}
+.login-input:focus {
+  border-color: color-mix(in srgb, var(--mod-mcp) 65%, var(--line));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--mod-mcp) 12%, transparent);
+}
+.login-submit { min-height: 40px; justify-content: center; }
+.operator-badge {
+  display: inline-flex; align-items: center; gap: 7px; min-height: 30px; padding: 0 9px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--card);
+  color: var(--ink-muted); font: inherit; font-size: 11px; cursor: pointer;
+}
+.operator-badge:hover { color: var(--ink); border-color: var(--line-strong); }
+.operator-role {
+  color: var(--ink-faint); font-size: 9px; font-weight: 700;
+  letter-spacing: .08em; text-transform: uppercase;
+}
