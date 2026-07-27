@@ -188,14 +188,14 @@ attacker buys one serving and must stay poisoned to stay hidden.
 - **A latent poison-pill was found and fixed.** `event_id` is a Postgres `uuid`
   column, so a non-UUID value failed the insert with `22P02`, surfaced as a 503,
   and would have been retried **forever** by the outboxes — which correctly
-  treat 5xx as transient. It is now rejected as a permanent 422. The existing
-  malformed-event test (§5) never caught this because it never sends an
-  `event_id` at all.
+  treat 5xx as transient. It is now rejected as a permanent 422. The earlier
+  malformed-event test (§5) never caught this because it did not send an
+  `event_id`; the current contract test does.
 - **Cold-start also validated Docker-free**, via `scripts/run_local_demo.sh` —
   the local equivalent of the full stack (dashboard :3000, VectorAnchor :8001,
   TraceAudit :8002 as background processes with `MONOLITH_DASHBOARD_URL` set).
   It was run **3× from a clean state**; every run brought all services up with
-  no manual intervention (fresh dashboard, `buffered:0`), drove all three
+  no manual intervention (fresh dashboard health check), drove all three
   attacks, delivered **19 events** to the dashboard (`schema_mismatch` ×2,
   `corpus_poison_quarantine` ×1, `reasoning_divergence_terminate` ×1,
   `pii_redacted` ×2, plus lifecycle events), and tore down cleanly with all
@@ -207,20 +207,21 @@ attacker buys one serving and must stay poisoned to stay hidden.
 
 ## 5. Dashboard — malformed-event resilience
 
-**Test.** `dashboard/test/malformed-event.test.mjs` posts 11 malformed /
-incomplete events (empty object, missing fields, invalid severity, `null` /
-string / array `details`, non-numeric timestamp, a bare string body, and
-nested `null`/`undefined` values) into the real `/api/ingest` path, then reads
-them back over the `/api/events` SSE stream.
+**Test.** `dashboard/test/malformed-event.test.mjs` now exercises the
+authenticated contract. It expects five invalid envelopes (missing required
+identity, bare scalar, malformed UUID) to return permanent `422` responses,
+then submits five events with malformed optional fields and verifies their
+tenant-scoped replay over the authenticated `/api/events` stream.
 
-**Result: PASSED — 20 streamed events all normalized.** Every event came back
-with a numeric timestamp, non-empty string `module`/`event_type`, a valid
-severity, and an object `details`; **none serialized with a literal
-"undefined"**. The ingest broker coerces missing/invalid fields to safe
-defaults (`module`/`event_type` → `"unknown"`, `severity` → `"info"`,
-`details` → `{}`), and the frontend components (`EventDetail`, `ThreatFeed`)
-were hardened to render a `(no details)` placeholder and a safe timestamp
-rather than crash or show `undefined`.
+The strict boundary is intentional: `module`, `event_type`, tenant/module
+credential scope, and UUID idempotency cannot be guessed safely. Optional
+`severity`, timestamp, and `details` can be normalized to safe values.
+
+**Current live result after the trust-model update: NOT MEASURED.** The updated
+integration test needs a running dashboard and migrated Postgres database. It
+was deliberately not run during the non-Docker validation pass. The same
+normalization and rejection rules are covered by the dashboard's executable
+unit contract suite.
 
 ---
 
@@ -249,9 +250,9 @@ lifecycle against the live stack, and asserts the invariants.
 
 Two design points the tests pin down:
 
-- **Append-only is enforced by a trigger, not a `REVOKE`.** A `REVOKE` does not
-  bind the table's owner, which is the role the application connects as, so it
-  would have been a comment rather than a control.
+- **Append-only has independent controls.** The runtime role has no
+  `UPDATE`/`DELETE` grant, and a trigger also binds the table owner or an
+  administrative connection.
 - **The actor is derived from the credential, never from the request.** Triage
   requires an operator token, separate from the per-module ingest tokens — if a
   module token worked here, any module could close its own findings. The body's
@@ -260,11 +261,13 @@ Two design points the tests pin down:
   refuses every write**: an authenticator that was never set up must not be
   mistaken for one that passed.
 
-  **Remaining gap, stated plainly:** `GET /api/incidents` is still
-  unauthenticated, and the token is a bearer credential in `localStorage` with
-  no sessions, expiry or rotation. The trail is now tamper-evident *and*
-  attributable on a single-operator stack; it is not an identity layer, and a
-  multi-user deployment needs real sessions in front of these routes.
+  **Current boundary, stated plainly:** dashboard reads now require a viewer,
+  triage writes require an analyst, and browsers exchange the bootstrap token
+  for an opaque, revocable, expiring HttpOnly session. Actor, role and tenant
+  are all derived server-side. Tenant predicates are present in application
+  queries, and each store operation also binds transaction-local tenant context
+  that RLS checks independently. Missing context matches no tenant, and pooled
+  connections cannot carry the context past transaction end.
 
 ---
 
@@ -470,8 +473,10 @@ cd mcp-shield    && cargo test --release benchmark -- --ignored --nocapture
 cd vector-anchor && python fixtures/benchmark.py
 cd trace-audit   && python fixtures/benchmark.py
 
-# Dashboard malformed-event ingest test (needs the dashboard running)
-cd dashboard && npm start &  BASE=http://localhost:3000 node test/malformed-event.test.mjs
+# Dashboard malformed-event ingest test (needs the dashboard + Postgres running)
+cd dashboard
+set -a; . ../.env; set +a
+BASE=http://localhost:3000 node test/malformed-event.test.mjs
 
 # Delivery guarantees. The outbox phases need no Docker; the other two run
 # against a live `docker compose up -d` stack.
@@ -479,7 +484,7 @@ cd mcp-shield && bash fixtures/verify_outbox.sh
 bash scripts/verify_ingest.sh            # 16 ingest-contract checks
 bash scripts/verify_recovery.sh          # stops/restarts the dashboard; removes no data
 bash scripts/verify_incidents.sh         # 33 incident-lifecycle checks
-bash scripts/verify_correlation.sh       # 13 cross-layer correlation checks
+bash scripts/verify_correlation.sh       # 16 cross-layer correlation checks
 bash scripts/verify_benchmarks.sh        # 12 benchmark-ledger checks
 
 # Detection-accuracy benchmark: score every detector + upload to the dashboard.
