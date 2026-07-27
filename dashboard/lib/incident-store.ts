@@ -1,4 +1,4 @@
-import { getDb } from "@/lib/db";
+import { withTenantDb } from "@/lib/db";
 import type {
   AuditEntry,
   Incident,
@@ -28,6 +28,7 @@ type IncidentRow = {
   event_type: string;
   severity: Severity;
   details: Record<string, unknown>;
+  tenant_id: string;
   correlation_id: string | null;
   session_id: string | null;
   trace_id: string | null;
@@ -66,6 +67,7 @@ function toIncident(row: IncidentRow): Incident {
     event_type: row.event_type,
     severity: row.severity,
     details: row.details ?? {},
+    tenant_id: row.tenant_id,
     correlation_id: row.correlation_id ?? undefined,
     session_id: row.session_id ?? undefined,
     trace_id: row.trace_id ?? undefined,
@@ -76,20 +78,23 @@ function toIncident(row: IncidentRow): Incident {
 }
 
 export interface IncidentQuery {
+  tenant_id: string;
   status?: IncidentStatus | "open" | "all" | "triaged";
   severity?: Severity | "all";
   module?: string | "all";
   /** Exact agent session — the cross-layer key. */
   session?: string;
+  agent?: string;
   q?: string;
   since_ms?: number;
   limit?: number;
 }
 
-export async function listIncidents(query: IncidentQuery = {}): Promise<Incident[]> {
+export async function listIncidents(query: IncidentQuery): Promise<Incident[]> {
   const where: string[] = [];
   const params: unknown[] = [];
   const add = (value: unknown) => `$${params.push(value)}`;
+  where.push(`e.tenant_id = ${add(query.tenant_id)}`);
 
   const status = query.status ?? "open";
   if (status === "open") {
@@ -116,6 +121,9 @@ export async function listIncidents(query: IncidentQuery = {}): Promise<Incident
   if (query.session) {
     where.push(`e.session_id = ${add(query.session)}`);
   }
+  if (query.agent) {
+    where.push(`e.agent_id = ${add(query.agent)}`);
+  }
   if (query.q) {
     // Free text across the fields an analyst would actually search by. The
     // details cast lets a search hit inside the payload (e.g. a tool name),
@@ -137,57 +145,62 @@ export async function listIncidents(query: IncidentQuery = {}): Promise<Incident
 
   const limit = Math.max(1, Math.min(query.limit ?? 200, 1_000));
 
-  const result = await getDb().query<IncidentRow>(
-    `select
-       e.event_id, e.schema_version, e.occurred_at_ms,
-       (extract(epoch from e.received_at) * 1000)::bigint as received_ms,
-       e.module, e.event_type, e.severity, e.details,
-       e.correlation_id, e.session_id, e.trace_id, e.agent_id, e.outcome,
-       t.status, t.assignee, t.note, t.resolution,
-       (extract(epoch from t.updated_at) * 1000)::bigint as updated_ms,
-       t.updated_by
-     from monolith.security_events e
-     left join monolith.incident_triage t using (event_id)
-     ${where.length ? `where ${where.join(" and ")}` : ""}
-     order by
-       -- Worst-first, then newest-first: the queue should open on the thing
-       -- that matters most, not merely the thing that happened last.
-       case e.severity when 'critical' then 0 when 'warning' then 1 else 2 end,
-       e.received_at desc
-     limit ${add(limit)}`,
-    params,
-  );
-  return result.rows.map(toIncident);
+  return withTenantDb(query.tenant_id, async (db) => {
+    const result = await db.query<IncidentRow>(
+      `select
+         e.event_id, e.schema_version, e.occurred_at_ms,
+         (extract(epoch from e.received_at) * 1000)::bigint as received_ms,
+         e.module, e.event_type, e.severity, e.details, e.tenant_id,
+         e.correlation_id, e.session_id, e.trace_id, e.agent_id, e.outcome,
+         t.status, t.assignee, t.note, t.resolution,
+         (extract(epoch from t.updated_at) * 1000)::bigint as updated_ms,
+         t.updated_by
+       from monolith.security_events e
+       left join monolith.incident_triage t using (event_id)
+       ${where.length ? `where ${where.join(" and ")}` : ""}
+       order by
+         -- Worst-first, then newest-first: the queue should open on the thing
+         -- that matters most, not merely the thing that happened last.
+         case e.severity when 'critical' then 0 when 'warning' then 1 else 2 end,
+         e.received_at desc
+       limit ${add(limit)}`,
+      params,
+    );
+    return result.rows.map(toIncident);
+  });
 }
 
-export async function getAuditTrail(eventId: string): Promise<AuditEntry[]> {
-  const result = await getDb().query<{
-    audit_id: string;
-    at_ms: string;
-    actor: string;
-    from_status: IncidentStatus | null;
-    to_status: IncidentStatus;
-    assignee: string | null;
-    resolution: Resolution | null;
-    note: string | null;
-  }>(
-    `select audit_id, (extract(epoch from at) * 1000)::bigint as at_ms,
-            actor, from_status, to_status, assignee, resolution, note
-     from monolith.incident_audit
-     where event_id = $1
-     order by at desc, audit_id desc`,
-    [eventId],
-  );
-  return result.rows.map((r) => ({
-    audit_id: Number(r.audit_id),
-    at_ms: Number(r.at_ms),
-    actor: r.actor,
-    from_status: r.from_status ?? undefined,
-    to_status: r.to_status,
-    assignee: r.assignee ?? undefined,
-    resolution: r.resolution ?? undefined,
-    note: r.note ?? undefined,
-  }));
+export async function getAuditTrail(eventId: string, tenantId: string): Promise<AuditEntry[]> {
+  return withTenantDb(tenantId, async (db) => {
+    const result = await db.query<{
+      audit_id: string;
+      at_ms: string;
+      actor: string;
+      from_status: IncidentStatus | null;
+      to_status: IncidentStatus;
+      assignee: string | null;
+      resolution: Resolution | null;
+      note: string | null;
+    }>(
+      `select audit_id, (extract(epoch from at) * 1000)::bigint as at_ms,
+              actor, from_status, to_status, assignee, resolution, note
+       from monolith.incident_audit a
+       join monolith.security_events e using (event_id)
+       where a.event_id = $1 and e.tenant_id = $2
+       order by at desc, audit_id desc`,
+      [eventId, tenantId],
+    );
+    return result.rows.map((r) => ({
+      audit_id: Number(r.audit_id),
+      at_ms: Number(r.at_ms),
+      actor: r.actor,
+      from_status: r.from_status ?? undefined,
+      to_status: r.to_status,
+      assignee: r.assignee ?? undefined,
+      resolution: r.resolution ?? undefined,
+      note: r.note ?? undefined,
+    }));
+  });
 }
 
 export interface SessionLayer {
@@ -197,8 +210,9 @@ export interface SessionLayer {
 }
 
 export interface SessionView {
+  tenant_id: string;
   session_id: string;
-  agent_id?: string;
+  agent_id: string;
   layers: SessionLayer[];
   total: number;
   /** True once more than one defense layer has flagged the same session. */
@@ -214,82 +228,93 @@ export interface SessionView {
  * is a detection; the same session tripping the tool, memory *and* reasoning
  * layers is a compromised agent, and no single module can see that.
  */
-export async function sessionForEvent(eventId: string): Promise<SessionView | null> {
-  const db = getDb();
-  const owner = await db.query<{ session_id: string | null; agent_id: string | null }>(
-    "select session_id, agent_id from monolith.security_events where event_id = $1",
-    [eventId],
-  );
-  const session = owner.rows[0]?.session_id;
-  // An event with no session cannot be correlated — say so rather than
-  // inventing a grouping.
-  if (!session) return null;
+export async function sessionForEvent(eventId: string, tenantId: string): Promise<SessionView | null> {
+  return withTenantDb(tenantId, async (db) => {
+    const owner = await db.query<{ session_id: string | null; agent_id: string | null }>(
+      `select session_id, agent_id from monolith.security_events
+       where event_id = $1 and tenant_id = $2`,
+      [eventId, tenantId],
+    );
+    const session = owner.rows[0]?.session_id;
+    const agent = owner.rows[0]?.agent_id;
+    // An event with no session cannot be correlated — say so rather than
+    // inventing a grouping.
+    if (!session || !agent) return null;
 
-  const result = await db.query<{
-    module: string;
-    events: string;
-    worst: Severity;
-    first_ms: string;
-    last_ms: string;
-  }>(
-    `select
-       module,
-       count(*)::bigint as events,
-       -- "worst" must be by severity rank, not alphabetical: 'critical' < 'info'
-       -- as text would quietly report a critical session as informational.
-       (array_agg(severity order by case severity
-          when 'critical' then 0 when 'warning' then 1 else 2 end))[1] as worst,
-       min(occurred_at_ms)::bigint as first_ms,
-       max(occurred_at_ms)::bigint as last_ms
-     from monolith.security_events
-     where session_id = $1
-     group by module`,
-    [session],
-  );
-  if (!result.rows.length) return null;
+    const result = await db.query<{
+      module: string;
+      events: string;
+      worst: Severity;
+      first_ms: string;
+      last_ms: string;
+    }>(
+      `select
+         module,
+         count(*)::bigint as events,
+         -- "worst" must be by severity rank, not alphabetical: 'critical' < 'info'
+         -- as text would quietly report a critical session as informational.
+         (array_agg(severity order by case severity
+            when 'critical' then 0 when 'warning' then 1 else 2 end))[1] as worst,
+         min(occurred_at_ms)::bigint as first_ms,
+         max(occurred_at_ms)::bigint as last_ms
+       from monolith.security_events
+       where tenant_id = $1 and agent_id = $2 and session_id = $3
+       group by module`,
+      [tenantId, agent, session],
+    );
+    if (!result.rows.length) return null;
 
-  const layers = result.rows.map((r) => ({
-    module: r.module,
-    events: Number(r.events),
-    worst: r.worst,
-  }));
-  return {
-    session_id: session,
-    agent_id: owner.rows[0]?.agent_id ?? undefined,
-    layers,
-    total: layers.reduce((sum, l) => sum + l.events, 0),
-    cross_layer: layers.length > 1,
-    first_ms: Math.min(...result.rows.map((r) => Number(r.first_ms))),
-    last_ms: Math.max(...result.rows.map((r) => Number(r.last_ms))),
-  };
+    const layers = result.rows.map((r) => ({
+      module: r.module,
+      events: Number(r.events),
+      worst: r.worst,
+    }));
+    return {
+      tenant_id: tenantId,
+      session_id: session,
+      agent_id: agent,
+      layers,
+      total: layers.reduce((sum, l) => sum + l.events, 0),
+      cross_layer: layers.length > 1,
+      first_ms: Math.min(...result.rows.map((r) => Number(r.first_ms))),
+      last_ms: Math.max(...result.rows.map((r) => Number(r.last_ms))),
+    };
+  });
 }
 
 /** Sessions that more than one defense layer has flagged. */
-export async function crossLayerSessionCount(): Promise<number> {
-  const result = await getDb().query<{ n: string }>(
-    `select count(*)::bigint as n from (
-       select session_id from monolith.security_events
-       where session_id is not null
-       group by session_id
-       having count(distinct module) > 1
-     ) s`,
-  );
-  return Number(result.rows[0]?.n ?? 0);
+export async function crossLayerSessionCount(tenantId: string): Promise<number> {
+  return withTenantDb(tenantId, async (db) => {
+    const result = await db.query<{ n: string }>(
+      `select count(*)::bigint as n from (
+         select agent_id, session_id from monolith.security_events
+         where tenant_id = $1 and agent_id is not null and session_id is not null
+         group by agent_id, session_id
+         having count(distinct module) > 1
+       ) s`,
+      [tenantId],
+    );
+    return Number(result.rows[0]?.n ?? 0);
+  });
 }
 
 /** Counts for the queue's status tabs, in one round trip. */
-export async function incidentCounts(): Promise<Record<string, number>> {
-  const result = await getDb().query<{ status: string; n: string }>(
-    `select coalesce(t.status, 'new') as status, count(*)::bigint as n
-     from monolith.security_events e
-     left join monolith.incident_triage t using (event_id)
-     group by 1`,
-  );
-  const counts: Record<string, number> = { new: 0, acknowledged: 0, resolved: 0 };
-  for (const row of result.rows) counts[row.status] = Number(row.n);
-  counts.open = counts.new + counts.acknowledged;
-  counts.all = counts.open + counts.resolved;
-  return counts;
+export async function incidentCounts(tenantId: string): Promise<Record<string, number>> {
+  return withTenantDb(tenantId, async (db) => {
+    const result = await db.query<{ status: string; n: string }>(
+      `select coalesce(t.status, 'new') as status, count(*)::bigint as n
+       from monolith.security_events e
+       left join monolith.incident_triage t using (event_id)
+       where e.tenant_id = $1
+       group by 1`,
+      [tenantId],
+    );
+    const counts: Record<string, number> = { new: 0, acknowledged: 0, resolved: 0 };
+    for (const row of result.rows) counts[row.status] = Number(row.n);
+    counts.open = counts.new + counts.acknowledged;
+    counts.all = counts.open + counts.resolved;
+    return counts;
+  });
 }
 
 // --- writes ----------------------------------------------------------------
@@ -320,6 +345,7 @@ export interface TransitionInput {
 
 export interface Transition {
   event_id: string;
+  tenant_id: string;
   status: IncidentStatus;
   actor: string;
   assignee?: string;
@@ -335,7 +361,7 @@ export interface Transition {
  * only what the caller wished to be called, which is worse than no audit trail,
  * because it looks like evidence.
  */
-export function normalizeTransition(raw: unknown, actor: string): Transition {
+export function normalizeTransition(raw: unknown, actor: string, tenantId: string): Transition {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new IncidentInputError("body must be a JSON object");
   }
@@ -376,6 +402,7 @@ export function normalizeTransition(raw: unknown, actor: string): Transition {
 
   return {
     event_id: eventId,
+    tenant_id: tenantId,
     status,
     actor: resolvedActor,
     assignee: assignToMe ? resolvedActor : explicitAssignee,
@@ -392,17 +419,24 @@ export class UnknownEventError extends Error {}
  * would defeat the point of having one.
  */
 export async function applyTransition(t: Transition): Promise<{ triage: Triage }> {
-  const db = getDb();
-  const client = await db.connect();
-  try {
-    await client.query("begin");
-
-    // Lock the event row so two concurrent transitions serialize, and so a
-    // transition against an unknown event_id is a clean 404 rather than a
-    // foreign-key 500.
-    const exists = await client.query(
-      "select 1 from monolith.security_events where event_id = $1 for share",
+  return withTenantDb(t.tenant_id, async (client) => {
+    // Serialize all transitions for this event, including the first one before
+    // a triage row exists. A shared event-row lock does not serialize two
+    // writers, and granting UPDATE on immutable evidence merely to take an
+    // exclusive row lock would violate the runtime role boundary. The
+    // transaction-scoped advisory lock gives us one writer per event without
+    // expanding table privileges. A hash collision can only over-serialize.
+    await client.query(
+      "select pg_advisory_xact_lock(hashtextextended($1, 0))",
       [t.event_id],
+    );
+
+    // Scope existence to the authenticated tenant so an event id from another
+    // tenant is indistinguishable from an unknown id.
+    const exists = await client.query(
+      `select 1 from monolith.security_events
+       where event_id = $1 and tenant_id = $2`,
+      [t.event_id, t.tenant_id],
     );
     if (!exists.rowCount) throw new UnknownEventError(t.event_id);
 
@@ -452,8 +486,6 @@ export async function applyTransition(t: Transition): Promise<{ triage: Triage }
       [t.event_id, t.actor, fromStatus, t.status, row.assignee, t.resolution ?? null, t.note ?? null],
     );
 
-    await client.query("commit");
-
     return {
       triage: {
         status: row.status,
@@ -464,12 +496,7 @@ export async function applyTransition(t: Transition): Promise<{ triage: Triage }
         updated_by: row.updated_by,
       },
     };
-  } catch (error) {
-    await client.query("rollback");
-    throw error;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 export function isKnownModule(module: string): boolean {
