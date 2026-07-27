@@ -60,12 +60,10 @@ function EventRow({ event, triage }: { event: MonolithEvent; triage?: IncidentSt
       {open && (
         <div className="event-open">
           <EventDetail event={event} />
-          {event.event_id ? (
-            <Link className="event-link" href={`/investigate?event=${event.event_id}`}>
-              <IconLedger size={13} />
-              Open in the investigation queue
-            </Link>
-          ) : null}
+          <Link className="event-link" href={`/investigate?event=${event.event_id}`}>
+            <IconLedger size={13} />
+            Open in the investigation queue
+          </Link>
         </div>
       )}
     </div>
@@ -95,9 +93,9 @@ export default function ThreatFeed({
       ) : (
         events.map((e) => (
           <EventRow
-            key={e.seq ?? e.timestamp_ms}
+            key={e.event_id}
             event={e}
-            triage={e.event_id ? triageByEvent?.get(e.event_id) : undefined}
+            triage={triageByEvent?.get(e.event_id)}
           />
         ))
       )}

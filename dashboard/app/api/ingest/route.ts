@@ -39,8 +39,12 @@ export async function POST(req: Request) {
   if (events.some((event) => event.module !== module)) {
     return Response.json({ error: "a batch may contain events from one module only" }, { status: 422 });
   }
+  const tenant = events[0].tenant_id;
+  if (events.some((event) => event.tenant_id !== tenant)) {
+    return Response.json({ error: "a batch may contain events from one tenant only" }, { status: 422 });
+  }
   try {
-    if (!authenticateIngest(req, module)) {
+    if (!authenticateIngest(req, tenant, module)) {
       return Response.json({ error: "invalid module credential" }, { status: 401 });
     }
   } catch (error) {
@@ -69,7 +73,7 @@ export async function POST(req: Request) {
 export async function GET() {
   try {
     await checkDatabase();
-    return Response.json({ status: "ok", buffered: getBroker().recent().length });
+    return Response.json({ status: "ok" });
   } catch {
     return Response.json({ status: "database unavailable" }, { status: 503 });
   }

@@ -7,16 +7,14 @@ export type Severity = "info" | "warning" | "critical";
 export type ModuleName = "mcp-shield" | "vector-anchor" | "trace-audit";
 
 export interface MonolithEvent {
-  event_id?: string;
-  schema_version?: 1 | 2;
+  event_id: string;
+  schema_version: 1 | 2;
   timestamp_ms: number;
   module: string;
   event_type: string;
   severity: Severity;
   details: Record<string, unknown>;
-  // Assigned by the dashboard on ingest (monotonic, for stable React keys and
-  // newest-first ordering even when timestamps collide).
-  seq?: number;
+  tenant_id: string;
   // Wall-clock time the dashboard received the event (ms since epoch).
   received_ms?: number;
   agent_id?: string;
@@ -73,8 +71,9 @@ export interface SessionLayer {
 
 /** An agent session as seen across all three layers at once. */
 export interface SessionView {
+  tenant_id: string;
   session_id: string;
-  agent_id?: string;
+  agent_id: string;
   layers: SessionLayer[];
   total: number;
   cross_layer: boolean;
