@@ -114,19 +114,39 @@ begin
       nocreatedb
       nocreaterole
       noinherit
+      noreplication
       nobypassrls;
   end if;
 end
 $$;
 
--- Reassert the safety attributes when the role already existed.
-alter role monolith_app
-  nologin
-  nosuperuser
-  nocreatedb
-  nocreaterole
-  noinherit
-  nobypassrls;
+-- Supabase's `postgres` login can create ordinary roles, but it is not the
+-- bootstrap superuser and therefore cannot reassign SUPERUSER/BYPASSRLS role
+-- attributes. Validate an existing role instead of attempting a privileged
+-- cluster mutation from the application migration path.
+do $$
+begin
+  if exists (
+    select 1
+    from pg_roles
+    where rolname = 'monolith_app'
+      and (
+        rolcanlogin
+        or rolsuper
+        or rolcreatedb
+        or rolcreaterole
+        or rolinherit
+        or rolreplication
+        or rolbypassrls
+      )
+  ) then
+    raise exception using
+      errcode = '42501',
+      message = 'monolith_app exists with unsafe role attributes',
+      hint = 'Repair monolith_app with the database bootstrap superuser before running app migrations.';
+  end if;
+end
+$$;
 
 -- The local and hosted migration connection is the postgres role. It remains
 -- the login/bootstrap identity, then the dashboard runtime uses SET ROLE to
