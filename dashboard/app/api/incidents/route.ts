@@ -7,13 +7,9 @@
 // own credential — a module token identifies a module and would let any module
 // close its own findings.
 //
-// POST requires a valid operator bearer token, and the actor recorded in the
-// audit trail is derived from that token rather than read from the body: an
-// actor a caller can name itself is not evidence.
-//
-// GET is not authenticated. This is a single-operator local stack and the read
-// path exposes only what the dashboard already renders, but it is a real gap
-// for any deployment beyond localhost — see the dashboard README.
+// Every operation requires an operator identity. Reads require viewer; writes
+// require analyst. The actor and tenant are derived from the credential rather
+// than read from the body: an identity a caller can name itself is not evidence.
 
 import {
   applyTransition,
@@ -27,7 +23,7 @@ import {
   UnknownEventError,
 } from "@/lib/incident-store";
 import type { IncidentQuery } from "@/lib/incident-store";
-import { authenticateOperator, OperatorAuthUnavailable } from "@/lib/operator-auth";
+import { requireOperator } from "@/lib/route-auth";
 import type { IncidentStatus, Severity } from "@/lib/types";
 import { INCIDENT_STATUSES } from "@/lib/types";
 
@@ -35,8 +31,10 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
+  const identity = await requireOperator(req);
+  if (identity instanceof Response) return identity;
   const params = new URL(req.url).searchParams;
-  const query: IncidentQuery = {};
+  const query: IncidentQuery = { tenant_id: identity.tenant_id };
 
   const status = params.get("status");
   if (status) {
@@ -65,6 +63,8 @@ export async function GET(req: Request) {
 
   const session = params.get("session");
   if (session) query.session = session.slice(0, 128);
+  const agent = params.get("agent");
+  if (agent) query.agent = agent.slice(0, 128);
 
   const q = params.get("q");
   if (q) query.q = q.slice(0, 256);
@@ -90,8 +90,8 @@ export async function GET(req: Request) {
   try {
     const [incidents, counts, crossLayer] = await Promise.all([
       listIncidents(query),
-      incidentCounts(),
-      crossLayerSessionCount(),
+      incidentCounts(identity.tenant_id),
+      crossLayerSessionCount(identity.tenant_id),
     ]);
     return Response.json({
       incidents,
@@ -106,28 +106,16 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   // Authenticate before parsing: an unauthenticated caller learns nothing about
   // whether its payload would have been valid.
-  let actor: string | null;
-  try {
-    actor = authenticateOperator(req);
-  } catch (error) {
-    if (error instanceof OperatorAuthUnavailable) {
-      // Fail closed. An authenticator that was never configured must never be
-      // mistaken for one that passed.
-      console.error("operator authentication is misconfigured", error);
-      return Response.json(
-        { error: "operator authentication is unavailable" },
-        { status: 503 },
-      );
-    }
-    throw error;
-  }
-  if (!actor) {
-    return Response.json({ error: "invalid operator credential" }, { status: 401 });
-  }
+  const identity = await requireOperator(req, "analyst");
+  if (identity instanceof Response) return identity;
 
   let body: unknown;
   try {
-    body = JSON.parse(await req.text());
+    const text = await req.text();
+    if (text.length > 16 * 1024) {
+      return Response.json({ error: "payload exceeds 16 KiB" }, { status: 413 });
+    }
+    body = JSON.parse(text);
   } catch {
     return Response.json({ error: "invalid JSON" }, { status: 400 });
   }
@@ -136,7 +124,7 @@ export async function POST(req: Request) {
   try {
     // The actor comes from the credential, never from the body — a caller
     // cannot write someone else's name into the audit trail.
-    transition = normalizeTransition(body, actor);
+    transition = normalizeTransition(body, identity.actor, identity.tenant_id);
   } catch (error) {
     if (error instanceof IncidentInputError) {
       return Response.json({ error: error.message }, { status: 422 });
