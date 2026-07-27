@@ -84,9 +84,9 @@ fixture (3.29) crosses decisively.
 
 | Method + path    | Purpose                                                    |
 | ---------------- | ---------------------------------------------------------- |
-| `GET  /health`   | liveness + backend + baseline status                       |
+| `GET  /health`   | minimal liveness response                                  |
 | `POST /generate` | `{prompt, max_tokens?}` → SSE token stream (audited)        |
-| `GET  /stats`    | detector configuration                                     |
+| `GET  /stats`    | admin-authenticated detector configuration                 |
 
 Each SSE `data:` line is a JSON event: `{type: "token", token, kl, threshold}`,
 `{type: "pii", label, redacted}`, `{type: "terminated", reason, kl, safe_refusal}`,
@@ -105,6 +105,11 @@ or `{type: "done", peak_kl, tokens}`.
 | `MONOLITH_MIN_TOKENS`       | `12`       | minimum tokens before evaluating divergence    |
 | `MONOLITH_MAX_TOKENS`       | `60`       | max tokens generated per request               |
 | `MONOLITH_DASHBOARD_URL`    | *(unset)*  | if set, events are also POSTed here             |
+| `MONOLITH_TENANT_ID`        | `default`  | tenant stamped onto emitted events              |
+| `MONOLITH_ADMIN_TOKEN`      | *(unset)*  | bearer token required by `GET /stats`           |
+
+`GET /stats` fails closed: an unconfigured admin credential returns `503`,
+and an absent or incorrect bearer token returns `401`.
 
 ## Setup & demo
 

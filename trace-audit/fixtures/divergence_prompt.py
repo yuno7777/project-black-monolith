@@ -55,6 +55,7 @@ def _correlation_headers() -> dict[str, str]:
     """
     headers = {"Content-Type": "application/json"}
     for env_name, header in (
+        ("MONOLITH_TENANT_ID", "X-Monolith-Tenant-Id"),
         ("MONOLITH_SESSION_ID", "X-Monolith-Session-Id"),
         ("MONOLITH_AGENT_ID", "X-Monolith-Agent-Id"),
     ):
