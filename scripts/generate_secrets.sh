@@ -5,9 +5,9 @@
 #   bash scripts/generate_secrets.sh --force  # regenerate, discarding the old one
 #
 # The values are development credentials for a single-machine stack: the
-# Postgres password and the three per-module ingest bearer tokens. .env is
-# gitignored — never commit it, and regenerate before using this anywhere but
-# a local machine.
+# Postgres password, three per-module ingest tokens, VectorAnchor admin token,
+# and operator bootstrap token. .env is gitignored — never commit it, and
+# regenerate before using this anywhere but a local machine.
 #
 # Regenerating invalidates the tokens the running containers hold, so
 # `docker compose up -d` afterwards to re-inject them. Changing the Postgres
@@ -37,6 +37,8 @@ MONOLITH_POSTGRES_PASSWORD=$(gen)
 MONOLITH_EVENT_TOKEN_MCP_SHIELD=$(gen)
 MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR=$(gen)
 MONOLITH_EVENT_TOKEN_TRACE_AUDIT=$(gen)
+MONOLITH_TENANT_ID=default
+MONOLITH_ADMIN_TOKEN=$(gen)
 # The human operator's credential for the investigation queue. Separate from the
 # module tokens above: those identify modules, and a module must not be able to
 # close its own findings. The name is what the audit trail records.
@@ -44,4 +46,4 @@ MONOLITH_OPERATOR_NAME=operator
 MONOLITH_OPERATOR_TOKEN=$(gen)
 EOF
 
-echo "wrote .env with 5 random secrets (values not printed)"
+echo "wrote .env with 6 random secrets (values not printed)"
