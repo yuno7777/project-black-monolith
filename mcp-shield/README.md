@@ -204,11 +204,10 @@ Three phases, run in CI:
 3. **Dashboard returns 401** — a permanent rejection must dead-letter rather
    than retry forever.
 
-Unit tests (`cargo test`, 11 tests) cover the sanitizer families, an exact
-hit-count check against the fixture's poisoned description (guarding
-against double-counting from overlapping patterns), canonicalization
-determinism, re-flag-on-every-sighting semantics, malformed-response
-handling, and the enforce/monitor rewrite paths.
+Unit tests (`cargo test`, currently 30 non-ignored tests) cover the sanitizer
+families, exact fixture hit counts, canonicalization, re-flag semantics,
+malformed responses, enforce/monitor rewrites, event identity/tenant
+envelopes, and durable-outbox recovery/dead-letter behavior.
 
 ## Known limitations
 

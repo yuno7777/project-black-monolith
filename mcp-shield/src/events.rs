@@ -65,6 +65,7 @@ pub struct ShieldEvent<'a> {
     pub severity: Severity,
     pub details: Value,
     pub source: &'static str,
+    pub tenant_id: String,
     // Correlation identity. Skipped entirely when unknown rather than sent as
     // null: the contract treats these as optional, and a null would claim we
     // looked and found nothing rather than that nobody told us.
@@ -88,6 +89,7 @@ pub struct ShieldEvent<'a> {
 /// the entire point of having one.
 #[derive(Debug, Clone, Default)]
 struct Identity {
+    tenant_id: String,
     agent_id: Option<String>,
     session_id: Option<String>,
 }
@@ -103,6 +105,10 @@ fn clean_id(value: String) -> Option<String> {
 fn identity() -> &'static Identity {
     static IDENTITY: OnceLock<Identity> = OnceLock::new();
     IDENTITY.get_or_init(|| Identity {
+        tenant_id: std::env::var("MONOLITH_TENANT_ID")
+            .ok()
+            .and_then(clean_id)
+            .unwrap_or_else(|| "default".to_string()),
         agent_id: std::env::var("MONOLITH_AGENT_ID").ok().and_then(clean_id),
         session_id: std::env::var("MONOLITH_SESSION_ID").ok().and_then(clean_id),
     })
@@ -194,6 +200,7 @@ pub fn emit_traced(event_type: &str, severity: Severity, details: Value, trace_i
         severity,
         details,
         source: "module",
+        tenant_id: id.tenant_id.clone(),
         agent_id: id.agent_id.clone(),
         session_id: id.session_id.clone(),
         trace_id: trace_id.map(str::to_owned),
@@ -268,6 +275,7 @@ mod tests {
             severity: Severity::Critical,
             details: serde_json::json!({ "tool": "read_file" }),
             source: "module",
+            tenant_id: "default".to_string(),
             agent_id,
             session_id,
             trace_id,
@@ -283,6 +291,7 @@ mod tests {
         let value = serialized(&sample_event(None, None, None));
         assert_eq!(value["module"], "mcp-shield");
         assert_eq!(value["schema_version"], 2);
+        assert_eq!(value["tenant_id"], "default");
         assert_eq!(value["severity"], "critical");
         assert_eq!(value["timestamp_ms"], 1_770_000_000_000_u64);
         assert_eq!(value["source"], "module");
@@ -319,7 +328,11 @@ mod tests {
         assert_eq!(clean_id("   ".into()), None);
         assert_eq!(clean_id("".into()), None);
         let long = clean_id("x".repeat(500)).unwrap();
-        assert_eq!(long.len(), MAX_ID_LENGTH, "an over-long id must be clamped, not dropped");
+        assert_eq!(
+            long.len(),
+            MAX_ID_LENGTH,
+            "an over-long id must be clamped, not dropped"
+        );
     }
 
     #[test]
