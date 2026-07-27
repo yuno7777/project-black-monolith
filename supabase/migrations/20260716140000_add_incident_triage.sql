@@ -44,9 +44,9 @@ create table if not exists monolith.incident_audit (
 create index if not exists incident_audit_event_at_idx
   on monolith.incident_audit (event_id, at desc);
 
--- Enforce append-only in the database rather than by convention. A REVOKE
--- would not bind the table's owner, which is the role the app connects as, so
--- the guarantee has to be a trigger.
+-- Enforce append-only in the database rather than by convention. The runtime
+-- role also lacks UPDATE/DELETE, while this trigger keeps the invariant in
+-- force even for a table owner or administrative connection.
 create or replace function monolith.incident_audit_is_append_only()
 returns trigger
 language plpgsql
