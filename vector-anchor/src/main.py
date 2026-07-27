@@ -9,8 +9,9 @@ drive it through POST /retrieve.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from secrets import compare_digest
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 from .config import MODULE_NAME, load_config
@@ -42,6 +43,7 @@ def build_proxy() -> RetrieverProxy:
         cfg.dashboard_url,
         cfg.event_token,
         cfg.event_outbox_path,
+        tenant_id=cfg.tenant_id,
         agent_id=cfg.agent_id,
         session_id=cfg.session_id,
     )
@@ -77,15 +79,31 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Project Black Monolith — VectorAnchor", lifespan=lifespan)
 
 
+def _admin_credential_valid(expected: str | None, authorization: str) -> bool:
+    if not expected or len(expected) < 16 or not authorization.startswith("Bearer "):
+        return False
+    supplied = authorization[len("Bearer ") :]
+    return bool(supplied) and compare_digest(supplied, expected)
+
+
+def _require_admin(request: Request) -> None:
+    """Authenticate corpus and detector-state mutations."""
+    proxy: RetrieverProxy = app.state.proxy
+    expected = proxy.cfg.admin_token
+    if not expected or len(expected) < 16:
+        raise HTTPException(
+            status_code=503,
+            detail="administrative authentication is unavailable",
+        )
+    if not _admin_credential_valid(expected, request.headers.get("authorization", "")):
+        raise HTTPException(status_code=401, detail="invalid administrative credential")
+
+
 @app.get("/health")
 def health() -> dict:
-    proxy: RetrieverProxy = app.state.proxy
     return {
         "status": "ok",
         "module": MODULE_NAME,
-        "collection": proxy.cfg.collection_name,
-        "documents": proxy.collection.count(),
-        "quarantined": len(proxy.quarantine),
     }
 
 
@@ -99,11 +117,12 @@ def retrieve(req: RetrieveRequest, request: Request) -> dict:
 
 
 @app.post("/admin/add-documents")
-def add_documents(req: AddDocumentsRequest) -> dict:
+def add_documents(req: AddDocumentsRequest, request: Request) -> dict:
     """Insert (or upsert) documents into the corpus. The service owns the
     single ChromaDB client, so the seed/inject fixtures route all corpus
     mutations through here rather than opening a second client (which would
     contend on ChromaDB's SQLite store)."""
+    _require_admin(request)
     proxy: RetrieverProxy = app.state.proxy
     proxy.collection.upsert(
         ids=[d.id for d in req.documents],
@@ -113,7 +132,8 @@ def add_documents(req: AddDocumentsRequest) -> dict:
 
 
 @app.get("/quarantine")
-def quarantine() -> dict:
+def quarantine(request: Request) -> dict:
+    _require_admin(request)
     proxy: RetrieverProxy = app.state.proxy
     return {
         "count": len(proxy.quarantine),
@@ -131,7 +151,8 @@ def quarantine() -> dict:
 
 
 @app.get("/stats")
-def stats() -> dict:
+def stats(request: Request) -> dict:
+    _require_admin(request)
     proxy: RetrieverProxy = app.state.proxy
     return {
         "module": MODULE_NAME,
@@ -147,9 +168,10 @@ def stats() -> dict:
 
 
 @app.post("/admin/reset-detection")
-def reset_detection() -> dict:
+def reset_detection(request: Request) -> dict:
     """Clear the tracker + quarantine (not the corpus). Lets the demo script
     re-run detection from a clean slate without re-seeding."""
+    _require_admin(request)
     proxy: RetrieverProxy = app.state.proxy
     proxy.tracker = FrequencyTracker(
         min_distinct_topics=proxy.cfg.min_distinct_topics,

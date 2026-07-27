@@ -20,11 +20,21 @@ from corpus_data import CLEAN_DOCS  # noqa: E402
 SERVICE_URL = os.environ.get("MONOLITH_SERVICE_URL", "http://localhost:8001")
 
 
+def admin_headers() -> dict[str, str]:
+    token = os.environ.get("MONOLITH_ADMIN_TOKEN", "")
+    if not token:
+        raise RuntimeError("MONOLITH_ADMIN_TOKEN is required for corpus mutations")
+    return {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + token,
+    }
+
+
 def post(path: str, payload: dict) -> dict:
     req = urllib.request.Request(
         SERVICE_URL + path,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=admin_headers(),
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=30) as resp:

@@ -58,17 +58,17 @@ it and serves the next-best clean result instead.
   client; the seed/inject fixtures add documents through
   `POST /admin/add-documents` rather than opening a second client (which would
   contend on ChromaDB's SQLite store).
-- **Quarantine is in-memory** — this is a single-operator local research/demo
-  system; a restart re-learns from the live stream.
+- **Quarantine is in-memory** — this is a single-process research/demo
+  detector; a restart re-learns from the live stream.
 
 ## Endpoints
 
 | Method + path              | Purpose                                            |
 | -------------------------- | -------------------------------------------------- |
-| `GET  /health`             | liveness + corpus/quarantine counts                |
+| `GET  /health`             | minimal liveness response                          |
 | `POST /retrieve`           | `{query, k?}` → clean top-k results (agent-facing) |
-| `GET  /quarantine`         | list of quarantined documents                      |
-| `GET  /stats`              | detector configuration + counts                    |
+| `GET  /quarantine`         | admin-authenticated quarantined-document list      |
+| `GET  /stats`              | admin-authenticated configuration + counts         |
 | `POST /admin/add-documents`| bulk insert/upsert (used by fixtures)              |
 | `POST /admin/reset-detection` | clear tracker + quarantine (not the corpus)     |
 
@@ -84,6 +84,13 @@ it and serves the next-best clean result instead.
 | `MONOLITH_TOPIC_SIMILARITY`  | `0.20`             | queries at/above this cosine count as one topic (calibrated) |
 | `MONOLITH_WINDOW_SIZE`       | `50`               | rolling window (number of recent queries)           |
 | `MONOLITH_DASHBOARD_URL`     | *(unset)*          | if set, events are also POSTed here                 |
+| `MONOLITH_TENANT_ID`         | `default`          | tenant stamped onto emitted events                  |
+| `MONOLITH_ADMIN_TOKEN`       | *(unset)*          | bearer token for protected read/mutation routes     |
+
+Administrative reads and both `/admin/*` mutations fail closed: an
+unconfigured admin credential returns `503`, and an absent or incorrect bearer
+token returns `401`. The demo and seed/inject fixtures read
+`MONOLITH_ADMIN_TOKEN` and send it automatically.
 
 ## Setup & demo
 

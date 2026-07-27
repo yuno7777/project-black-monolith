@@ -23,6 +23,10 @@ export MONOLITH_CHROMA_PATH="$(mktemp -d)/chroma_store"
 
 PY="${PYTHON:-python}"
 command -v "$PY" >/dev/null 2>&1 || PY=python3
+if [ -z "${MONOLITH_ADMIN_TOKEN:-}" ]; then
+    export MONOLITH_ADMIN_TOKEN="$("$PY" -c 'import secrets;print(secrets.token_hex(24))')"
+fi
+ADMIN_HEADER="Authorization: Bearer $MONOLITH_ADMIN_TOKEN"
 
 echo "== Starting VectorAnchor service on :${PORT} =="
 "$PY" -m uvicorn src.main:app --host 0.0.0.0 --port "$PORT" --log-level warning &
@@ -57,7 +61,7 @@ how do astronomers measure distance to a nebula
 how to sear a steak so the meat stays juicy
 how to pay off high interest credit card debt
 CLEANQ
-qcount=$(curl -s "$BASE/quarantine" | jqget "d['count']")
+qcount=$(curl -s -H "$ADMIN_HEADER" "$BASE/quarantine" | jqget "d['count']")
 echo "  quarantine size after clean queries: $qcount"
 
 echo
@@ -82,11 +86,11 @@ TRIGQ
 
 echo
 echo "== 5. Quarantine state =="
-curl -s "$BASE/quarantine" | "$PY" -m json.tool
+curl -s -H "$ADMIN_HEADER" "$BASE/quarantine" | "$PY" -m json.tool
 
 echo
 echo "== Verifying detection =="
-FINAL=$(curl -s "$BASE/quarantine")
+FINAL=$(curl -s -H "$ADMIN_HEADER" "$BASE/quarantine")
 if echo "$FINAL" | grep -q "poison-universal-bait"; then
     score=$(echo "$FINAL" | jqget "d['documents'][0]['score']")
     echo "  [OK]   universal-bait document quarantined (anomaly score = $score across distinct topics)"

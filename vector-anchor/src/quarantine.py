@@ -2,7 +2,7 @@
 
 Once a document is quarantined it is withheld from all future retrieval
 results; the retriever serves the next-best clean document in its place. The
-quarantine is in-memory (single-operator local demo system); restart clears
+quarantine is in-memory (single-process research/demo system); restart clears
 it and detection re-learns from the live stream.
 """
 
