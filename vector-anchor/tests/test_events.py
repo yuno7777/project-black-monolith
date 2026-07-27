@@ -32,6 +32,7 @@ def test_unknown_correlation_fields_are_omitted_not_nulled(capsys):
     event = emit_once(capsys)
     for field in ("agent_id", "session_id", "trace_id", "correlation_id"):
         assert field not in event
+    assert event["tenant_id"] == "default"
 
 
 def test_process_defaults_are_stamped_on_every_event(capsys):
@@ -78,12 +79,14 @@ def test_the_envelope_still_matches_the_shared_contract(capsys):
 def test_headers_are_read_case_insensitively_by_the_caller_contract():
     ctx = context_from_headers(
         {
+            "x-monolith-tenant-id": "tenant-7",
             "x-monolith-agent-id": "agent-7",
             "x-monolith-session-id": "session-7",
             "x-monolith-trace-id": "trace-7",
             "x-monolith-correlation-id": "corr-7",
         }
     )
+    assert ctx.tenant_id == "tenant-7"
     assert ctx.agent_id == "agent-7"
     assert ctx.session_id == "session-7"
     assert ctx.trace_id == "trace-7"

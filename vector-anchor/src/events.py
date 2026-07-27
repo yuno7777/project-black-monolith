@@ -44,6 +44,8 @@ class EventContext:
     grouping is the whole point.
     """
 
+    # Trust boundary for organizations/environments sharing one collector.
+    tenant_id: str | None = None
     # One operation within a session (a single /retrieve, /generate, tools/list).
     trace_id: str | None = None
     # One agent session. The cross-layer key.
@@ -58,6 +60,7 @@ class EventContext:
 # long-running HTTP services. Short-lived processes take theirs from the
 # environment instead — see the Rust module.
 AGENT_HEADER = "x-monolith-agent-id"
+TENANT_HEADER = "x-monolith-tenant-id"
 SESSION_HEADER = "x-monolith-session-id"
 TRACE_HEADER = "x-monolith-trace-id"
 CORRELATION_HEADER = "x-monolith-correlation-id"
@@ -68,6 +71,7 @@ def context_from_headers(headers: Mapping[str, str]) -> EventContext:
     did not supply one (every operation gets one; only the caller can know the
     session it belongs to)."""
     return EventContext(
+        tenant_id=_clean_id(headers.get(TENANT_HEADER)),
         trace_id=_clean_id(headers.get(TRACE_HEADER)) or str(uuid.uuid4()),
         session_id=_clean_id(headers.get(SESSION_HEADER)),
         correlation_id=_clean_id(headers.get(CORRELATION_HEADER)),
@@ -170,6 +174,7 @@ def make_emitter(
     dashboard_url: str | None,
     event_token: str | None,
     outbox_path: str,
+    tenant_id: str | None = "default",
     agent_id: str | None = None,
     session_id: str | None = None,
 ):
@@ -183,6 +188,7 @@ def make_emitter(
     outbox = EventOutbox(outbox_path, dashboard_url, event_token) if dashboard_url and event_token else None
     default_agent = _clean_id(agent_id)
     default_session = _clean_id(session_id)
+    default_tenant = _clean_id(tenant_id) or "default"
 
     def emit(
         event_type: str,
@@ -199,6 +205,7 @@ def make_emitter(
             "severity": severity,
             "details": details,
             "source": "module",
+            "tenant_id": (ctx.tenant_id if ctx else None) or default_tenant,
         }
         # Correlation fields are omitted when unknown rather than sent as null:
         # the contract treats them as optional, and a null would claim we looked
