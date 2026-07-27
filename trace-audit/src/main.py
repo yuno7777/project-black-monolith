@@ -12,8 +12,9 @@ from __future__ import annotations
 import json
 import os
 from contextlib import asynccontextmanager
+from secrets import compare_digest
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -43,6 +44,7 @@ async def lifespan(app: FastAPI):
         cfg.dashboard_url,
         cfg.event_token,
         cfg.event_outbox_path,
+        tenant_id=cfg.tenant_id,
         agent_id=cfg.agent_id,
         session_id=cfg.session_id,
     )
@@ -73,22 +75,35 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Project Black Monolith — TraceAudit", lifespan=lifespan)
 
 
+def _admin_credential_valid(expected: str | None, authorization: str) -> bool:
+    if not expected or len(expected) < 16 or not authorization.startswith("Bearer "):
+        return False
+    supplied = authorization[len("Bearer ") :]
+    return bool(supplied) and compare_digest(supplied, expected)
+
+
+def _require_admin(request: Request) -> None:
+    expected = app.state.cfg.admin_token
+    if not expected or len(expected) < 16:
+        raise HTTPException(
+            status_code=503,
+            detail="administrative authentication is unavailable",
+        )
+    if not _admin_credential_valid(expected, request.headers.get("authorization", "")):
+        raise HTTPException(status_code=401, detail="invalid administrative credential")
+
+
 @app.get("/health")
 def health() -> dict:
-    cfg = app.state.cfg
-    baseline: dict = app.state.baseline_counts
     return {
         "status": "ok",
         "module": MODULE_NAME,
-        "backend": cfg.model_backend,
-        "baseline_loaded": bool(baseline),
-        "baseline_vocab": len(baseline),
-        "kl_threshold": cfg.kl_threshold,
     }
 
 
 @app.get("/stats")
-def stats() -> dict:
+def stats(request: Request) -> dict:
+    _require_admin(request)
     cfg = app.state.cfg
     return {
         "module": MODULE_NAME,
