@@ -3,9 +3,9 @@
 // Integration choice (documented in the dashboard README): each of the three
 // modules already emits the shared Monolith event JSON, so the lowest-effort
 // reliable integration is for each module to also POST that JSON to this
-// dashboard's /api/ingest endpoint. This broker holds a bounded ring buffer of
-// recent events and fans new ones out to every connected SSE client. No
-// message queue, no file tailing, no shared volume — just HTTP in, SSE out.
+// dashboard's /api/ingest endpoint. Persisted Postgres history is replayed by
+// the SSE route; this broker only fans newly committed rows out to connected
+// clients in the same tenant. No message queue, log tailing, or shared volume.
 //
 // A single process-wide singleton is stored on globalThis so it survives
 // Next.js dev hot-reloads and is shared across route handlers.
@@ -15,24 +15,16 @@ import type { MonolithEvent } from "./types";
 type Subscriber = (event: MonolithEvent) => void;
 
 class EventBroker {
-  private buffer: MonolithEvent[] = [];
-  private subscribers = new Set<Subscriber>();
-  private seq = 0;
-  private readonly capacity = 500;
+  private subscribers = new Map<Subscriber, string>();
 
   ingest(raw: MonolithEvent): MonolithEvent {
     const event: MonolithEvent = {
       ...raw,
-      seq: ++this.seq,
       received_ms: raw.received_ms ?? Date.now(),
     };
 
-    this.buffer.push(event);
-    if (this.buffer.length > this.capacity) {
-      this.buffer.splice(0, this.buffer.length - this.capacity);
-    }
-
-    for (const sub of this.subscribers) {
+    for (const [sub, tenantId] of this.subscribers) {
+      if (tenantId !== event.tenant_id) continue;
       try {
         sub(event);
       } catch {
@@ -42,12 +34,8 @@ class EventBroker {
     return event;
   }
 
-  recent(): MonolithEvent[] {
-    return [...this.buffer];
-  }
-
-  subscribe(sub: Subscriber): () => void {
-    this.subscribers.add(sub);
+  subscribe(tenantId: string, sub: Subscriber): () => void {
+    this.subscribers.set(sub, tenantId);
     return () => this.subscribers.delete(sub);
   }
 }

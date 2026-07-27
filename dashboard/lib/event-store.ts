@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
-import { getDb } from "@/lib/db";
+import { getDb, withTenantDb } from "@/lib/db";
 import type { MonolithEvent, Severity } from "@/lib/types";
 
 const knownModules = new Set(["mcp-shield", "vector-anchor", "trace-audit"]);
 const severities = new Set<Severity>(["info", "warning", "critical"]);
 const MAX_TEXT_LENGTH = 512;
+const MAX_ID_LENGTH = 128;
 // security_events.event_id is a Postgres `uuid`. A supplied id that is not a
 // UUID would fail the insert with 22P02, surface as a 503, and be retried
 // forever by the module outboxes (which correctly treat 5xx as transient) —
@@ -19,6 +20,18 @@ function optionalText(value: unknown): string | undefined {
   return typeof value === "string" && value.length <= MAX_TEXT_LENGTH && value.length > 0
     ? value
     : undefined;
+}
+
+function identityText(value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") {
+    throw new Error(`event.${field} must be a string`);
+  }
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > MAX_ID_LENGTH) {
+    throw new Error(`event.${field} must be between 1 and ${MAX_ID_LENGTH} characters`);
+  }
+  return trimmed;
 }
 
 function isDetails(value: unknown): value is Record<string, unknown> {
@@ -40,26 +53,33 @@ export function normalizeEvent(raw: unknown): MonolithEvent {
   const severity = severities.has(value.severity as Severity)
     ? (value.severity as Severity)
     : "info";
-  const timestamp = typeof value.timestamp_ms === "number" && Number.isFinite(value.timestamp_ms)
+  const candidateTimestamp = typeof value.timestamp_ms === "number"
     ? Math.trunc(value.timestamp_ms)
+    : NaN;
+  const timestamp = Number.isSafeInteger(candidateTimestamp) && candidateTimestamp > 0
+    ? candidateTimestamp
     : Date.now();
-  const suppliedEventId = optionalText(value.event_id);
-  if (suppliedEventId !== undefined && !UUID_PATTERN.test(suppliedEventId)) {
-    throw new Error("event.event_id must be a UUID");
+  let eventId: string = randomUUID();
+  if (value.event_id !== undefined && value.event_id !== null) {
+    if (typeof value.event_id !== "string" || !UUID_PATTERN.test(value.event_id)) {
+      throw new Error("event.event_id must be a UUID");
+    }
+    eventId = value.event_id;
   }
 
   return {
-    event_id: suppliedEventId ?? randomUUID(),
+    event_id: eventId,
     schema_version: value.schema_version === 2 ? 2 : 1,
     timestamp_ms: timestamp,
     module,
     event_type: eventType,
     severity,
     details: isDetails(value.details) ? value.details : {},
-    agent_id: optionalText(value.agent_id),
-    session_id: optionalText(value.session_id),
-    trace_id: optionalText(value.trace_id),
-    correlation_id: optionalText(value.correlation_id),
+    tenant_id: identityText(value.tenant_id, "tenant_id") ?? "default",
+    agent_id: identityText(value.agent_id, "agent_id"),
+    session_id: identityText(value.session_id, "session_id"),
+    trace_id: identityText(value.trace_id, "trace_id"),
+    correlation_id: identityText(value.correlation_id, "correlation_id"),
     resource_type: optionalText(value.resource_type),
     resource_id: optionalText(value.resource_id),
     outcome: optionalText(value.outcome),
@@ -77,6 +97,7 @@ type EventRow = {
   event_type: string;
   severity: Severity;
   details: Record<string, unknown>;
+  tenant_id: string;
   agent_id: string | null;
   session_id: string | null;
   trace_id: string | null;
@@ -98,6 +119,7 @@ function fromRow(row: EventRow): MonolithEvent {
     event_type: row.event_type,
     severity: row.severity,
     details: row.details ?? {},
+    tenant_id: row.tenant_id,
     agent_id: row.agent_id ?? undefined,
     session_id: row.session_id ?? undefined,
     trace_id: row.trace_id ?? undefined,
@@ -114,7 +136,8 @@ const returningColumns = `
   event_id, schema_version, occurred_at_ms,
   (extract(epoch from received_at) * 1000)::bigint as received_ms,
   module, event_type, severity, details, agent_id, session_id, trace_id,
-  correlation_id, resource_type, resource_id, outcome, policy_version, source
+  correlation_id, resource_type, resource_id, outcome, policy_version, source,
+  tenant_id
 `;
 
 async function insertWithClient(client: PoolClient, event: MonolithEvent) {
@@ -122,9 +145,9 @@ async function insertWithClient(client: PoolClient, event: MonolithEvent) {
     `insert into monolith.security_events (
       event_id, schema_version, occurred_at_ms, module, event_type, severity, details,
       agent_id, session_id, trace_id, correlation_id, resource_type, resource_id,
-      outcome, policy_version, source
+      outcome, policy_version, source, tenant_id
     ) values (
-      $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15, $16
+      $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
     ) on conflict (event_id) do nothing returning ${returningColumns}`,
     [
       event.event_id, event.schema_version, event.timestamp_ms, event.module,
@@ -132,36 +155,36 @@ async function insertWithClient(client: PoolClient, event: MonolithEvent) {
       event.session_id ?? null, event.trace_id ?? null, event.correlation_id ?? null,
       event.resource_type ?? null, event.resource_id ?? null, event.outcome ?? null,
       event.policy_version ?? null, event.source ?? "module",
+      event.tenant_id,
     ],
   );
   return result.rows[0] ? { inserted: true, event: fromRow(result.rows[0]) } : { inserted: false, event };
 }
 
 export async function persistEvents(events: MonolithEvent[]) {
-  const db = getDb();
-  const client = await db.connect();
-  try {
-    await client.query("begin");
+  if (!events.length) return [];
+  const tenantId = events[0].tenant_id;
+  if (events.some((event) => event.tenant_id !== tenantId)) {
+    throw new Error("one database transaction cannot span tenants");
+  }
+  return withTenantDb(tenantId, async (client) => {
     const results = [];
     for (const event of events) results.push(await insertWithClient(client, event));
-    await client.query("commit");
     return results;
-  } catch (error) {
-    await client.query("rollback");
-    throw error;
-  } finally {
-    client.release();
-  }
+  });
 }
 
-export async function listRecentEvents(limit = 500): Promise<MonolithEvent[]> {
+export async function listRecentEvents(tenantId: string, limit = 500): Promise<MonolithEvent[]> {
   const safeLimit = Math.max(1, Math.min(limit, 1_000));
-  const result = await getDb().query<EventRow>(
-    `select ${returningColumns} from monolith.security_events
-     order by received_at desc limit $1`,
-    [safeLimit],
-  );
-  return result.rows.map(fromRow);
+  return withTenantDb(tenantId, async (db) => {
+    const result = await db.query<EventRow>(
+      `select ${returningColumns} from monolith.security_events
+       where tenant_id = $1
+       order by received_at desc limit $2`,
+      [tenantId, safeLimit],
+    );
+    return result.rows.map(fromRow);
+  });
 }
 
 export async function checkDatabase() {
