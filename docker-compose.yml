@@ -49,14 +49,15 @@ services:
       - "3000:3000"
     environment:
       DATABASE_URL: postgresql://postgres:${MONOLITH_POSTGRES_PASSWORD:?set MONOLITH_POSTGRES_PASSWORD in .env}@database:5432/postgres
+      DATABASE_APP_ROLE: monolith_app
       EVENT_INGEST_TOKENS_JSON: >-
-        {"mcp-shield":"${MONOLITH_EVENT_TOKEN_MCP_SHIELD:?set MONOLITH_EVENT_TOKEN_MCP_SHIELD in .env}","vector-anchor":"${MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR:?set MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR in .env}","trace-audit":"${MONOLITH_EVENT_TOKEN_TRACE_AUDIT:?set MONOLITH_EVENT_TOKEN_TRACE_AUDIT in .env}"}
+        {"${MONOLITH_TENANT_ID:-default}":{"mcp-shield":"${MONOLITH_EVENT_TOKEN_MCP_SHIELD:?set MONOLITH_EVENT_TOKEN_MCP_SHIELD in .env}","vector-anchor":"${MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR:?set MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR in .env}","trace-audit":"${MONOLITH_EVENT_TOKEN_TRACE_AUDIT:?set MONOLITH_EVENT_TOKEN_TRACE_AUDIT in .env}"}}
       # Human operators for the investigation queue. Separate from the module
       # tokens above by design: those identify modules, and a module must not be
       # able to close its own findings. The key is the name the audit trail
       # records, so it comes from the credential rather than from the request.
       OPERATOR_TOKENS_JSON: >-
-        {"${MONOLITH_OPERATOR_NAME:-operator}":"${MONOLITH_OPERATOR_TOKEN:?set MONOLITH_OPERATOR_TOKEN in .env — run scripts/generate_secrets.sh}"}
+        {"${MONOLITH_OPERATOR_NAME:-operator}":{"token":"${MONOLITH_OPERATOR_TOKEN:?set MONOLITH_OPERATOR_TOKEN in .env — run scripts/generate_secrets.sh}","role":"admin","tenant_id":"${MONOLITH_TENANT_ID:-default}"}}
     depends_on:
       database:
         condition: service_healthy
@@ -75,6 +76,8 @@ services:
       MONOLITH_DASHBOARD_URL: "http://dashboard:3000/api/ingest"
       MONOLITH_EVENT_TOKEN: ${MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR:?set MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR in .env}
       MONOLITH_EVENT_OUTBOX_PATH: /var/lib/monolith/outbox.db
+      MONOLITH_ADMIN_TOKEN: ${MONOLITH_ADMIN_TOKEN:?set MONOLITH_ADMIN_TOKEN in .env}
+      MONOLITH_TENANT_ID: ${MONOLITH_TENANT_ID:-default}
       # Which agent these detections belong to. The session id is NOT set
       # here: these services are long-running and serve many sessions, so
       # the caller supplies it per request via X-Monolith-Session-Id.
@@ -101,6 +104,8 @@ services:
       MONOLITH_DASHBOARD_URL: "http://dashboard:3000/api/ingest"
       MONOLITH_EVENT_TOKEN: ${MONOLITH_EVENT_TOKEN_TRACE_AUDIT:?set MONOLITH_EVENT_TOKEN_TRACE_AUDIT in .env}
       MONOLITH_EVENT_OUTBOX_PATH: /var/lib/monolith/outbox.db
+      MONOLITH_ADMIN_TOKEN: ${MONOLITH_ADMIN_TOKEN:?set MONOLITH_ADMIN_TOKEN in .env}
+      MONOLITH_TENANT_ID: ${MONOLITH_TENANT_ID:-default}
       # Which agent these detections belong to. The session id is NOT set
       # here: these services are long-running and serve many sessions, so
       # the caller supplies it per request via X-Monolith-Session-Id.
@@ -129,6 +134,7 @@ services:
       # JSONL spool, not SQLite: this module keeps to the deps already in
       # Cargo.toml. Same delivery contract as the Python outboxes.
       MONOLITH_EVENT_OUTBOX_PATH: /var/lib/monolith/outbox.jsonl
+      MONOLITH_TENANT_ID: ${MONOLITH_TENANT_ID:-default}
       # This proxy is spawned per agent session and exits when stdin
       # closes, so one invocation is one session — run_full_demo.sh passes
       # MONOLITH_SESSION_ID in at exec time rather than baking one here.
