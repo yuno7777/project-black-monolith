@@ -64,7 +64,7 @@ echo "=============================================="
 echo "READ-BACK + ISOLATION"
 echo "=============================================="
 check "the run reads back over the API" "1" \
-  "$(curl -s "$BASE/api/benchmarks" | grep -c "$MARK" | tr -d ' ')"
+  "$(curl -s -H "Authorization: Bearer $OP" "$BASE/api/benchmarks" | grep -c "$MARK" | tr -d ' ')"
 # The load-bearing guarantee: benchmark results are evaluation metadata and must
 # never enter the event ledger or be counted as detections.
 LEAK=$(docker compose exec -T database psql -U postgres -d postgres -tAc \

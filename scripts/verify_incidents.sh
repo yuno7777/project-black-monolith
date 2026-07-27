@@ -34,13 +34,19 @@ post_status() {
   curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/incidents" \
     -H "Authorization: Bearer $OP" -H 'Content-Type: application/json' -d "$1"
 }
+get() {
+  curl -s -H "Authorization: Bearer $OP" "$1"
+}
+get_status() {
+  curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OP" "$1"
+}
 
 # Seed an event of our own so the script is self-contained and does not depend
 # on which fixtures happen to have run.
 EID=$(python -c "import uuid;print(uuid.uuid4())")
 curl -s -o /dev/null -X POST "$BASE/api/ingest" \
   -H "Authorization: Bearer $MONOLITH_EVENT_TOKEN_MCP_SHIELD" -H 'Content-Type: application/json' \
-  -d "{\"event_id\":\"$EID\",\"schema_version\":2,\"timestamp_ms\":$(date +%s)000,\"module\":\"mcp-shield\",\"event_type\":\"lifecycle_probe\",\"severity\":\"critical\",\"details\":{\"probe\":true},\"source\":\"module\"}"
+  -d "{\"event_id\":\"$EID\",\"schema_version\":2,\"timestamp_ms\":$(date +%s)000,\"module\":\"mcp-shield\",\"event_type\":\"lifecycle_probe\",\"severity\":\"critical\",\"details\":{\"probe\":true},\"tenant_id\":\"${MONOLITH_TENANT_ID:-default}\",\"source\":\"module\"}"
 echo "seeded incident: $EID"
 
 echo
@@ -50,13 +56,13 @@ echo "=============================================="
 # A brand-new event has no triage row at all; it must still show up as open,
 # or detections would land in the ledger and never reach an analyst.
 check "an untriaged event appears in the open queue" "1" \
-  "$(curl -s "$BASE/api/incidents?status=open&limit=1000" | python -c "import sys,json;print(sum(1 for i in json.load(sys.stdin)['incidents'] if i['event_id']=='$EID'))")"
+  "$(get "$BASE/api/incidents?status=open&limit=1000" | python -c "import sys,json;print(sum(1 for i in json.load(sys.stdin)['incidents'] if i['event_id']=='$EID'))")"
 check "its synthesized status is new" "new" \
-  "$(curl -s "$BASE/api/incidents?status=new&limit=1000" | python -c "import sys,json;print(next((i.get('triage') or {}).get('status','new') for i in json.load(sys.stdin)['incidents'] if i['event_id']=='$EID'))")"
+  "$(get "$BASE/api/incidents?status=new&limit=1000" | python -c "import sys,json;print(next((i.get('triage') or {}).get('status','new') for i in json.load(sys.stdin)['incidents'] if i['event_id']=='$EID'))")"
 check "free-text search finds it by event_type" "1" \
-  "$(curl -s "$BASE/api/incidents?status=all&q=lifecycle_probe&limit=1000" | python -c "import sys,json;print(sum(1 for i in json.load(sys.stdin)['incidents'] if i['event_id']=='$EID'))")"
+  "$(get "$BASE/api/incidents?status=all&q=lifecycle_probe&limit=1000" | python -c "import sys,json;print(sum(1 for i in json.load(sys.stdin)['incidents'] if i['event_id']=='$EID'))")"
 check "an unknown status filter is rejected" "422" \
-  "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/incidents?status=bogus")"
+  "$(get_status "$BASE/api/incidents?status=bogus")"
 
 echo
 echo "=============================================="
@@ -82,7 +88,7 @@ check "resolve preserves the earlier note" "taking a look" \
 check "resolve records the verdict" "true_positive" \
   "$(echo "$RES" | python -c 'import sys,json;print(json.load(sys.stdin)["triage"]["resolution"])')"
 check "a resolved incident leaves the open queue" "0" \
-  "$(curl -s "$BASE/api/incidents?status=open&limit=1000" | python -c "import sys,json;print(sum(1 for i in json.load(sys.stdin)['incidents'] if i['event_id']=='$EID'))")"
+  "$(get "$BASE/api/incidents?status=open&limit=1000" | python -c "import sys,json;print(sum(1 for i in json.load(sys.stdin)['incidents'] if i['event_id']=='$EID'))")"
 
 REOPEN=$(post "{\"event_id\":\"$EID\",\"status\":\"new\",\"note\":\"reopening\"}")
 check "reopening clears the stale verdict" "None" \
@@ -117,7 +123,7 @@ echo "=============================================="
 AUTH_EID=$(python -c "import uuid;print(uuid.uuid4())")
 curl -s -o /dev/null -X POST "$BASE/api/ingest" \
   -H "Authorization: Bearer $MONOLITH_EVENT_TOKEN_MCP_SHIELD" -H 'Content-Type: application/json' \
-  -d "{\"event_id\":\"$AUTH_EID\",\"schema_version\":2,\"timestamp_ms\":$(date +%s)000,\"module\":\"mcp-shield\",\"event_type\":\"auth_probe\",\"severity\":\"warning\",\"details\":{},\"source\":\"module\"}"
+  -d "{\"event_id\":\"$AUTH_EID\",\"schema_version\":2,\"timestamp_ms\":$(date +%s)000,\"module\":\"mcp-shield\",\"event_type\":\"auth_probe\",\"severity\":\"warning\",\"details\":{},\"tenant_id\":\"${MONOLITH_TENANT_ID:-default}\",\"source\":\"module\"}"
 
 naked() { # POST with an arbitrary (or absent) credential
   curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/incidents" \
@@ -136,7 +142,7 @@ FORGE=$(post "{\"event_id\":\"$AUTH_EID\",\"status\":\"acknowledged\",\"actor\":
 check "the body's actor is ignored, not honoured" "$OPNAME" \
   "$(echo "$FORGE" | python -c 'import sys,json;print(json.load(sys.stdin)["triage"]["updated_by"])')"
 check "the forged name never reaches the trail" "0" \
-  "$(curl -s "$BASE/api/incidents/$AUTH_EID/audit" | grep -c 'someone-else' || true)"
+  "$(get "$BASE/api/incidents/$AUTH_EID/audit" | grep -c 'someone-else' || true)"
 
 # The client cannot name itself, so "take this" is a request the server resolves.
 TAKE=$(post "{\"event_id\":\"$AUTH_EID\",\"status\":\"acknowledged\",\"assign_to_me\":true}")
@@ -149,7 +155,7 @@ echo
 echo "=============================================="
 echo "AUDIT TRAIL"
 echo "=============================================="
-TRAIL=$(curl -s "$BASE/api/incidents/$EID/audit")
+TRAIL=$(get "$BASE/api/incidents/$EID/audit")
 echo "  transitions recorded: $(echo "$TRAIL" | python -c 'import sys,json;print(len(json.load(sys.stdin)["audit"]))')"
 check "every transition was recorded" "3" \
   "$(echo "$TRAIL" | python -c 'import sys,json;print(len(json.load(sys.stdin)["audit"]))')"
