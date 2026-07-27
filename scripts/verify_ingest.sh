@@ -20,6 +20,7 @@ set -a; . ./.env; set +a
 BASE="${MONOLITH_DASHBOARD_BASE:-http://localhost:3000}"
 TOK="$MONOLITH_EVENT_TOKEN_MCP_SHIELD"
 VA_TOK="$MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR"
+OP="$MONOLITH_OPERATOR_TOKEN"
 PASS=0; FAIL=0
 
 check() { # name expected actual
@@ -40,8 +41,8 @@ body() { # token body -> response body
 
 event() { # event_id [module]
   local mod="${2:-mcp-shield}"
-  printf '{"event_id":"%s","schema_version":2,"timestamp_ms":%s,"module":"%s","event_type":"contract_probe","severity":"warning","details":{"probe":true},"source":"module"}' \
-    "$1" "$(date +%s)000" "$mod"
+  printf '{"event_id":"%s","schema_version":2,"timestamp_ms":%s,"module":"%s","event_type":"contract_probe","severity":"warning","details":{"probe":true},"tenant_id":"%s","source":"module"}' \
+    "$1" "$(date +%s)000" "$mod" "${MONOLITH_TENANT_ID:-default}"
 }
 
 echo "=============================================="
@@ -103,7 +104,8 @@ echo "  rows persisted in Postgres: $ROWS"
 
 # A fresh SSE client must be replayed the events it was never connected for —
 # proving the ledger, not the in-process broker, is the source of truth.
-REPLAY=$(curl -s -N --max-time 5 "$BASE/api/events" | grep -c "contract_probe" || true)
+REPLAY=$(curl -s -N --max-time 5 -H "Authorization: Bearer $OP" "$BASE/api/events" \
+  | grep -c "contract_probe" || true)
 echo "  contract_probe events replayed to a new SSE client: $REPLAY"
 [ "${REPLAY:-0}" -gt 0 ] && { echo "  PASS  a new client is replayed persisted history"; PASS=$((PASS+1)); } \
                          || { echo "  FAIL  no replay"; FAIL=$((FAIL+1)); }
