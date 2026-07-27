@@ -1,128 +1,165 @@
-// Malformed / incomplete event ingest test (dependency-free, Node 18+).
+// Authenticated malformed / incomplete event integration test (Node 18+).
 //
-// Sends a batch of malformed events into the dashboard's /api/ingest path and
-// confirms the broker normalizes them so the frontend can never render
-// "undefined" or crash: every event that comes back over /api/events must have
-// a numeric timestamp, string module/event_type, a valid severity, and an
-// object `details` — and no field anywhere serializes to the literal
-// "undefined".
-//
-// Run against a running dashboard:  node test/malformed-event.test.mjs
-// (BASE defaults to http://localhost:3000)
+// Required environment:
+//   MONOLITH_EVENT_TOKEN_MCP_SHIELD
+//   MONOLITH_OPERATOR_TOKEN
+// Optional:
+//   BASE=http://localhost:3000
+//   MONOLITH_TENANT_ID=default
+
+import { randomUUID } from "node:crypto";
 
 const BASE = process.env.BASE || "http://localhost:3000";
+const INGEST_TOKEN = process.env.MONOLITH_EVENT_TOKEN_MCP_SHIELD;
+const OPERATOR_TOKEN = process.env.MONOLITH_OPERATOR_TOKEN;
+const TENANT = process.env.MONOLITH_TENANT_ID || "default";
 
-const MALFORMED = [
-  {}, // completely empty
-  { module: "mcp-shield" }, // missing event_type, severity, details
-  { event_type: "orphan_event" }, // missing module
-  { severity: "not-a-real-severity", module: "vector-anchor", event_type: "x" },
-  { module: "trace-audit", event_type: "empty_details", details: {} },
-  { module: "trace-audit", event_type: "null_details", details: null },
-  { module: "x", event_type: "string_details", details: "should-not-be-a-string" },
-  { module: "x", event_type: "array_details", details: [1, 2, 3] },
-  { timestamp_ms: "not-a-number", module: "x", event_type: "bad_ts", details: {} },
-  "this-is-not-an-object-at-all",
-  { module: "x", event_type: "nested_null", details: { tool: null, hash: undefined } },
-];
-
-const VALID_SEVERITIES = new Set(["info", "warning", "critical"]);
-
-function fail(msg) {
-  console.error(`  [FAIL] ${msg}`);
-  process.exitCode = 1;
+if (!INGEST_TOKEN || !OPERATOR_TOKEN) {
+  console.error(
+    "missing MONOLITH_EVENT_TOKEN_MCP_SHIELD or MONOLITH_OPERATOR_TOKEN; source .env first",
+  );
+  process.exit(1);
 }
 
-async function readEvents(ms) {
-  // Open the SSE stream, collect events for `ms`, then return them.
+const REJECTED = [
+  {},
+  { module: "mcp-shield" },
+  { event_type: "orphan_event" },
+  "this-is-not-an-object-at-all",
+  {
+    event_id: "not-a-uuid",
+    module: "mcp-shield",
+    event_type: "bad_id",
+  },
+];
+
+const PREFIX = `malformed_probe_${randomUUID()}`;
+const NORMALIZED = [
+  { severity: "not-a-real-severity", details: {} },
+  { severity: "warning", details: null },
+  { severity: "info", details: "should-not-be-a-string" },
+  { severity: "critical", details: [1, 2, 3] },
+  { severity: "info", timestamp_ms: "not-a-number", details: { nested: null } },
+].map((value, index) => ({
+  module: "mcp-shield",
+  event_type: `${PREFIX}_${index}`,
+  tenant_id: TENANT,
+  ...value,
+}));
+
+const VALID_SEVERITIES = new Set(["info", "warning", "critical"]);
+let failures = 0;
+
+function fail(message) {
+  failures++;
+  console.error(`  [FAIL] ${message}`);
+}
+
+function authorization(token) {
+  return { Authorization: `Bearer ${token}` };
+}
+
+async function readEvents(expectedIds, timeoutMs) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ms);
-  const events = [];
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const events = new Map();
   try {
-    const res = await fetch(`${BASE}/api/events`, { signal: controller.signal });
-    const reader = res.body.getReader();
+    const response = await fetch(`${BASE}/api/events`, {
+      headers: authorization(OPERATOR_TOKEN),
+      signal: controller.signal,
+    });
+    if (!response.ok || !response.body) {
+      fail(`event stream returned HTTP ${response.status}`);
+      return events;
+    }
+    const reader = response.body.getReader();
     const decoder = new TextDecoder();
-    let buf = "";
-    while (true) {
+    let buffer = "";
+    while (events.size < expectedIds.size) {
       const { value, done } = await reader.read();
       if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      let idx;
-      while ((idx = buf.indexOf("\n\n")) !== -1) {
-        const frame = buf.slice(0, idx);
-        buf = buf.slice(idx + 2);
+      buffer += decoder.decode(value, { stream: true });
+      let frameEnd;
+      while ((frameEnd = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, frameEnd);
+        buffer = buffer.slice(frameEnd + 2);
         for (const line of frame.split("\n")) {
-          if (line.startsWith("data: ")) {
-            try {
-              events.push(JSON.parse(line.slice(6)));
-            } catch {
-              /* ignore non-JSON keep-alive */
-            }
-          }
+          if (!line.startsWith("data: ")) continue;
+          const event = JSON.parse(line.slice(6));
+          if (expectedIds.has(event.event_id)) events.set(event.event_id, event);
         }
       }
     }
-  } catch {
-    /* aborted by timeout — expected */
+  } catch (error) {
+    if (error?.name !== "AbortError") fail(`event stream failed: ${error}`);
   } finally {
     clearTimeout(timer);
   }
   return events;
 }
 
-async function main() {
-  console.log(`== Malformed-event ingest test against ${BASE} ==`);
+async function ingest(body) {
+  return fetch(`${BASE}/api/ingest`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authorization(INGEST_TOKEN),
+    },
+    body: JSON.stringify(body),
+  });
+}
 
-  // 1. Health check.
+async function main() {
+  console.log(`== Authenticated malformed-event test against ${BASE} ==`);
+
   const health = await fetch(`${BASE}/api/ingest`).then((r) => r.ok).catch(() => false);
   if (!health) {
-    console.error(`  [FAIL] dashboard not reachable at ${BASE} — start it first.`);
+    console.error(`  [FAIL] dashboard not reachable at ${BASE}`);
     process.exit(1);
   }
 
-  // 2. Post the malformed batch (both singly and as an array).
-  for (const evt of MALFORMED) {
-    const res = await fetch(`${BASE}/api/ingest`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(evt),
-    });
-    if (!res.ok) fail(`ingest rejected a malformed event with HTTP ${res.status}`);
-  }
-  // Also an array in one POST.
-  await fetch(`${BASE}/api/ingest`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(MALFORMED),
-  });
-
-  // 3. Read the events back and assert every one is well-formed.
-  const events = await readEvents(1500);
-  if (events.length === 0) fail("no events streamed back from /api/events");
-
-  let checked = 0;
-  for (const e of events) {
-    checked++;
-    if (typeof e.timestamp_ms !== "number" || !Number.isFinite(e.timestamp_ms))
-      fail(`event has non-numeric timestamp_ms: ${JSON.stringify(e)}`);
-    if (typeof e.module !== "string" || e.module.length === 0)
-      fail(`event has invalid module: ${JSON.stringify(e)}`);
-    if (typeof e.event_type !== "string" || e.event_type.length === 0)
-      fail(`event has invalid event_type: ${JSON.stringify(e)}`);
-    if (!VALID_SEVERITIES.has(e.severity))
-      fail(`event has invalid severity "${e.severity}": ${JSON.stringify(e)}`);
-    if (e.details === null || typeof e.details !== "object")
-      fail(`event details is not an object: ${JSON.stringify(e)}`);
-    if (JSON.stringify(e).includes("undefined"))
-      fail(`event serializes with a literal "undefined": ${JSON.stringify(e)}`);
+  for (const event of REJECTED) {
+    const response = await ingest(event);
+    if (response.status !== 422) {
+      fail(`invalid required fields returned HTTP ${response.status}, expected 422`);
+    }
   }
 
-  if (process.exitCode === 1) {
-    console.error("\nMALFORMED-EVENT TEST FAILED");
+  const accepted = await ingest(NORMALIZED);
+  if (accepted.status !== 201) {
+    fail(`normalizable optional fields returned HTTP ${accepted.status}, expected 201`);
+  }
+  const payload = await accepted.json();
+  const ids = new Set(payload.event_ids ?? []);
+  if (ids.size !== NORMALIZED.length) {
+    fail(`ingest returned ${ids.size} event ids, expected ${NORMALIZED.length}`);
+  }
+
+  const events = await readEvents(ids, 2_000);
+  if (events.size !== ids.size) {
+    fail(`stream returned ${events.size} probe events, expected ${ids.size}`);
+  }
+  for (const event of events.values()) {
+    if (event.tenant_id !== TENANT) fail(`wrong tenant on ${event.event_id}`);
+    if (!VALID_SEVERITIES.has(event.severity)) fail(`invalid severity on ${event.event_id}`);
+    if (!event.details || typeof event.details !== "object" || Array.isArray(event.details)) {
+      fail(`details was not normalized to an object on ${event.event_id}`);
+    }
+    if (!Number.isFinite(event.timestamp_ms)) fail(`invalid timestamp on ${event.event_id}`);
+    if (JSON.stringify(event).includes("undefined")) {
+      fail(`literal undefined serialized on ${event.event_id}`);
+    }
+  }
+
+  if (failures) {
+    console.error(`\nMALFORMED-EVENT TEST FAILED (${failures})`);
+    process.exitCode = 1;
   } else {
-    console.log(`  [OK]   ${checked} streamed events all normalized (defaults applied, no undefined)`);
+    console.log(
+      `  [OK] ${REJECTED.length} invalid envelopes rejected; ${events.size} optional-field cases normalized`,
+    );
     console.log("\nMALFORMED-EVENT TEST PASSED");
   }
 }
 
-main();
+await main();
