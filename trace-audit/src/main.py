@@ -16,16 +16,30 @@ from secrets import compare_digest
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .config import MODULE_NAME, load_config
 from .events import context_from_headers, make_emitter
 from .stream_proxy import StreamAuditor
 
 
+MAX_PROMPT_BYTES = 64 * 1024
+
+
 class GenerateRequest(BaseModel):
-    prompt: str
-    max_tokens: int | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: str = Field(min_length=1)
+    max_tokens: int | None = Field(default=None, ge=1, le=4096)
+
+    @field_validator("prompt")
+    @classmethod
+    def prompt_must_be_bounded(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("prompt must not be blank")
+        if len(value.encode("utf-8")) > MAX_PROMPT_BYTES:
+            raise ValueError(f"prompt must be at most {MAX_PROMPT_BYTES} UTF-8 bytes")
+        return value
 
 
 def _load_baseline(path: str) -> dict[str, int]:

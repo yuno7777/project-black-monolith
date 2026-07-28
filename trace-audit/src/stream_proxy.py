@@ -140,7 +140,11 @@ class StreamAuditor:
         """`ctx` carries the caller's correlation identity for this one
         generation, so a leaked credential or a terminated trace can be tied to
         detections the other layers made in the same agent session."""
-        max_tokens = max_tokens or self.cfg.max_tokens
+        if max_tokens is not None and max_tokens < 1:
+            raise ValueError("max_tokens must be positive")
+        # MONOLITH_MAX_TOKENS is an operator-owned ceiling, not merely a
+        # default that an untrusted request may override upward.
+        max_tokens = min(max_tokens or self.cfg.max_tokens, self.cfg.max_tokens)
         start = now_ms()
         monitor = DivergenceMonitor(
             baseline_counts=self.baseline_counts,
