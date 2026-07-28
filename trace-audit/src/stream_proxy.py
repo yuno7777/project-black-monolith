@@ -24,13 +24,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import random
+from dataclasses import dataclass
 from typing import AsyncIterator
 
 from .config import Config
 from .divergence_monitor import DivergenceMonitor
 from .events import EventContext, now_ms
-from .pii_scanner import scan
-from .redaction import redact
+from .pii_scanner import PiiMatch, scan
 
 # Ordinary, on-distribution reasoning vocabulary.
 NORMAL_TOKENS = (
@@ -57,6 +57,142 @@ SAFE_REFUSAL = (
     "safe baseline distribution and was stopped before completion. A safe "
     "refusal has been substituted for the remaining output."
 )
+
+# Delay a small number of output fragments so a credential split by a
+# tokenizer can be recognized and redacted before any fragment is released.
+# The bound keeps streaming latency and memory finite.
+PII_TOKEN_WINDOW = 16
+
+
+@dataclass
+class _BufferedToken:
+    token: str
+    kl: float | None
+
+
+@dataclass
+class _BufferDrain:
+    outputs: list[_BufferedToken]
+    matches: list[PiiMatch]
+
+
+class PiiStreamBuffer:
+    """Bounded look-behind that redacts matches spanning token boundaries."""
+
+    def __init__(self, window_tokens: int = PII_TOKEN_WINDOW):
+        if window_tokens < 2:
+            raise ValueError("PII token window must be at least 2")
+        self.window_tokens = window_tokens
+        self._pending: list[_BufferedToken] = []
+
+    def push(self, token: str, kl: float | None) -> _BufferDrain:
+        self._pending.append(_BufferedToken(token, kl))
+        return self._drain(force=False)
+
+    def finish(self) -> _BufferDrain:
+        return self._drain(force=True)
+
+    def clear(self) -> None:
+        self._pending.clear()
+
+    def _drain(self, *, force: bool) -> _BufferDrain:
+        matches = self._matches_ending_in_latest()
+        if matches:
+            outputs, applied = self._redact_matches(matches)
+            self._pending.clear()
+            return _BufferDrain(outputs, applied)
+        if force:
+            outputs, self._pending = self._pending, []
+            return _BufferDrain(outputs, [])
+        if len(self._pending) > self.window_tokens:
+            return _BufferDrain([self._pending.pop(0)], [])
+        return _BufferDrain([], [])
+
+    def _matches_ending_in_latest(self) -> list[PiiMatch]:
+        """Scan every contiguous suffix so both whole and split tokens match.
+
+        Joining the entire window alone would erase real token boundaries:
+        ``normal`` followed by ``AKIA...`` would lose the word boundary before
+        the key. Suffixes include the final token by itself and every possible
+        cross-token reconstruction ending at it.
+        """
+        if not self._pending:
+            return []
+        full_starts: list[int] = []
+        cursor = 0
+        for item in self._pending:
+            full_starts.append(cursor)
+            cursor += len(item.token)
+
+        latest_length = len(self._pending[-1].token)
+        found: dict[tuple[str, int, int], PiiMatch] = {}
+        for start_index in range(len(self._pending)):
+            candidate = "".join(
+                item.token for item in self._pending[start_index:]
+            )
+            latest_start = len(candidate) - latest_length
+            for match in scan(candidate):
+                if match.end <= latest_start:
+                    continue
+                offset = full_starts[start_index]
+                adjusted = PiiMatch(
+                    label=match.label,
+                    start=match.start + offset,
+                    end=match.end + offset,
+                    value=match.value,
+                )
+                found[(adjusted.label, adjusted.start, adjusted.end)] = adjusted
+        return list(found.values())
+
+    def _redact_matches(
+        self, matches: list[PiiMatch]
+    ) -> tuple[list[_BufferedToken], list[PiiMatch]]:
+        """Apply combined-buffer offsets while retaining token boundaries."""
+        starts: list[int] = []
+        ends: list[int] = []
+        cursor = 0
+        fragments = [item.token for item in self._pending]
+        for fragment in fragments:
+            starts.append(cursor)
+            cursor += len(fragment)
+            ends.append(cursor)
+
+        applied: list[PiiMatch] = []
+        last_start = cursor + 1
+        for match in sorted(matches, key=lambda candidate: candidate.start, reverse=True):
+            if match.end > last_start:
+                continue
+            start_index = next(
+                index for index, end in enumerate(ends) if match.start < end
+            )
+            end_index = next(
+                index for index, end in enumerate(ends) if match.end <= end
+            )
+            start_offset = match.start - starts[start_index]
+            end_offset = match.end - starts[end_index]
+            placeholder = f"[REDACTED:{match.label}]"
+            if start_index == end_index:
+                fragment = fragments[start_index]
+                fragments[start_index] = (
+                    fragment[:start_offset] + placeholder + fragment[end_offset:]
+                )
+            else:
+                fragments[start_index] = (
+                    fragments[start_index][:start_offset] + placeholder
+                )
+                for index in range(start_index + 1, end_index):
+                    fragments[index] = ""
+                fragments[end_index] = fragments[end_index][end_offset:]
+            applied.append(match)
+            last_start = match.start
+
+        outputs = [
+            _BufferedToken(fragment, item.kl)
+            for fragment, item in zip(fragments, self._pending)
+            if fragment
+        ]
+        applied.reverse()
+        return outputs, applied
 
 
 def _looks_divergent(prompt: str) -> bool:
@@ -155,17 +291,21 @@ class StreamAuditor:
         )
         reported_secrets: set[str] = set()
         peak_kl = 0.0
+        pii_buffer = PiiStreamBuffer()
 
         async for token in _backend_stream(prompt, max_tokens, self.cfg):
             if not token:
                 continue
 
-            # --- PII / credential scan (redact before forward + log) -----
-            outgoing = token
-            token_matches = scan(token)
-            if token_matches:
-                outgoing = redact(token, token_matches)
-                for m in token_matches:
+            # Observe the reasoning token immediately; only client delivery is
+            # delayed by the bounded PII look-behind.
+            kl = monitor.observe(token)
+            if kl is not None:
+                peak_kl = max(peak_kl, kl)
+
+            drain = pii_buffer.push(token, kl)
+            if drain.matches:
+                for m in drain.matches:
                     if m.value in reported_secrets:
                         continue
                     reported_secrets.add(m.value)
@@ -185,19 +325,17 @@ class StreamAuditor:
                         "redacted": f"[REDACTED:{m.label}]",
                     }
 
-            # --- divergence monitor --------------------------------------
-            kl = monitor.observe(token)
-            if kl is not None:
-                peak_kl = max(peak_kl, kl)
-
-            yield {
-                "type": "token",
-                "token": outgoing,
-                "kl": round(kl, 4) if kl is not None else None,
-                "threshold": self.cfg.kl_threshold,
-            }
+            for outgoing in drain.outputs:
+                yield {
+                    "type": "token",
+                    "token": outgoing.token,
+                    "kl": round(outgoing.kl, 4) if outgoing.kl is not None else None,
+                    "threshold": self.cfg.kl_threshold,
+                }
 
             if monitor.is_divergent(kl):
+                # Never release look-behind fragments after a terminated trace.
+                pii_buffer.clear()
                 self.emit(
                     "reasoning_divergence_terminate",
                     "critical",
@@ -217,5 +355,34 @@ class StreamAuditor:
                     "safe_refusal": SAFE_REFUSAL,
                 }
                 return
+
+        drain = pii_buffer.finish()
+        if drain.matches:
+            for m in drain.matches:
+                if m.value in reported_secrets:
+                    continue
+                reported_secrets.add(m.value)
+                self.emit(
+                    "pii_redacted",
+                    "warning",
+                    {
+                        "label": m.label,
+                        "redacted_as": f"[REDACTED:{m.label}]",
+                        "position_tokens": monitor.tokens_seen,
+                    },
+                    ctx,
+                )
+                yield {
+                    "type": "pii",
+                    "label": m.label,
+                    "redacted": f"[REDACTED:{m.label}]",
+                }
+        for outgoing in drain.outputs:
+            yield {
+                "type": "token",
+                "token": outgoing.token,
+                "kl": round(outgoing.kl, 4) if outgoing.kl is not None else None,
+                "threshold": self.cfg.kl_threshold,
+            }
 
         yield {"type": "done", "peak_kl": round(peak_kl, 4), "tokens": monitor.tokens_seen}

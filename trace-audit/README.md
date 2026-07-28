@@ -128,9 +128,10 @@ appear raw in the client stream). The script prints `DEMO PASSED`.
 
 ## Known limitations
 
-- The PII scanner is per-token plus a running scan; a secret split across
-  token boundaries by a real tokenizer could evade the per-token check
-  (a production version would scan a sliding character window with overlap).
+- PII output uses a 16-token look-behind, so ordinary cross-token credential
+  splits are redacted before any fragment is released. A credential fragmented
+  across more than 16 tokens can outlive the bounded window; increasing it
+  trades more first-token latency for more coverage.
 - The KL baseline is intentionally small for a fast demo; a production
   baseline would be captured from a large, representative prompt set.
 - Divergence detection flags *distributional* anomaly, not semantics — it is
