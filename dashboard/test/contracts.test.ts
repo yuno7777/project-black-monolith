@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { createEventStream } from "../lib/sse-event-stream";
 import { BenchmarkInputError, normalizeRun } from "../lib/benchmark-store";
 import { normalizeEvent } from "../lib/event-store";
 import { authenticateIngest } from "../lib/ingest-auth";
@@ -231,6 +232,33 @@ test("operator cookie security follows the actual request transport", () => {
   assert.doesNotMatch(local, /; Secure/);
   assert.match(proxied, /; Secure/);
   assert.match(local, /HttpOnly; SameSite=Strict/);
+});
+
+test("event streams release broker subscriptions when readers cancel", async () => {
+  let subscriber: ((event: ReturnType<typeof normalizeEvent>) => void) | undefined;
+  let unsubscribeCalls = 0;
+  const broker = {
+    subscribe(
+      _tenantId: string,
+      callback: (event: ReturnType<typeof normalizeEvent>) => void,
+    ) {
+      subscriber = callback;
+      return () => {
+        unsubscribeCalls++;
+      };
+    },
+  };
+  const stream = createEventStream(
+    new Request("http://localhost/api/events"),
+    "tenant-a",
+    broker,
+    async () => [],
+  );
+  const reader = stream.getReader();
+  await reader.cancel();
+
+  assert.equal(unsubscribeCalls, 1);
+  assert.ok(subscriber, "the broker was subscribed before history replay");
 });
 
 test("trust-model migration keeps the runtime role least-privileged", () => {
