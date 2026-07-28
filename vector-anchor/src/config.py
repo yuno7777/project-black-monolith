@@ -12,6 +12,7 @@ import os
 from dataclasses import dataclass
 
 MODULE_NAME = "vector-anchor"
+MAX_ID_LENGTH = 128
 
 
 @dataclass(frozen=True)
@@ -61,8 +62,63 @@ class Config:
     session_id: str | None
 
 
+def _valid_bearer_token(value: str) -> bool:
+    return len(value) >= 16 and all(
+        char.isascii() and (char.isalnum() or char in "-._~+/=")
+        for char in value
+    )
+
+
+def _validate_id(name: str, value: str | None, *, required: bool = False) -> None:
+    if value is None and not required:
+        return
+    if value is None or not value.strip() or len(value.strip()) > MAX_ID_LENGTH:
+        raise ValueError(f"{name} must be between 1 and {MAX_ID_LENGTH} characters")
+
+
+def _validate_config(cfg: Config) -> Config:
+    if cfg.embedding not in {"hash", "default"}:
+        raise ValueError("MONOLITH_EMBEDDING must be 'hash' or 'default'")
+    if not 1 <= cfg.embedding_dim <= 4096:
+        raise ValueError("MONOLITH_EMBEDDING_DIM must be between 1 and 4096")
+    if not 1 <= cfg.top_k <= 100:
+        raise ValueError("MONOLITH_TOP_K must be between 1 and 100")
+    if not 0 <= cfg.candidate_buffer <= 1000:
+        raise ValueError("MONOLITH_CANDIDATE_BUFFER must be between 0 and 1000")
+    if not 1 <= cfg.top_rank_threshold <= cfg.top_k + cfg.candidate_buffer:
+        raise ValueError(
+            "MONOLITH_TOP_RANK_THRESHOLD must fit within the retrieval candidate set"
+        )
+    if not 1 <= cfg.window_size <= 10_000:
+        raise ValueError("MONOLITH_WINDOW_SIZE must be between 1 and 10000")
+    if not 1 <= cfg.min_distinct_topics <= cfg.window_size:
+        raise ValueError(
+            "MONOLITH_MIN_DISTINCT_TOPICS must be between 1 and the window size"
+        )
+    if not -1.0 <= cfg.topic_similarity <= 1.0:
+        raise ValueError("MONOLITH_TOPIC_SIMILARITY must be between -1 and 1")
+    if not cfg.collection_name.strip():
+        raise ValueError("MONOLITH_COLLECTION must not be blank")
+    if not cfg.chroma_path.strip():
+        raise ValueError("MONOLITH_CHROMA_PATH must not be blank")
+    if bool(cfg.dashboard_url) != bool(cfg.event_token):
+        raise ValueError(
+            "MONOLITH_DASHBOARD_URL and MONOLITH_EVENT_TOKEN must be configured together"
+        )
+    if cfg.dashboard_url and not cfg.dashboard_url.startswith(("http://", "https://")):
+        raise ValueError("MONOLITH_DASHBOARD_URL must use http:// or https://")
+    if cfg.event_token and not _valid_bearer_token(cfg.event_token):
+        raise ValueError("MONOLITH_EVENT_TOKEN must be a header-safe token of at least 16 characters")
+    if cfg.admin_token and not _valid_bearer_token(cfg.admin_token):
+        raise ValueError("MONOLITH_ADMIN_TOKEN must be a header-safe token of at least 16 characters")
+    _validate_id("MONOLITH_TENANT_ID", cfg.tenant_id, required=True)
+    _validate_id("MONOLITH_AGENT_ID", cfg.agent_id)
+    _validate_id("MONOLITH_SESSION_ID", cfg.session_id)
+    return cfg
+
+
 def load_config() -> Config:
-    return Config(
+    cfg = Config(
         chroma_path=os.environ.get("MONOLITH_CHROMA_PATH", "./chroma_store"),
         collection_name=os.environ.get("MONOLITH_COLLECTION", "monolith_corpus"),
         embedding=os.environ.get("MONOLITH_EMBEDDING", "hash").strip().lower(),
@@ -88,3 +144,4 @@ def load_config() -> Config:
         agent_id=os.environ.get("MONOLITH_AGENT_ID") or None,
         session_id=os.environ.get("MONOLITH_SESSION_ID") or None,
     )
+    return _validate_config(cfg)
