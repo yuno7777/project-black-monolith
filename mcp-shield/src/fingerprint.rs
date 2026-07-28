@@ -19,7 +19,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Sha256;
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use tempfile::NamedTempFile;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -211,15 +213,43 @@ impl BaselineStore {
         }
     }
 
-    /// Persist the store to its JSON file (pretty-printed for easy review).
+    /// Persist the store atomically (pretty-printed for easy review).
+    ///
+    /// A direct truncate-and-write can leave a corrupt or empty trust store if
+    /// the process or host stops mid-write. Build and fsync a sibling temporary
+    /// file first, then atomically replace the destination.
     pub fn save(&self) -> Result<()> {
         let file = BaselineFile {
             tools: self.tools.clone(),
         };
         let json =
             serde_json::to_string_pretty(&file).context("failed to serialize baseline store")?;
-        std::fs::write(&self.path, json)
-            .with_context(|| format!("failed to write baseline store to {}", self.path.display()))
+        let parent = self
+            .path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let mut temporary = NamedTempFile::new_in(parent).with_context(|| {
+            format!(
+                "failed to create temporary baseline beside {}",
+                self.path.display()
+            )
+        })?;
+        temporary
+            .write_all(json.as_bytes())
+            .context("failed to write temporary baseline store")?;
+        temporary
+            .as_file()
+            .sync_all()
+            .context("failed to sync temporary baseline store")?;
+        temporary.persist(&self.path).map_err(|error| {
+            anyhow!(
+                "failed to atomically replace baseline store {}: {}",
+                self.path.display(),
+                error.error
+            )
+        })?;
+        Ok(())
     }
 }
 
@@ -349,6 +379,30 @@ mod tests {
         )
         .unwrap();
         assert!(BaselineStore::load(&path, b"test-key").is_err());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn saving_replaces_an_existing_baseline_with_valid_json() {
+        let path = std::env::temp_dir().join(format!(
+            "mcp-shield-atomic-baseline-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let key = b"test-key";
+        let first = json!({ "name": "first", "description": "first" });
+        let first_hash = fingerprint_tool(key, &first).unwrap();
+        let mut store = BaselineStore::load(&path, key).unwrap();
+        store.check("first", &first_hash, "first", &first);
+        store.save().unwrap();
+
+        let second = json!({ "name": "second", "description": "second" });
+        let second_hash = fingerprint_tool(key, &second).unwrap();
+        store.check("second", &second_hash, "second", &second);
+        store.save().unwrap();
+
+        let reloaded = BaselineStore::load(&path, key).expect("replacement must stay valid");
+        assert_eq!(reloaded.tools.len(), 2);
         let _ = std::fs::remove_file(path);
     }
 }
