@@ -10,6 +10,7 @@ reaches the caller's (agent's) context.
 from __future__ import annotations
 
 import hashlib
+import threading
 from typing import Any
 
 from .config import Config
@@ -39,6 +40,10 @@ class RetrieverProxy:
         self.quarantine = quarantine
         self.cfg = cfg
         self.emit = emit
+        # FastAPI runs synchronous endpoints in a thread pool. Tracker and
+        # quarantine updates form one detector decision and must not interleave
+        # with another retrieval or an administrative reset.
+        self._state_lock = threading.RLock()
 
     def retrieve(
         self,
@@ -64,60 +69,62 @@ class RetrieverProxy:
 
         query_embedding = self.embed_fn([query])[0]
 
-        # Record the top-ranked documents for this query so cross-query
-        # frequency can be judged. Only the genuinely top-ranked results are
-        # recorded (a doc buried at rank 8 is not "ranking highly").
-        top_ranked = ids[: self.cfg.top_rank_threshold]
-        self.tracker.record_query(top_ranked, query_embedding)
+        with self._state_lock:
+            # Record the top-ranked documents for this query so cross-query
+            # frequency can be judged. Only the genuinely top-ranked results
+            # are recorded (a doc buried at rank 8 is not "ranking highly").
+            top_ranked = ids[: self.cfg.top_rank_threshold]
+            self.tracker.record_query(top_ranked, query_embedding)
 
-        clean: list[dict[str, Any]] = []
-        withheld: list[dict[str, Any]] = []
+            clean: list[dict[str, Any]] = []
+            withheld: list[dict[str, Any]] = []
 
-        for doc_id, document, distance in zip(ids, docs, dists):
-            if self.quarantine.is_quarantined(doc_id):
-                withheld.append({"id": doc_id, "reason": "already_quarantined"})
-                continue
+            for doc_id, document, distance in zip(ids, docs, dists):
+                if self.quarantine.is_quarantined(doc_id):
+                    withheld.append({"id": doc_id, "reason": "already_quarantined"})
+                    continue
 
-            # Has this document now crossed the universal-bait threshold?
-            if self.tracker.is_anomalous(doc_id):
-                result = self.tracker.evaluate(doc_id)
-                preview = (document or "")[:160]
-                qd = QuarantinedDoc(
-                    doc_id=doc_id,
-                    reason="universal_bait_frequency_anomaly",
-                    score=result.score,
-                    preview=preview,
-                    quarantined_at_ms=now_ms(),
-                )
-                newly = self.quarantine.add(qd)
-                if newly:
-                    self.emit(
-                        "corpus_poison_quarantine",
-                        "critical",
-                        {
-                            "doc_id": doc_id,
-                            "anomaly_score": result.score,
-                            "distinct_topics": result.distinct_topics,
-                            "threshold": self.cfg.min_distinct_topics,
-                            "total_queries_seen": result.total_queries,
-                            # Corpus text is untrusted and may itself contain
-                            # credentials or personal data. Keep the readable
-                            # preview behind the admin-only quarantine route;
-                            # telemetry gets a stable fingerprint instead.
-                            "document_sha256": _content_fingerprint(document or ""),
-                            "document_chars": len(document or ""),
-                            "detection_latency_ms": now_ms() - start,
-                        },
-                        ctx,
+                # Has this document now crossed the universal-bait threshold?
+                if self.tracker.is_anomalous(doc_id):
+                    result = self.tracker.evaluate(doc_id)
+                    preview = (document or "")[:160]
+                    qd = QuarantinedDoc(
+                        doc_id=doc_id,
+                        reason="universal_bait_frequency_anomaly",
+                        score=result.score,
+                        preview=preview,
+                        quarantined_at_ms=now_ms(),
                     )
-                withheld.append({"id": doc_id, "reason": "quarantined_now"})
-                continue
+                    newly = self.quarantine.add(qd)
+                    if newly:
+                        self.emit(
+                            "corpus_poison_quarantine",
+                            "critical",
+                            {
+                                "doc_id": doc_id,
+                                "anomaly_score": result.score,
+                                "distinct_topics": result.distinct_topics,
+                                "threshold": self.cfg.min_distinct_topics,
+                                "total_queries_seen": result.total_queries,
+                                # Corpus text is untrusted and may itself contain
+                                # credentials or personal data. Keep the readable
+                                # preview behind the admin-only quarantine route;
+                                # telemetry gets a stable fingerprint instead.
+                                "document_sha256": _content_fingerprint(document or ""),
+                                "document_chars": len(document or ""),
+                                "detection_latency_ms": now_ms() - start,
+                            },
+                            ctx,
+                        )
+                    withheld.append({"id": doc_id, "reason": "quarantined_now"})
+                    continue
 
-            clean.append(
-                {"id": doc_id, "document": document, "distance": distance}
-            )
+                clean.append(
+                    {"id": doc_id, "document": document, "distance": distance}
+                )
 
-        served = clean[:k]
+            served = clean[:k]
+            quarantine_size = len(self.quarantine)
 
         self.emit(
             "retrieval",
@@ -139,5 +146,22 @@ class RetrieverProxy:
             "query": query,
             "results": served,
             "withheld": withheld,
-            "quarantine_size": len(self.quarantine),
+            "quarantine_size": quarantine_size,
         }
+
+    def quarantine_snapshot(self) -> list[QuarantinedDoc]:
+        with self._state_lock:
+            return self.quarantine.all()
+
+    def quarantine_size(self) -> int:
+        with self._state_lock:
+            return len(self.quarantine)
+
+    def reset_detection(self) -> None:
+        with self._state_lock:
+            self.tracker = FrequencyTracker(
+                min_distinct_topics=self.cfg.min_distinct_topics,
+                topic_similarity=self.cfg.topic_similarity,
+                window_size=self.cfg.window_size,
+            )
+            self.quarantine = Quarantine()
