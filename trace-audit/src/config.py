@@ -10,11 +10,13 @@ patterns before anything is logged or persisted.
 from __future__ import annotations
 
 import os
+import math
 from dataclasses import dataclass
 
 from .divergence_monitor import DEFAULT_KL_THRESHOLD
 
 MODULE_NAME = "trace-audit"
+MAX_ID_LENGTH = 128
 
 
 @dataclass(frozen=True)
@@ -58,8 +60,59 @@ class Config:
     session_id: str | None
 
 
+def _valid_bearer_token(value: str) -> bool:
+    return len(value) >= 16 and all(
+        char.isascii() and (char.isalnum() or char in "-._~+/=")
+        for char in value
+    )
+
+
+def _validate_id(name: str, value: str | None, *, required: bool = False) -> None:
+    if value is None and not required:
+        return
+    if value is None or not value.strip() or len(value.strip()) > MAX_ID_LENGTH:
+        raise ValueError(f"{name} must be between 1 and {MAX_ID_LENGTH} characters")
+
+
+def _validate_config(cfg: Config) -> Config:
+    if cfg.model_backend not in {"mock", "ollama"}:
+        raise ValueError("MONOLITH_MODEL_BACKEND must be 'mock' or 'ollama'")
+    if not cfg.ollama_base_url.startswith(("http://", "https://")):
+        raise ValueError("MONOLITH_OLLAMA_URL must use http:// or https://")
+    if not cfg.ollama_model.strip() or len(cfg.ollama_model) > 128:
+        raise ValueError("MONOLITH_OLLAMA_MODEL must be between 1 and 128 characters")
+    if not cfg.baseline_path.strip():
+        raise ValueError("MONOLITH_BASELINE_PATH must not be blank")
+    if not math.isfinite(cfg.kl_threshold) or not 0 < cfg.kl_threshold <= 100:
+        raise ValueError("MONOLITH_KL_THRESHOLD must be greater than 0 and at most 100")
+    if not 1 <= cfg.window_size <= 10_000:
+        raise ValueError("MONOLITH_TA_WINDOW must be between 1 and 10000")
+    if not 1 <= cfg.min_tokens_before_check <= cfg.window_size:
+        raise ValueError(
+            "MONOLITH_MIN_TOKENS must be between 1 and the divergence window size"
+        )
+    if not math.isfinite(cfg.smoothing) or not 0 < cfg.smoothing <= 100:
+        raise ValueError("MONOLITH_SMOOTHING must be greater than 0 and at most 100")
+    if not 1 <= cfg.max_tokens <= 4096:
+        raise ValueError("MONOLITH_MAX_TOKENS must be between 1 and 4096")
+    if bool(cfg.dashboard_url) != bool(cfg.event_token):
+        raise ValueError(
+            "MONOLITH_DASHBOARD_URL and MONOLITH_EVENT_TOKEN must be configured together"
+        )
+    if cfg.dashboard_url and not cfg.dashboard_url.startswith(("http://", "https://")):
+        raise ValueError("MONOLITH_DASHBOARD_URL must use http:// or https://")
+    if cfg.event_token and not _valid_bearer_token(cfg.event_token):
+        raise ValueError("MONOLITH_EVENT_TOKEN must be a header-safe token of at least 16 characters")
+    if cfg.admin_token and not _valid_bearer_token(cfg.admin_token):
+        raise ValueError("MONOLITH_ADMIN_TOKEN must be a header-safe token of at least 16 characters")
+    _validate_id("MONOLITH_TENANT_ID", cfg.tenant_id, required=True)
+    _validate_id("MONOLITH_AGENT_ID", cfg.agent_id)
+    _validate_id("MONOLITH_SESSION_ID", cfg.session_id)
+    return cfg
+
+
 def load_config() -> Config:
-    return Config(
+    cfg = Config(
         model_backend=os.environ.get("MONOLITH_MODEL_BACKEND", "mock").strip().lower(),
         ollama_base_url=os.environ.get("MONOLITH_OLLAMA_URL", "http://localhost:11434"),
         ollama_model=os.environ.get("MONOLITH_OLLAMA_MODEL", "llama3.2"),
@@ -79,3 +132,4 @@ def load_config() -> Config:
         agent_id=os.environ.get("MONOLITH_AGENT_ID") or None,
         session_id=os.environ.get("MONOLITH_SESSION_ID") or None,
     )
+    return _validate_config(cfg)
