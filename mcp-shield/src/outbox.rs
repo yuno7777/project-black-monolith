@@ -54,6 +54,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
 /// How often the background flusher looks for due records.
 const FLUSH_INTERVAL: Duration = Duration::from_millis(500);
+const MIN_EVENT_TOKEN_LENGTH: usize = 16;
 
 /// HTTP statuses the ingest endpoint returns for input it will never accept:
 /// a bad credential (401/403), a malformed or oversized body (400/413), or an
@@ -61,6 +62,13 @@ const FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 /// they are dead-lettered immediately instead of consuming attempts.
 fn is_permanent(status: u16) -> bool {
     matches!(status, 400 | 401 | 403 | 413 | 422)
+}
+
+fn valid_event_token(token: &str) -> bool {
+    token.len() >= MIN_EVENT_TOKEN_LENGTH
+        && token.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'+' | b'/' | b'=')
+        })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,11 +150,11 @@ impl Outbox {
         // every POST would 401 and be dead-lettered on arrival, so spooling
         // would only burn disk — fail loudly instead.
         let token = match std::env::var("MONOLITH_EVENT_TOKEN") {
-            Ok(t) if !t.is_empty() => t,
+            Ok(token) if valid_event_token(&token) => token,
             _ => {
                 tracing::warn!(
-                    "MONOLITH_DASHBOARD_URL is set but MONOLITH_EVENT_TOKEN is not; \
-                     dashboard forwarding disabled (events still go to stderr)"
+                    min_length = MIN_EVENT_TOKEN_LENGTH,
+                    "MONOLITH_DASHBOARD_URL is set but MONOLITH_EVENT_TOKEN is missing, too short, or not a valid bearer token; dashboard forwarding disabled (events still go to stderr)"
                 );
                 return None;
             }
@@ -487,7 +495,10 @@ mod tests {
         let mut rec = record("x");
         rec.defer("http 503".to_string());
         let first = rec.next_attempt_ms - now_ms();
-        assert!(first >= 2_000 && first <= 3_100, "first retry ~2s, got {first}");
+        assert!(
+            (2_000..=3_100).contains(&first),
+            "first retry ~2s, got {first}"
+        );
         for _ in 0..12 {
             rec.defer("http 503".to_string());
         }
@@ -528,5 +539,14 @@ mod tests {
         );
         assert_eq!(parse_http_url("https://dashboard:3000/api/ingest"), None);
         assert_eq!(parse_http_url("not a url"), None);
+    }
+
+    #[test]
+    fn event_tokens_must_be_long_and_header_safe() {
+        assert!(valid_event_token("abcDEF0123456789-_"));
+        assert!(valid_event_token("base64/value+with=padding"));
+        assert!(!valid_event_token("short"));
+        assert!(!valid_event_token("valid-length-token\r\nInjected: yes"));
+        assert!(!valid_event_token("valid length token with spaces"));
     }
 }
