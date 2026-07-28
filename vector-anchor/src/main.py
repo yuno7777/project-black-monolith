@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from secrets import compare_digest
 
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .config import MODULE_NAME, load_config
 from .events import context_from_headers, make_emitter
@@ -22,18 +22,66 @@ from .retriever_proxy import RetrieverProxy
 from .store import build_embedding_function, get_or_create_collection
 
 
-class RetrieveRequest(BaseModel):
-    query: str
-    k: int | None = None
+MAX_QUERY_LENGTH = 16_384
+MAX_DOCUMENT_TEXT_BYTES = 64 * 1024
+MAX_DOCUMENT_BATCH_BYTES = 1024 * 1024
 
 
-class Document(BaseModel):
-    id: str
-    text: str
+class StrictRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
-class AddDocumentsRequest(BaseModel):
-    documents: list[Document]
+class RetrieveRequest(StrictRequest):
+    query: str = Field(max_length=MAX_QUERY_LENGTH)
+    k: int | None = Field(default=None, ge=1, le=100)
+
+    @field_validator("query")
+    @classmethod
+    def query_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("query must not be blank")
+        return value
+
+
+class Document(StrictRequest):
+    id: str = Field(min_length=1, max_length=128)
+    text: str = Field(min_length=1)
+
+    @field_validator("id")
+    @classmethod
+    def id_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("document id must not be blank")
+        return value
+
+    @field_validator("text")
+    @classmethod
+    def text_must_be_bounded(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("document text must not be blank")
+        if len(value.encode("utf-8")) > MAX_DOCUMENT_TEXT_BYTES:
+            raise ValueError(
+                f"document text must be at most {MAX_DOCUMENT_TEXT_BYTES} UTF-8 bytes"
+            )
+        return value
+
+
+class AddDocumentsRequest(StrictRequest):
+    documents: list[Document] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_batch(self):
+        ids = [document.id for document in self.documents]
+        if len(set(ids)) != len(ids):
+            raise ValueError("document ids must be unique within a batch")
+        total_bytes = sum(len(document.text.encode("utf-8")) for document in self.documents)
+        if total_bytes > MAX_DOCUMENT_BATCH_BYTES:
+            raise ValueError(
+                f"document batch must be at most {MAX_DOCUMENT_BATCH_BYTES} UTF-8 bytes"
+            )
+        return self
 
 
 def build_proxy() -> RetrieverProxy:
