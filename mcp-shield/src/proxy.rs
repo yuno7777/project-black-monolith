@@ -31,6 +31,7 @@ use crate::sanitizer;
 /// Development-only default HMAC key. Override with MCP_SHIELD_KEY.
 const DEV_HMAC_KEY: &str = "mcp-shield-dev-key-do-not-use-in-prod";
 const DEFAULT_BASELINE_PATH: &str = "baseline_hashes.json";
+const MAX_TOOL_NAME_LENGTH: usize = 128;
 
 /// What the proxy does when a schema mismatch is detected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -319,6 +320,43 @@ enum AnalysisOutcome {
     Analyzed { rewritten: Option<String> },
 }
 
+/// Validate the identity-bearing parts of every advertised tool before any
+/// baseline is registered. Duplicate or missing names make "the schema for
+/// tool X" ambiguous and could let an invalid first response seed a baseline
+/// that later enforcement rewrites back into the stream.
+fn validate_tool_entries(tools: &[Value]) -> Result<(), String> {
+    let mut names = HashSet::with_capacity(tools.len());
+    for (index, tool) in tools.iter().enumerate() {
+        let object = tool
+            .as_object()
+            .ok_or_else(|| format!("tool at index {index} is not an object"))?;
+        let name = object
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| format!("tool at index {index} has no non-empty string name"))?;
+        if name.len() > MAX_TOOL_NAME_LENGTH {
+            return Err(format!(
+                "tool name at index {index} exceeds {MAX_TOOL_NAME_LENGTH} bytes"
+            ));
+        }
+        if !names.insert(name) {
+            return Err(format!("tools/list contains duplicate tool name {name:?}"));
+        }
+        if object.get("inputSchema").and_then(Value::as_object).is_none() {
+            return Err(format!("tool {name:?} has no object inputSchema"));
+        }
+        if object
+            .get("description")
+            .is_some_and(|description| !description.is_string())
+        {
+            return Err(format!("tool {name:?} has a non-string description"));
+        }
+    }
+    Ok(())
+}
+
 /// Run every tool in a tools/list result through fingerprint comparison and
 /// the description sanitizer, then persist any newly registered baselines.
 /// In enforce mode, mismatched tools are swapped back to their trusted
@@ -353,6 +391,16 @@ fn analyze_tools_list(
     };
 
     tracing::info!(tool_count = tools.len(), "analyzing tools/list response");
+    if let Err(reason) = validate_tool_entries(tools) {
+        tracing::warn!(reason, "MALFORMED tools/list RESPONSE; baseline unchanged");
+        events::emit_traced(
+            "analysis_error",
+            Severity::Warning,
+            json!({ "reason": reason }),
+            Some(&trace),
+        );
+        return Ok(AnalysisOutcome::Malformed);
+    }
 
     // Lazily initialized clone of the tool array, populated only when
     // enforce mode actually needs to swap a mutated schema out.
@@ -547,6 +595,38 @@ mod tests {
             "a tools/list response without result.tools must be reported as \
              Malformed, never as an analyzed clean pass"
         );
+    }
+
+    #[test]
+    fn malformed_or_duplicate_tools_cannot_seed_a_baseline() {
+        let valid = json!({
+            "name": "read_file",
+            "description": "Read a file.",
+            "inputSchema": { "type": "object" }
+        });
+        let cases = [
+            vec![json!("not-an-object")],
+            vec![json!({
+                "description": "No name.",
+                "inputSchema": { "type": "object" }
+            })],
+            vec![json!({
+                "name": "read_file",
+                "description": "No schema."
+            })],
+            vec![valid.clone(), valid.clone()],
+            vec![json!({
+                "name": "x".repeat(MAX_TOOL_NAME_LENGTH + 1),
+                "inputSchema": { "type": "object" }
+            })],
+        ];
+        for tools in cases {
+            assert!(
+                validate_tool_entries(&tools).is_err(),
+                "malformed tool list must be rejected: {tools:?}"
+            );
+        }
+        validate_tool_entries(&[valid]).expect("valid tool schema");
     }
 
     /// What does MCP-Shield's analysis cost per tool?
