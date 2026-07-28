@@ -16,7 +16,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -32,6 +32,7 @@ use crate::sanitizer;
 const DEV_HMAC_KEY: &str = "mcp-shield-dev-key-do-not-use-in-prod";
 const DEFAULT_BASELINE_PATH: &str = "baseline_hashes.json";
 const MAX_TOOL_NAME_LENGTH: usize = 128;
+const MAX_PENDING_TOOLS_LIST: usize = 1_024;
 
 /// What the proxy does when a schema mismatch is detected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,7 +120,7 @@ pub async fn run(server_cmd: Vec<String>, config: ShieldConfig) -> Result<()> {
         .context("child process has no stdout handle")?;
 
     // Ids of in-flight tools/list requests, shared between both directions.
-    let pending_tools_list: Arc<Mutex<HashSet<String>>> = Arc::default();
+    let pending_tools_list: Arc<Mutex<VecDeque<String>>> = Arc::default();
 
     // agent -> server runs as a background task so the main task can keep
     // draining server output even while stdin is idle.
@@ -152,7 +153,7 @@ pub async fn run(server_cmd: Vec<String>, config: ShieldConfig) -> Result<()> {
 /// ids, and forward each line untouched to the server's stdin.
 async fn forward_agent_to_server(
     mut child_stdin: tokio::process::ChildStdin,
-    pending: Arc<Mutex<HashSet<String>>>,
+    pending: Arc<Mutex<VecDeque<String>>>,
 ) -> Result<()> {
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     while let Some(line) = lines
@@ -172,10 +173,27 @@ async fn forward_agent_to_server(
                 );
                 if msg.method.as_deref() == Some("tools/list") {
                     if let Some(key) = msg.id_key() {
-                        pending
+                        let evicted = {
+                            let mut guard = pending
                             .lock()
-                            .map_err(|_| anyhow!("pending-request lock poisoned"))?
-                            .insert(key);
+                            .map_err(|_| anyhow!("pending-request lock poisoned"))?;
+                            track_pending(&mut guard, key)
+                        };
+                        if let Some(evicted_id) = evicted {
+                            tracing::warn!(
+                                evicted_id,
+                                cap = MAX_PENDING_TOOLS_LIST,
+                                "too many unanswered tools/list requests; evicting oldest correlation id"
+                            );
+                            events::emit(
+                                "analysis_error",
+                                Severity::Warning,
+                                json!({
+                                    "reason": "pending tools/list correlation capacity exceeded",
+                                    "cap": MAX_PENDING_TOOLS_LIST,
+                                }),
+                            );
+                        }
                     }
                 }
             }
@@ -213,7 +231,7 @@ async fn forward_agent_to_server(
 /// tools/list responses, and forward each line untouched to the agent.
 async fn forward_server_to_agent(
     child_stdout: tokio::process::ChildStdout,
-    pending: Arc<Mutex<HashSet<String>>>,
+    pending: Arc<Mutex<VecDeque<String>>>,
     mut store: BaselineStore,
     hmac_key: Vec<u8>,
     mode: ShieldMode,
@@ -252,12 +270,7 @@ async fn forward_server_to_agent(
                 let is_tools_list_response = msg.is_response()
                     && msg
                         .id_key()
-                        .map(|key| {
-                            pending
-                                .lock()
-                                .map(|mut p| p.remove(&key))
-                                .unwrap_or(false)
-                        })
+                        .map(|key| pending.lock().map(|mut p| take_pending(&mut p, &key)).unwrap_or(false))
                         .unwrap_or(false);
                 if is_tools_list_response {
                     // Detection must never break the proxy path — but a
@@ -304,6 +317,24 @@ async fn forward_server_to_agent(
     }
     tracing::info!("MCP server closed stdout");
     Ok(())
+}
+
+fn track_pending(pending: &mut VecDeque<String>, key: String) -> Option<String> {
+    if let Some(position) = pending.iter().position(|existing| existing == &key) {
+        pending.remove(position);
+    }
+    pending.push_back(key);
+    (pending.len() > MAX_PENDING_TOOLS_LIST)
+        .then(|| pending.pop_front())
+        .flatten()
+}
+
+fn take_pending(pending: &mut VecDeque<String>, key: &str) -> bool {
+    let Some(position) = pending.iter().position(|existing| existing == key) else {
+        return false;
+    };
+    pending.remove(position);
+    true
 }
 
 /// Outcome of analyzing one tools/list response.
@@ -627,6 +658,28 @@ mod tests {
             );
         }
         validate_tool_entries(&[valid]).expect("valid tool schema");
+    }
+
+    #[test]
+    fn pending_tools_list_correlations_are_bounded_and_consumed() {
+        let mut pending = VecDeque::new();
+        for index in 0..=MAX_PENDING_TOOLS_LIST {
+            track_pending(&mut pending, index.to_string());
+        }
+        assert_eq!(pending.len(), MAX_PENDING_TOOLS_LIST);
+        assert!(!take_pending(&mut pending, "0"), "oldest id was evicted");
+        assert!(take_pending(
+            &mut pending,
+            &MAX_PENDING_TOOLS_LIST.to_string()
+        ));
+        assert_eq!(pending.len(), MAX_PENDING_TOOLS_LIST - 1);
+
+        track_pending(&mut pending, "duplicate".to_string());
+        track_pending(&mut pending, "duplicate".to_string());
+        assert_eq!(
+            pending.iter().filter(|id| id.as_str() == "duplicate").count(),
+            1
+        );
     }
 
     /// What does MCP-Shield's analysis cost per tool?
