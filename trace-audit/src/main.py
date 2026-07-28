@@ -31,9 +31,23 @@ class GenerateRequest(BaseModel):
 def _load_baseline(path: str) -> dict[str, int]:
     if not os.path.exists(path):
         return {}
+    if os.path.getsize(path) > 16 * 1024 * 1024:
+        raise ValueError("baseline distribution exceeds 16 MiB")
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
-    return {str(k): int(v) for k, v in data.get("counts", {}).items()}
+    if not isinstance(data, dict) or not isinstance(data.get("counts"), dict):
+        raise ValueError("baseline distribution must contain a counts object")
+    counts: dict[str, int] = {}
+    for raw_token, raw_count in data["counts"].items():
+        token = str(raw_token).strip()
+        if not token or len(token) > 512:
+            raise ValueError("baseline tokens must be between 1 and 512 characters")
+        if isinstance(raw_count, bool) or not isinstance(raw_count, int) or raw_count <= 0:
+            raise ValueError("baseline counts must be positive integers")
+        counts[token] = raw_count
+    if len(counts) > 100_000:
+        raise ValueError("baseline vocabulary exceeds 100000 tokens")
+    return counts
 
 
 @asynccontextmanager
