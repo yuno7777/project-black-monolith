@@ -70,8 +70,15 @@ class FrequencyTracker:
     def _evict_if_needed(self) -> None:
         while len(self._window) > self.window_size:
             old_qid = self._window.popleft()
-            for rec in self._docs.values():
+            empty_docs: list[str] = []
+            for doc_id, rec in self._docs.items():
                 rec.queries.pop(old_qid, None)
+                if not rec.queries:
+                    empty_docs.append(doc_id)
+            # High-cardinality clean traffic should not leave one empty record
+            # per document forever after its only query ages out.
+            for doc_id in empty_docs:
+                del self._docs[doc_id]
 
     def distinct_topic_count(self, doc_id: str) -> int:
         """Greedily cluster the queries a document ranked for by similarity,

@@ -81,3 +81,12 @@ def test_rolling_window_evicts_old_queries():
     # remain — never enough to flag.
     assert t.distinct_topic_count("doc") <= 3
     assert not t.is_anomalous("doc")
+
+
+def test_rolling_window_removes_empty_document_records():
+    t = FrequencyTracker(min_distinct_topics=2, topic_similarity=0.30, window_size=1)
+    t.record_query(["old-doc"], emb("garden soil"))
+    t.record_query(["current-doc"], emb("galaxy star"))
+
+    assert "old-doc" not in t._docs
+    assert set(t._docs) == {"current-doc"}

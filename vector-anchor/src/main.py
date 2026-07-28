@@ -183,8 +183,9 @@ def add_documents(req: AddDocumentsRequest, request: Request) -> dict:
 def quarantine(request: Request) -> dict:
     _require_admin(request)
     proxy: RetrieverProxy = app.state.proxy
+    documents = proxy.quarantine_snapshot()
     return {
-        "count": len(proxy.quarantine),
+        "count": len(documents),
         "documents": [
             {
                 "doc_id": d.doc_id,
@@ -193,7 +194,7 @@ def quarantine(request: Request) -> dict:
                 "preview": d.preview,
                 "quarantined_at_ms": d.quarantined_at_ms,
             }
-            for d in proxy.quarantine.all()
+            for d in documents
         ],
     }
 
@@ -205,7 +206,7 @@ def stats(request: Request) -> dict:
     return {
         "module": MODULE_NAME,
         "documents": proxy.collection.count(),
-        "quarantined": len(proxy.quarantine),
+        "quarantined": proxy.quarantine_size(),
         "config": {
             "top_k": proxy.cfg.top_k,
             "min_distinct_topics": proxy.cfg.min_distinct_topics,
@@ -221,10 +222,5 @@ def reset_detection(request: Request) -> dict:
     re-run detection from a clean slate without re-seeding."""
     _require_admin(request)
     proxy: RetrieverProxy = app.state.proxy
-    proxy.tracker = FrequencyTracker(
-        min_distinct_topics=proxy.cfg.min_distinct_topics,
-        topic_similarity=proxy.cfg.topic_similarity,
-        window_size=proxy.cfg.window_size,
-    )
-    proxy.quarantine = Quarantine()
+    proxy.reset_detection()
     return {"status": "reset"}
