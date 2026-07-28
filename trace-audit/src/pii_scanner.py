@@ -5,12 +5,12 @@ On a match, the caller redacts the matched span (see redaction.py) *before*
 anything is logged, and emits an event. Patterns are intentionally conservative
 to keep false positives low in a demo.
 
-**Scope — read this before trusting it.** `stream_proxy` calls `scan()` on each
-token in isolation, not on a rolling buffer, so a secret a tokenizer splits
-across two tokens matches neither half and is missed. That is a real gap, it is
-ordinary tokenizer behaviour rather than an attack, and it is measured in
-`tests/test_evasion.py`. Closing it means scanning a sliding character window
-with overlap; the patterns themselves are not the limitation.
+**Scope — read this before trusting it.** `scan()` operates on one supplied
+string. `stream_proxy.PiiStreamBuffer` concatenates and delays up to 16 output
+tokens before calling it, so ordinary two- or few-token credential splits are
+redacted before any fragment is released. More than 16 adversarial fragments
+can still outlive that bounded window; the measured boundary is pinned in
+`tests/test_evasion.py`.
 """
 
 from __future__ import annotations

@@ -277,16 +277,14 @@ Sections 1–3 measure the detectors against the attacks they are built for. Thi
 section does the opposite: it takes the three evasions the module READMEs admit
 in prose and **builds each one, to find out whether the admission is true**.
 
-**All three evasions succeed.** That is the result, and it is reported rather
-than buried: a limitation stated with a number is a boundary, the same
-limitation stated in prose is a hope. Each is now a test that asserts the
-detector *misses* the attack, so if anyone later closes a gap, a failing test
-forces the claim to be updated rather than left stale.
+Two evasions still succeed; the ordinary two-token TraceAudit split is now
+closed by a bounded look-behind. The tests retain the residual boundary rather
+than claiming the detector became unlimited.
 
 | Evasion | Module | Outcome | Measured cost / bound |
 | :-- | :-- | :-- | :-- |
 | **Slow drip** — surface the bait for one topic per window, let earlier hits age out | VectorAnchor | **Evades.** Peak score 1 vs. a threshold of 4, across 12 distinct topics — 3× the threshold | ~50 covering retrievals per hidden topic (= `window_size`). Drip any faster and it is caught |
-| **Token-boundary split** — a secret the tokenizer splits across two tokens | TraceAudit | **Evades.** All 19 possible split points of a 20-char key match neither half | Bounded: only the split secret is missed; an unsplit secret in the same trace is still caught |
+| **Token-boundary split** — a secret the tokenizer splits across two tokens | TraceAudit | **Blocked.** All 19 possible split points of a 20-char key are reconstructed and redacted before release | A split across more than the 16-token output window can still evade; the bound keeps streaming latency finite |
 | **First-contact poisoning** — the tool is poisoned the first time it is ever seen | MCP-Shield | **Not blocked.** No clean baseline exists to compare or rewrite to | Bounded: still *reported* by the sanitizer, and any later mutation is still caught |
 
 Reproduce: `python -m pytest tests/test_evasion.py` in `vector-anchor/` and
@@ -301,12 +299,11 @@ What the numbers say beyond "it evades":
   test pins the boundary by showing that hits spaced to co-exist inside one
   window are still caught. Raising the window raises the cost linearly, at the
   price of memory and recency.
-- **TraceAudit's gap is a windowing choice, not a detection ceiling.**
-  Concatenating the fragments — what a sliding character window with overlap
-  would do — recovers the secret the per-token scan missed. The regexes are
-  fine; the input they are handed is not. This also corrected a docstring in
-  `pii_scanner.py` that claimed it "runs against the rolling text buffer": it
-  does not, `stream_proxy` hands it one token at a time.
+- **TraceAudit now pays bounded latency to close ordinary splits.** It delays
+  up to 16 output tokens, scans their concatenation, and releases only redacted
+  text when a match crosses token boundaries. The test covers every two-part
+  split and the full 16-token window, while retaining a measured evasion at 17+
+  fragments so the remaining boundary stays explicit.
 - **MCP-Shield's gap is inherent to trust-on-first-use**, not a detector bug,
   and it is the shallowest of the three: the attack is reported (the sanitizer
   is stateless and needs no baseline) and buys exactly one serving, since any

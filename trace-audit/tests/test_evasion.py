@@ -1,16 +1,11 @@
-"""Adversarial evaluation: does the documented evasion actually work?
+"""Adversarial evaluation of the bounded cross-token PII look-behind."""
 
-The README calls token-boundary splitting a known limitation of the PII scanner.
-Prose is cheap, so this measures it. Some of these tests assert that the scanner
-**misses** a secret — that is deliberate. They pin a limitation we already
-believe is real, so the claim in the docs is backed by a number, and so that
-anyone who later closes the gap is told by a failing test to update the claim.
+import asyncio
+from types import SimpleNamespace
 
-Imports only src.pii_scanner, which is stdlib-only.
-Run from the module root: python -m pytest tests/
-"""
-
+import src.stream_proxy as stream_proxy
 from src.pii_scanner import scan
+from src.stream_proxy import PII_TOKEN_WINDOW, PiiStreamBuffer, StreamAuditor
 
 # Fake AWS example credential — the same inert value the fixtures use. Never a
 # real key.
@@ -18,50 +13,107 @@ SECRET = "AKIAIOSFODNN7EXAMPLE"
 
 
 def labels(text: str) -> list[str]:
-    return [m.label for m in scan(text)]
+    return [match.label for match in scan(text)]
 
 
 def test_the_secret_is_caught_when_it_arrives_whole():
-    """The control. If this fails, the evasion results below mean nothing."""
     assert labels(SECRET) == ["aws_access_key_id"]
     assert labels(f"the key is {SECRET} ok") == ["aws_access_key_id"]
 
 
-def test_known_evasion_a_secret_split_across_tokens_is_missed():
-    """DOCUMENTS A LIMITATION — the attack succeeds.
-
-    stream_proxy scans each token in isolation (`scan(token)`), so a secret a
-    tokenizer happens to split is never seen whole by the regex, and neither
-    half matches on its own. Nothing here is contrived: this is ordinary
-    tokenizer behaviour, not an attacker's cleverness — which is what makes it
-    worth reporting.
-    """
+def test_raw_fragments_do_not_match_without_stream_context():
     for cut in range(1, len(SECRET)):
         head, tail = SECRET[:cut], SECRET[cut:]
         assert labels(head) == [], f"unexpected match on {head!r}"
         assert labels(tail) == [], f"unexpected match on {tail!r}"
 
-    # Every one of the 19 possible splits evades the per-token scan.
-    assert all(not labels(SECRET[:c]) and not labels(SECRET[c:]) for c in range(1, len(SECRET)))
+
+def test_all_two_token_splits_are_redacted_before_release():
+    for cut in range(1, len(SECRET)):
+        buffer = PiiStreamBuffer()
+        first = buffer.push(SECRET[:cut], None)
+        second = buffer.push(SECRET[cut:], None)
+        assert first.outputs == []
+        assert [match.label for match in second.matches] == ["aws_access_key_id"]
+        output = "".join(item.token for item in second.outputs)
+        assert SECRET not in output
+        assert output == "[REDACTED:aws_access_key_id]"
 
 
-def test_the_evasion_is_a_windowing_bug_not_a_pattern_bug():
-    """Quantifies the fix. The regex is fine; the input it is handed is not.
+def test_split_secret_is_caught_across_the_full_buffer_window():
+    fragments = list(SECRET[: PII_TOKEN_WINDOW - 1])
+    fragments.append(SECRET[PII_TOKEN_WINDOW - 1 :])
+    buffer = PiiStreamBuffer()
+    outputs = []
+    matches = []
+    for fragment in fragments:
+        drained = buffer.push(fragment, None)
+        outputs.extend(drained.outputs)
+        matches.extend(drained.matches)
+    assert [match.label for match in matches] == ["aws_access_key_id"]
+    assert SECRET not in "".join(item.token for item in outputs)
 
-    Concatenating the fragments — what a sliding character window with overlap
-    would do — catches the secret the per-token scan missed. So the limitation
-    is a scanning-strategy choice, not a detection ceiling.
-    """
-    fragments = ["AKIAIOSF", "ODNN7EXA", "MPLE"]
-    assert all(labels(f) == [] for f in fragments), "no fragment matches alone"
-    assert labels("".join(fragments)) == ["aws_access_key_id"], (
-        "a buffered scan recovers the secret, so overlap-windowing would close this"
+
+def test_redaction_preserves_unrelated_token_boundaries():
+    buffer = PiiStreamBuffer()
+    buffer.push("normal-one", None)
+    buffer.push("normal-two", None)
+    drained = buffer.push(SECRET, None)
+
+    assert [item.token for item in drained.outputs] == [
+        "normal-one",
+        "normal-two",
+        "[REDACTED:aws_access_key_id]",
+    ]
+
+
+def test_known_boundary_more_fragments_than_the_window_can_evade():
+    buffer = PiiStreamBuffer()
+    outputs = []
+    matches = []
+    fragments = list(SECRET[: PII_TOKEN_WINDOW + 1])
+    fragments.append(SECRET[PII_TOKEN_WINDOW + 1 :])
+    for fragment in fragments:
+        drained = buffer.push(fragment, None)
+        outputs.extend(drained.outputs)
+        matches.extend(drained.matches)
+    drained = buffer.finish()
+    outputs.extend(drained.outputs)
+    matches.extend(drained.matches)
+
+    assert matches == []
+    assert "".join(item.token for item in outputs) == SECRET
+
+
+def test_stream_auditor_never_releases_a_split_secret(monkeypatch):
+    async def split_stream():
+        for fragment in ("AKIAIOSF", "ODNN7EXA", "MPLE"):
+            yield fragment
+
+    monkeypatch.setattr(
+        stream_proxy,
+        "_backend_stream",
+        lambda _prompt, _max_tokens, _cfg: split_stream(),
     )
+    cfg = SimpleNamespace(
+        max_tokens=3,
+        model_backend="mock",
+        kl_threshold=100.0,
+        window_size=20,
+        min_tokens_before_check=12,
+        smoothing=0.5,
+    )
+    emitted = []
+    auditor = StreamAuditor(cfg, {}, lambda *args: emitted.append(args))
 
+    async def collect():
+        return [event async for event in auditor.audit("ordinary prompt")]
 
-def test_the_scanner_still_catches_an_unsplit_secret_among_fragments():
-    """Bounds the damage. The gap is only ever the split secret — a second,
-    unsplit secret in the same trace is still caught, so the failure is
-    per-secret rather than a scanner that gives up."""
-    assert labels("ops@example.com") == ["email_address"]
-    assert labels("AKIAIOSF") == []
+    events = asyncio.run(collect())
+    output = "".join(
+        event["token"] for event in events if event["type"] == "token"
+    )
+    assert SECRET not in output
+    assert output == "[REDACTED:aws_access_key_id]"
+    assert any(event["type"] == "pii" for event in events)
+    assert emitted[0][0] == "pii_redacted"
