@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# Every job only checks out and tests the repository. Keep the ephemeral
+# GITHUB_TOKEN read-only so a compromised build step cannot mutate repository
+# contents, issues, packages, or workflow state.
+permissions:
+  contents: read
+
 jobs:
   mcp-shield:
     name: MCP-Shield (Rust build + test)
