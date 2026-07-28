@@ -9,12 +9,17 @@ reaches the caller's (agent's) context.
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from .config import Config
 from .events import EventContext, now_ms
 from .frequency_tracker import FrequencyTracker
 from .quarantine import Quarantine, QuarantinedDoc
+
+
+def _content_fingerprint(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 class RetrieverProxy:
@@ -95,7 +100,12 @@ class RetrieverProxy:
                             "distinct_topics": result.distinct_topics,
                             "threshold": self.cfg.min_distinct_topics,
                             "total_queries_seen": result.total_queries,
-                            "preview": preview,
+                            # Corpus text is untrusted and may itself contain
+                            # credentials or personal data. Keep the readable
+                            # preview behind the admin-only quarantine route;
+                            # telemetry gets a stable fingerprint instead.
+                            "document_sha256": _content_fingerprint(document or ""),
+                            "document_chars": len(document or ""),
                             "detection_latency_ms": now_ms() - start,
                         },
                         ctx,
@@ -113,7 +123,11 @@ class RetrieverProxy:
             "retrieval",
             "info",
             {
-                "query": query,
+                # Queries often carry end-user text or secrets from an agent's
+                # context. Preserve repeat-correlation without copying their
+                # contents into stderr, the outbox, and the event ledger.
+                "query_sha256": _content_fingerprint(query),
+                "query_chars": len(query),
                 "returned": len(served),
                 "withheld": len(withheld),
                 "latency_ms": now_ms() - start,
