@@ -97,7 +97,7 @@ impl ShieldConfig {
 /// Spawn the real MCP server and run both forwarding directions until the
 /// agent closes stdin (or the server exits).
 pub async fn run(server_cmd: Vec<String>, config: ShieldConfig) -> Result<()> {
-    let store = BaselineStore::load(&config.baseline_path);
+    let store = BaselineStore::load(&config.baseline_path, &config.hmac_key)?;
 
     let mut child = Command::new(&server_cmd[0])
         .args(&server_cmd[1..])
@@ -516,7 +516,7 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
-        BaselineStore::load(&path)
+        BaselineStore::load(&path, KEY).expect("fresh test baseline")
     }
 
     fn tools_list_response(description: &str) -> JsonRpcMessage {
