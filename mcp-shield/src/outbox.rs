@@ -67,7 +67,8 @@ fn is_permanent(status: u16) -> bool {
 fn valid_event_token(token: &str) -> bool {
     token.len() >= MIN_EVENT_TOKEN_LENGTH
         && token.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'+' | b'/' | b'=')
+            byte.is_ascii_alphanumeric()
+                || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'+' | b'/' | b'=')
         })
 }
 
@@ -91,7 +92,14 @@ impl SpoolRecord {
     fn defer(&mut self, error: String) {
         self.attempts += 1;
         let base_ms = 1_000u128 << self.attempts.min(8);
-        let jitter_ms = u128::from(self.event_id.as_bytes().iter().map(|b| u32::from(*b)).sum::<u32>() % 1_000);
+        let jitter_ms = u128::from(
+            self.event_id
+                .as_bytes()
+                .iter()
+                .map(|b| u32::from(*b))
+                .sum::<u32>()
+                % 1_000,
+        );
         self.next_attempt_ms = now_ms() + base_ms.min(300_000) + jitter_ms;
         self.last_error = Some(error);
     }
@@ -440,7 +448,8 @@ mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("mcp-shield-outbox-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("mcp-shield-outbox-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -522,7 +531,10 @@ mod tests {
     #[test]
     fn status_lines_parse() {
         assert_eq!(parse_status("HTTP/1.1 201 Created\r\n"), Some(201));
-        assert_eq!(parse_status("HTTP/1.1 503 Service Unavailable\r\n"), Some(503));
+        assert_eq!(
+            parse_status("HTTP/1.1 503 Service Unavailable\r\n"),
+            Some(503)
+        );
         assert_eq!(parse_status("garbage"), None);
         assert_eq!(parse_status(""), None);
     }
@@ -531,11 +543,19 @@ mod tests {
     fn urls_parse_with_and_without_a_port() {
         assert_eq!(
             parse_http_url("http://dashboard:3000/api/ingest"),
-            Some(DashboardTarget { host: "dashboard".into(), port: 3000, path: "/api/ingest".into() })
+            Some(DashboardTarget {
+                host: "dashboard".into(),
+                port: 3000,
+                path: "/api/ingest".into()
+            })
         );
         assert_eq!(
             parse_http_url("http://localhost/api/ingest"),
-            Some(DashboardTarget { host: "localhost".into(), port: 80, path: "/api/ingest".into() })
+            Some(DashboardTarget {
+                host: "localhost".into(),
+                port: 80,
+                path: "/api/ingest".into()
+            })
         );
         assert_eq!(parse_http_url("https://dashboard:3000/api/ingest"), None);
         assert_eq!(parse_http_url("not a url"), None);

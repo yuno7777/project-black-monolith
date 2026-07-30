@@ -175,8 +175,8 @@ async fn forward_agent_to_server(
                     if let Some(key) = msg.id_key() {
                         let evicted = {
                             let mut guard = pending
-                            .lock()
-                            .map_err(|_| anyhow!("pending-request lock poisoned"))?;
+                                .lock()
+                                .map_err(|_| anyhow!("pending-request lock poisoned"))?;
                             track_pending(&mut guard, key)
                         };
                         if let Some(evicted_id) = evicted {
@@ -215,10 +215,7 @@ async fn forward_agent_to_server(
             .write_all(b"\n")
             .await
             .context("writing newline to server stdin")?;
-        child_stdin
-            .flush()
-            .await
-            .context("flushing server stdin")?;
+        child_stdin.flush().await.context("flushing server stdin")?;
     }
     // Agent closed its side; dropping child_stdin sends EOF to the server so
     // it can shut down cleanly.
@@ -270,7 +267,12 @@ async fn forward_server_to_agent(
                 let is_tools_list_response = msg.is_response()
                     && msg
                         .id_key()
-                        .map(|key| pending.lock().map(|mut p| take_pending(&mut p, &key)).unwrap_or(false))
+                        .map(|key| {
+                            pending
+                                .lock()
+                                .map(|mut p| take_pending(&mut p, &key))
+                                .unwrap_or(false)
+                        })
                         .unwrap_or(false);
                 if is_tools_list_response {
                     // Detection must never break the proxy path — but a
@@ -375,7 +377,11 @@ fn validate_tool_entries(tools: &[Value]) -> Result<(), String> {
         if !names.insert(name) {
             return Err(format!("tools/list contains duplicate tool name {name:?}"));
         }
-        if object.get("inputSchema").and_then(Value::as_object).is_none() {
+        if object
+            .get("inputSchema")
+            .and_then(Value::as_object)
+            .is_none()
+        {
             return Err(format!("tool {name:?} has no object inputSchema"));
         }
         if object
@@ -503,8 +509,7 @@ fn analyze_tools_list(
                     fingerprint::short(&hash),
                 );
                 if blocked {
-                    clean_tools.get_or_insert_with(|| tools.clone())[index] =
-                        baseline.tool.clone();
+                    clean_tools.get_or_insert_with(|| tools.clone())[index] = baseline.tool.clone();
                 }
                 events::emit_traced(
                     "schema_mismatch",
@@ -615,10 +620,8 @@ mod tests {
     #[test]
     fn malformed_response_is_distinguished_from_clean_pass() {
         let mut store = temp_store("malformed");
-        let msg = JsonRpcMessage::parse(
-            r#"{"jsonrpc":"2.0","id":2,"result":{"unexpected":true}}"#,
-        )
-        .expect("test message must parse");
+        let msg = JsonRpcMessage::parse(r#"{"jsonrpc":"2.0","id":2,"result":{"unexpected":true}}"#)
+            .expect("test message must parse");
         let outcome =
             analyze_tools_list(&msg, &mut store, KEY, ShieldMode::Enforce).expect("analysis ok");
         assert!(
@@ -677,7 +680,10 @@ mod tests {
         track_pending(&mut pending, "duplicate".to_string());
         track_pending(&mut pending, "duplicate".to_string());
         assert_eq!(
-            pending.iter().filter(|id| id.as_str() == "duplicate").count(),
+            pending
+                .iter()
+                .filter(|id| id.as_str() == "duplicate")
+                .count(),
             1
         );
     }
@@ -723,7 +729,11 @@ mod tests {
         }
         samples.sort_unstable();
         let us = |i: usize| samples[i] as f64 / 1000.0;
-        (us(samples.len() / 2), us(samples.len() * 95 / 100), us(samples.len() * 99 / 100))
+        (
+            us(samples.len() / 2),
+            us(samples.len() * 95 / 100),
+            us(samples.len() * 99 / 100),
+        )
     }
 
     /// `#[ignore]`d because it is a measurement, not an assertion: timings vary
@@ -737,7 +747,10 @@ mod tests {
         let (p50, p95, p99) = measure_per_tool_us();
         println!("\nMCP-Shield — analysis overhead per tool");
         println!("  p50 {p50:8.2} us   p95 {p95:8.2} us   p99 {p99:8.2} us");
-        println!("  a 20-tool tools/list costs ~{:.3} ms of analysis\n", p50 * 20.0 / 1000.0);
+        println!(
+            "  a 20-tool tools/list costs ~{:.3} ms of analysis\n",
+            p50 * 20.0 / 1000.0
+        );
     }
 
     // --- detection-accuracy benchmark ------------------------------------
@@ -780,10 +793,18 @@ mod tests {
     fn sanitizer_confusion() -> (u32, u32, u32, u32) {
         let (mut tp, mut fp, mut tn, mut fn_) = (0u32, 0u32, 0u32, 0u32);
         for d in MALICIOUS_DESCRIPTIONS {
-            if crate::sanitizer::scan_description(d).is_empty() { fn_ += 1 } else { tp += 1 }
+            if crate::sanitizer::scan_description(d).is_empty() {
+                fn_ += 1
+            } else {
+                tp += 1
+            }
         }
         for d in BENIGN_DESCRIPTIONS {
-            if crate::sanitizer::scan_description(d).is_empty() { tn += 1 } else { fp += 1 }
+            if crate::sanitizer::scan_description(d).is_empty() {
+                tn += 1
+            } else {
+                fp += 1
+            }
         }
         (tp, fp, tn, fn_)
     }
@@ -801,11 +822,19 @@ mod tests {
         ];
         let (mut tp, mut fn_) = (0u32, 0u32);
         for m in &mutations {
-            if fingerprint::fingerprint_tool(KEY, m).unwrap() != base_hash { tp += 1 } else { fn_ += 1 }
+            if fingerprint::fingerprint_tool(KEY, m).unwrap() != base_hash {
+                tp += 1
+            } else {
+                fn_ += 1
+            }
         }
         let (mut tn, mut fp) = (0u32, 0u32);
         for _ in 0..4 {
-            if fingerprint::fingerprint_tool(KEY, &base).unwrap() == base_hash { tn += 1 } else { fp += 1 }
+            if fingerprint::fingerprint_tool(KEY, &base).unwrap() == base_hash {
+                tn += 1
+            } else {
+                fp += 1
+            }
         }
         (tp, fp, tn, fn_)
     }
@@ -815,9 +844,15 @@ mod tests {
         let (tp, fp, tn, fn_) = sanitizer_confusion();
         let recall = tp as f64 / (tp + fn_) as f64;
         let precision = tp as f64 / (tp + fp) as f64;
-        assert!(precision >= 0.85, "sanitizer precision {precision} below floor 0.85");
+        assert!(
+            precision >= 0.85,
+            "sanitizer precision {precision} below floor 0.85"
+        );
         assert!(recall >= 0.70, "sanitizer recall {recall} below floor 0.70");
-        assert!(tn >= 5, "the benign corpus must actually exercise precision");
+        assert!(
+            tn >= 5,
+            "the benign corpus must actually exercise precision"
+        );
     }
 
     #[test]
@@ -845,7 +880,11 @@ mod tests {
         let s_recall = s_tp as f64 / (s_tp + s_fn) as f64;
         let s_prec = s_tp as f64 / (s_tp + s_fp) as f64;
         let s_fpr = s_fp as f64 / (s_fp + s_tn) as f64;
-        let s_f1 = if s_prec + s_recall > 0.0 { 2.0 * s_prec * s_recall / (s_prec + s_recall) } else { 0.0 };
+        let s_f1 = if s_prec + s_recall > 0.0 {
+            2.0 * s_prec * s_recall / (s_prec + s_recall)
+        } else {
+            0.0
+        };
         let sanitizer = json!({
             "benchmark_version": 1, "run_at_ms": now, "module": "mcp-shield",
             "detector": "description_sanitizer", "paradigm": "regex",
@@ -870,7 +909,10 @@ mod tests {
             "notes": "Exact HMAC-SHA256 comparison: 100% mutation detection and zero false flags BY CONSTRUCTION, not a tuned detector.",
         });
 
-        println!("BENCHMARK_JSON:{}", serde_json::to_string(&json!([sanitizer, fingerprint])).unwrap());
+        println!(
+            "BENCHMARK_JSON:{}",
+            serde_json::to_string(&json!([sanitizer, fingerprint])).unwrap()
+        );
     }
 
     // --- adversarial evaluation ------------------------------------------
@@ -955,8 +997,13 @@ mod tests {
     fn enforce_mode_rewrites_mutated_schema_to_baseline() {
         let mut store = temp_store("enforce");
         // First sighting registers the clean schema as the trusted baseline.
-        analyze_tools_list(&tools_list_response(CLEAN_DESC), &mut store, KEY, ShieldMode::Enforce)
-            .expect("baseline registration ok");
+        analyze_tools_list(
+            &tools_list_response(CLEAN_DESC),
+            &mut store,
+            KEY,
+            ShieldMode::Enforce,
+        )
+        .expect("baseline registration ok");
         // Rug-pulled replay must be rewritten back to the baseline.
         let outcome = analyze_tools_list(
             &tools_list_response(POISONED_DESC),
@@ -971,7 +1018,10 @@ mod tests {
         else {
             panic!("enforce mode must produce a rewritten response on mismatch");
         };
-        assert!(line.contains(CLEAN_DESC), "agent must receive the trusted schema");
+        assert!(
+            line.contains(CLEAN_DESC),
+            "agent must receive the trusted schema"
+        );
         assert!(
             !line.contains("ignore previous instructions"),
             "agent must never see the poisoned description"
@@ -981,8 +1031,13 @@ mod tests {
     #[test]
     fn monitor_mode_detects_but_does_not_rewrite() {
         let mut store = temp_store("monitor");
-        analyze_tools_list(&tools_list_response(CLEAN_DESC), &mut store, KEY, ShieldMode::Monitor)
-            .expect("baseline registration ok");
+        analyze_tools_list(
+            &tools_list_response(CLEAN_DESC),
+            &mut store,
+            KEY,
+            ShieldMode::Monitor,
+        )
+        .expect("baseline registration ok");
         let outcome = analyze_tools_list(
             &tools_list_response(POISONED_DESC),
             &mut store,
