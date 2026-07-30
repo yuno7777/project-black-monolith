@@ -17,7 +17,15 @@ set -a; . ./.env; set +a
 OP="${MONOLITH_OPERATOR_TOKEN:?set MONOLITH_OPERATOR_TOKEN in .env}"
 AUTH_HEADER="Authorization: Bearer $OP"
 
-DC="docker compose"
+# WSL may have both a Linux Docker client (which expects /var/run/docker.sock)
+# and Docker Desktop's Windows client on PATH. Prefer docker.exe there so the
+# demo reaches Docker Desktop even when WSL integration is disabled.
+if grep -qi microsoft /proc/version 2>/dev/null \
+   && command -v docker.exe >/dev/null 2>&1; then
+    DC="docker.exe compose"
+else
+    DC="docker compose"
+fi
 PAUSE="${DEMO_PAUSE:-3}"   # seconds between phases, so events are easy to follow
 
 # Every attack below is deliberately tolerant (`|| true`) so a hiccup in one
