@@ -171,6 +171,10 @@ mod tests {
         assert_eq!(count("instruction_override"), 4);
         assert_eq!(count("shell_command"), 1);
         assert_eq!(count("invisible_unicode"), 1);
-        assert_eq!(findings.len(), 6, "total must be the sum of the three families");
+        assert_eq!(
+            findings.len(),
+            6,
+            "total must be the sum of the three families"
+        );
     }
 }
