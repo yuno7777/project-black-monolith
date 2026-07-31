@@ -24,6 +24,9 @@ use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
 type HmacSha256 = Hmac<Sha256>;
+const MAX_BASELINE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_BASELINE_TOOLS: usize = 10_000;
+const MAX_TOOL_NAME_BYTES: usize = 128;
 
 /// Recursively serialize a JSON value with object keys sorted, producing a
 /// deterministic canonical form. `serde_json::Map` preserves insertion order
@@ -134,6 +137,22 @@ impl BaselineStore {
     /// turning the defense into a schema-injection mechanism. Corrupt,
     /// unreadable, legacy-unverifiable, or tampered files fail startup closed.
     pub fn load(path: &Path, hmac_key: &[u8]) -> Result<Self> {
+        match std::fs::metadata(path) {
+            Ok(metadata) if metadata.len() > MAX_BASELINE_BYTES => {
+                bail!(
+                    "baseline store {} exceeds the {} byte limit",
+                    path.display(),
+                    MAX_BASELINE_BYTES
+                );
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to inspect baseline store {}", path.display())
+                });
+            }
+        }
         let raw = match std::fs::read_to_string(path) {
             Ok(raw) => raw,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -154,7 +173,20 @@ impl BaselineStore {
 
         let file: BaselineFile = serde_json::from_str(&raw)
             .with_context(|| format!("baseline store {} is not valid JSON", path.display()))?;
+        if file.tools.len() > MAX_BASELINE_TOOLS {
+            bail!(
+                "baseline store contains {} tools; maximum is {}",
+                file.tools.len(),
+                MAX_BASELINE_TOOLS
+            );
+        }
         for (name, entry) in &file.tools {
+            if name.is_empty() || name.len() > MAX_TOOL_NAME_BYTES {
+                bail!(
+                    "baseline tool names must be between 1 and {} bytes",
+                    MAX_TOOL_NAME_BYTES
+                );
+            }
             if entry.tool.is_null() {
                 bail!(
                     "baseline entry {name:?} cannot be authenticated because it has no stored tool schema; recreate the baseline"
@@ -388,6 +420,19 @@ mod tests {
         )
         .unwrap();
         assert!(BaselineStore::load(&path, b"test-key").is_err());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn oversized_baseline_file_fails_before_parsing() {
+        let path = std::env::temp_dir().join(format!(
+            "mcp-shield-oversized-baseline-{}.json",
+            std::process::id()
+        ));
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_BASELINE_BYTES + 1).unwrap();
+        let error = BaselineStore::load(&path, b"key").unwrap_err();
+        assert!(error.to_string().contains("exceeds"));
         let _ = std::fs::remove_file(path);
     }
 
