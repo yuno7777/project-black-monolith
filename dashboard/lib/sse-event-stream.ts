@@ -52,7 +52,16 @@ export function createEventStream(
       const send = (event: MonolithEvent) =>
         safeEnqueue(`data: ${JSON.stringify(event)}\n\n`);
 
-      unsubscribe = broker.subscribe(tenantId, send);
+      let replaying = true;
+      let bufferedLive: MonolithEvent[] = [];
+      const sendLive = (event: MonolithEvent) => {
+        if (replaying) {
+          bufferedLive.push(event);
+        } else {
+          send(event);
+        }
+      };
+      unsubscribe = broker.subscribe(tenantId, sendLive);
       keepAlive = setInterval(() => safeEnqueue(`: keep-alive\n\n`), 15000);
       req.signal.addEventListener("abort", abort, { once: true });
       if (req.signal.aborted) {
@@ -62,11 +71,23 @@ export function createEventStream(
 
       // Subscribe first, then replay the committed ledger. The client dedupes
       // by event_id, so an event committed during the query cannot be missed.
+      // Hold live events until replay completes so the stream remains ordered
+      // oldest-to-newest instead of interleaving new rows ahead of history.
+      const replayedIds = new Set<string>();
       try {
         const history = await loadHistory(tenantId);
-        for (const event of history.reverse()) send(event);
+        for (const event of history.reverse()) {
+          replayedIds.add(event.event_id);
+          send(event);
+        }
       } catch {
         safeEnqueue(`event: system\ndata: {"error":"history unavailable"}\n\n`);
+      } finally {
+        replaying = false;
+        for (const event of bufferedLive) {
+          if (!replayedIds.has(event.event_id)) send(event);
+        }
+        bufferedLive = [];
       }
     },
     cancel() {
