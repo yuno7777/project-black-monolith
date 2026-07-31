@@ -26,6 +26,7 @@ import type { IncidentQuery } from "@/lib/incident-store";
 import { requireOperator } from "@/lib/route-auth";
 import type { IncidentStatus, Severity } from "@/lib/types";
 import { INCIDENT_STATUSES } from "@/lib/types";
+import { jsonBodyError, readJsonBody } from "@/lib/request-body";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -111,13 +112,9 @@ export async function POST(req: Request) {
 
   let body: unknown;
   try {
-    const text = await req.text();
-    if (text.length > 16 * 1024) {
-      return Response.json({ error: "payload exceeds 16 KiB" }, { status: 413 });
-    }
-    body = JSON.parse(text);
-  } catch {
-    return Response.json({ error: "invalid JSON" }, { status: 400 });
+    body = await readJsonBody(req, 16 * 1024);
+  } catch (error) {
+    return jsonBodyError(error) ?? Response.json({ error: "invalid JSON" }, { status: 400 });
   }
 
   let transition;

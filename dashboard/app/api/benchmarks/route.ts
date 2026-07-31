@@ -13,6 +13,7 @@ import {
   persistRun,
 } from "@/lib/benchmark-store";
 import { requireOperator } from "@/lib/route-auth";
+import { jsonBodyError, readJsonBody } from "@/lib/request-body";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -39,13 +40,9 @@ export async function POST(req: Request) {
 
   let body: unknown;
   try {
-    const text = await req.text();
-    if (text.length > 256 * 1024) {
-      return Response.json({ error: "payload exceeds 256 KiB" }, { status: 413 });
-    }
-    body = JSON.parse(text);
-  } catch {
-    return Response.json({ error: "invalid JSON" }, { status: 400 });
+    body = await readJsonBody(req, 256 * 1024);
+  } catch (error) {
+    return jsonBodyError(error) ?? Response.json({ error: "invalid JSON" }, { status: 400 });
   }
 
   let run;
