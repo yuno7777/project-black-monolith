@@ -116,6 +116,15 @@ struct BaselineFile {
 }
 
 impl BaselineStore {
+    /// Whether an operator-approved baseline already exists for this tool.
+    ///
+    /// The proxy uses this before trust-on-first-use registration so enforce
+    /// mode can refuse a suspicious first-contact description instead of
+    /// blessing it as the baseline.
+    pub fn contains(&self, tool_name: &str) -> bool {
+        self.tools.contains_key(tool_name)
+    }
+
     /// Load and authenticate the store from disk, starting empty only when the
     /// file genuinely does not exist.
     ///

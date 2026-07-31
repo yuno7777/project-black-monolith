@@ -228,6 +228,8 @@ envelopes, and durable-outbox recovery/dead-letter behavior.
 - Only line-delimited framing is implemented (the MCP stdio standard);
   `Content-Length` framing is future work.
 - A tool that is poisoned from its very first sighting has no clean
-  baseline to rewrite to — it is registered as-is (and the sanitizer still
-  flags its description). First-contact trust is inherent to the
-  fingerprint-on-first-sight model.
+  fingerprint to compare against. In `enforce` mode, the description
+  sanitizer removes a suspicious first-contact tool and refuses to register
+  it as a baseline. Novel poison outside the sanitizer corpus can still pass
+  first contact, so reviewed pre-provisioned baselines remain the strongest
+  deployment model.

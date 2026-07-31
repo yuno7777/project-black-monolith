@@ -123,12 +123,11 @@ inspected; the fingerprint is exact, so a benign but *legitimate* schema update
 also flags (by design — the operator must re-baseline). This is a
 zero-false-negative / re-approval-required posture, not a tuned detector.
 
-**First-contact trust — measured (§7).** A tool poisoned the *first* time it is
-ever seen has no clean baseline to compare against, so it is registered as-is
-and enforce mode has nothing to rewrite to. Confirmed by test. The blast radius
-is bounded in both directions: the sanitizer is stateless, so the poisoning is
-still *reported* on first sighting, and any later mutation still flags — the
-attacker buys one serving and must stay poisoned to stay hidden.
+**First-contact trust — measured (§7).** A fingerprint cannot distinguish a
+poisoned first sighting from a clean baseline. In enforce mode, the stateless
+description sanitizer closes the known-pattern case by removing the tool and
+refusing to register it. Novel poison outside the sanitizer corpus remains a
+trust-on-first-use limitation.
 
 ---
 
@@ -285,7 +284,7 @@ than claiming the detector became unlimited.
 | :-- | :-- | :-- | :-- |
 | **Slow drip** — surface the bait for one topic per window, let earlier hits age out | VectorAnchor | **Evades.** Peak score 1 vs. a threshold of 4, across 12 distinct topics — 3× the threshold | ~50 covering retrievals per hidden topic (= `window_size`). Drip any faster and it is caught |
 | **Token-boundary split** — a secret the tokenizer splits across two tokens | TraceAudit | **Blocked.** All 19 possible split points of a 20-char key are reconstructed and redacted before release | A split across more than the 16-token output window can still evade; the bound keeps streaming latency finite |
-| **First-contact poisoning** — the tool is poisoned the first time it is ever seen | MCP-Shield | **Not blocked.** No clean baseline exists to compare or rewrite to | Bounded: still *reported* by the sanitizer, and any later mutation is still caught |
+| **First-contact poisoning** — the tool is poisoned the first time it is ever seen | MCP-Shield | **Blocked for known sanitizer patterns.** The tool is removed and no baseline is registered | Novel phrasings outside the sanitizer corpus remain a trust-on-first-use limitation |
 
 Reproduce: `python -m pytest tests/test_evasion.py` in `vector-anchor/` and
 `trace-audit/`; `cargo test known_evasion` in `mcp-shield/`.
@@ -304,10 +303,9 @@ What the numbers say beyond "it evades":
   text when a match crosses token boundaries. The test covers every two-part
   split and the full 16-token window, while retaining a measured evasion at 17+
   fragments so the remaining boundary stays explicit.
-- **MCP-Shield's gap is inherent to trust-on-first-use**, not a detector bug,
-  and it is the shallowest of the three: the attack is reported (the sanitizer
-  is stateless and needs no baseline) and buys exactly one serving, since any
-  later mutation still flags. It is a gap, not a hole.
+- **MCP-Shield still has a trust-on-first-use boundary** for novel poison that
+  matches none of the sanitizer patterns. Known patterns are blocked before a
+  baseline is registered; the adversarial test pins that enforcement behavior.
 
 ---
 
