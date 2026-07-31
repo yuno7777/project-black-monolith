@@ -16,6 +16,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -33,6 +34,10 @@ const DEV_HMAC_KEY: &str = "mcp-shield-dev-key-do-not-use-in-prod";
 const DEFAULT_BASELINE_PATH: &str = "baseline_hashes.json";
 const MAX_TOOL_NAME_LENGTH: usize = 128;
 const MAX_PENDING_TOOLS_LIST: usize = 1_024;
+
+fn content_sha256(value: &str) -> String {
+    hex::encode(Sha256::digest(value.as_bytes()))
+}
 
 /// What the proxy does when a schema mismatch is detected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -518,11 +523,12 @@ fn analyze_tools_list(
                 } else {
                     "monitor mode — mutated schema forwarded unmodified"
                 };
-                let diff = fingerprint::describe_diff(&baseline.description, description);
                 tracing::warn!(
                     tool = name,
                     baseline_hash = fingerprint::short(&baseline.hash),
                     current_hash = fingerprint::short(&hash),
+                    baseline_description_bytes = baseline.description.len(),
+                    current_description_bytes = description.len(),
                     "\n\
                      ╔══════════════════════════════════════════════════════════════╗\n\
                      ║          !!  SCHEMA MISMATCH DETECTED  !!                     ║\n\
@@ -531,8 +537,7 @@ fn analyze_tools_list(
                      \x20   tool:          {name}\n\
                      \x20   baseline hash: {}…\n\
                      \x20   current  hash: {}…\n\
-                     \x20   action:        {action}\n\
-                     \x20   description diff:\n{diff}",
+                     \x20   action:        {action}",
                     fingerprint::short(&baseline.hash),
                     fingerprint::short(&hash),
                 );
@@ -547,8 +552,10 @@ fn analyze_tools_list(
                         "tool": name,
                         "baseline_hash": baseline.hash,
                         "current_hash": hash,
-                        "baseline_description": baseline.description,
-                        "current_description": description,
+                        "baseline_description_sha256": content_sha256(&baseline.description),
+                        "current_description_sha256": content_sha256(description),
+                        "baseline_description_bytes": baseline.description.len(),
+                        "current_description_bytes": description.len(),
                         "mode": if mode == ShieldMode::Enforce { "enforce" } else { "monitor" },
                         "action": if blocked { "rewritten" } else { "forwarded" },
                     }),
