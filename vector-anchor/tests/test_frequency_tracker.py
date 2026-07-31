@@ -107,3 +107,22 @@ def test_replaced_documents_lose_old_frequency_history():
 
     assert t.evaluate("replaced").total_queries == 0
     assert not t.is_anomalous("replaced")
+
+
+def test_topic_score_is_independent_of_query_arrival_order():
+    # The diagonal vector is similar to both axes, while the axes are
+    # dissimilar to one another. Unsorted greedy clustering can score this as
+    # either one or two topics depending on which vector arrives first.
+    vectors = [[1.0, 0.0], [2**-0.5, 2**-0.5], [0.0, 1.0]]
+    scores = []
+    for order in [vectors, list(reversed(vectors)), [vectors[1], vectors[0], vectors[2]]]:
+        tracker = FrequencyTracker(
+            min_distinct_topics=2,
+            topic_similarity=0.7,
+            window_size=10,
+        )
+        for vector in order:
+            tracker.record_query(["doc"], vector)
+        scores.append(tracker.distinct_topic_count("doc"))
+
+    assert scores == [2, 2, 2]

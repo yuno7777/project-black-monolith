@@ -88,7 +88,11 @@ class FrequencyTracker:
         if not rec:
             return 0
         cluster_reps: list[list[float]] = []
-        for emb in rec.queries.values():
+        # Greedy clustering depends on which representative is encountered
+        # first. Sort the vectors so identical traffic produces the same score
+        # even when concurrent requests arrive in a different order.
+        embeddings = sorted(rec.queries.values(), key=tuple)
+        for emb in embeddings:
             if any(cosine(emb, rep) >= self.topic_similarity for rep in cluster_reps):
                 continue
             cluster_reps.append(emb)
