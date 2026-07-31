@@ -72,25 +72,44 @@ test("event normalization requires identity-bearing contract fields", () => {
   );
 });
 
-test("event normalization applies safe optional-field defaults", () => {
+test("event normalization applies safe defaults only when fields are absent", () => {
   const event = normalizeEvent({
     module: "trace-audit",
     event_type: "probe",
-    severity: "unexpected",
-    timestamp_ms: "not-a-number",
-    details: null,
     tenant_id: " tenant-a ",
   });
   assert.equal(event.severity, "info");
   assert.deepEqual(event.details, {});
   assert.equal(event.tenant_id, "tenant-a");
   assert.equal(typeof event.timestamp_ms, "number");
-  assert.ok(
+});
+
+test("event normalization rejects malformed ledger fields", () => {
+  for (const input of [
+    { severity: "unexpected" },
+    { timestamp_ms: "not-a-number" },
+    { timestamp_ms: 1e100 },
+    { schema_version: 3 },
+    { details: null },
+    { source: "forged\nline" },
+  ]) {
+    assert.throws(() =>
+      normalizeEvent({
+        module: "trace-audit",
+        event_type: "probe",
+        ...input,
+      }),
+    );
+  }
+  assert.equal(
     normalizeEvent({
       module: "trace-audit",
       event_type: "probe",
-      timestamp_ms: 1e100,
-    }).timestamp_ms < 1e100,
+      schema_version: 2,
+      severity: "critical",
+      details: { safe: true },
+    }).severity,
+    "critical",
   );
 });
 
