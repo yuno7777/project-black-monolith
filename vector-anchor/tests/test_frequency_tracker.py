@@ -7,6 +7,8 @@ computed exactly as in production.
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.embedding import HashingEmbeddingFunction  # noqa: E402
@@ -126,3 +128,20 @@ def test_topic_score_is_independent_of_query_arrival_order():
         scores.append(tracker.distinct_topic_count("doc"))
 
     assert scores == [2, 2, 2]
+
+
+@pytest.mark.parametrize("vector", [[], [float("nan")], [float("inf")]])
+def test_invalid_embeddings_cannot_enter_detector_state(vector):
+    tracker = make_tracker()
+    with pytest.raises(ValueError, match="non-empty and finite"):
+        tracker.record_query(["doc"], vector)
+    assert tracker._docs == {}
+
+
+def test_recorded_embeddings_are_not_mutated_by_the_caller():
+    tracker = make_tracker()
+    vector = [1.0, 0.0]
+    tracker.record_query(["doc"], vector)
+    vector[:] = [0.0, 1.0]
+
+    assert tracker._docs["doc"].queries[0] == [1.0, 0.0]
