@@ -440,8 +440,10 @@ fn analyze_tools_list(
     }
 
     // Lazily initialized clone of the tool array, populated only when
-    // enforce mode actually needs to swap a mutated schema out.
+    // enforce mode needs to swap a mutated schema out. Suspicious tools with
+    // no clean baseline are removed entirely rather than trusted on first use.
     let mut clean_tools: Option<Vec<Value>> = None;
+    let mut blocked_tools: HashSet<usize> = HashSet::new();
 
     for (index, tool) in tools.iter().enumerate() {
         let name = tool
@@ -452,9 +454,35 @@ fn analyze_tools_list(
             .get("description")
             .and_then(Value::as_str)
             .unwrap_or("");
+        let findings = sanitizer::scan_description(description);
+
+        // A fingerprint can only detect change after a clean baseline exists.
+        // The stateless sanitizer has no such limitation: in enforce mode a
+        // suspicious first sighting must not be registered as trusted or
+        // advertised to the agent.
+        if mode == ShieldMode::Enforce && !findings.is_empty() && !store.contains(name) {
+            blocked_tools.insert(index);
+            tracing::warn!(
+                tool = name,
+                finding_count = findings.len(),
+                "BLOCKED suspicious first-contact tool; baseline was not registered"
+            );
+            events::emit_traced(
+                "suspicious_description",
+                Severity::Warning,
+                json!({
+                    "tool": name,
+                    "findings": findings,
+                    "action": "blocked_first_contact",
+                }),
+                Some(&trace),
+            );
+            continue;
+        }
 
         // --- 1. schema fingerprint vs. trusted baseline -----------------
         let hash = fingerprint::fingerprint_tool(hmac_key, tool)?;
+        let mut restored_from_baseline = false;
         match store.check(name, &hash, description, tool) {
             Verdict::Registered => {
                 tracing::info!(
@@ -510,6 +538,7 @@ fn analyze_tools_list(
                 );
                 if blocked {
                     clean_tools.get_or_insert_with(|| tools.clone())[index] = baseline.tool.clone();
+                    restored_from_baseline = true;
                 }
                 events::emit_traced(
                     "schema_mismatch",
@@ -529,7 +558,6 @@ fn analyze_tools_list(
         }
 
         // --- 2. description sanitizer ------------------------------------
-        let findings = sanitizer::scan_description(description);
         if !findings.is_empty() {
             let summary: Vec<String> = findings
                 .iter()
@@ -550,17 +578,38 @@ fn analyze_tools_list(
             events::emit_traced(
                 "suspicious_description",
                 Severity::Warning,
-                json!({ "tool": name, "findings": findings }),
+                json!({
+                    "tool": name,
+                    "findings": findings,
+                    "action": if mode == ShieldMode::Enforce {
+                        if restored_from_baseline { "restored_baseline" } else { "blocked" }
+                    } else {
+                        "reported"
+                    },
+                }),
                 Some(&trace),
             );
+            // A suspicious schema that matches a baseline created previously
+            // in monitor mode is still unsafe when enforcement is enabled.
+            // With no clean replacement available, remove it from the list.
+            if mode == ShieldMode::Enforce && !restored_from_baseline {
+                blocked_tools.insert(index);
+            }
         }
     }
 
     store.save()?;
 
-    let rewritten = match clean_tools {
-        Some(tools) => Some(rebuild_response(msg, tools)?),
-        None => None,
+    let rewritten = if clean_tools.is_some() || !blocked_tools.is_empty() {
+        let rewritten_tools = clean_tools.unwrap_or_else(|| tools.clone());
+        let filtered = rewritten_tools
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, tool)| (!blocked_tools.contains(&index)).then_some(tool))
+            .collect();
+        Some(rebuild_response(msg, filtered)?)
+    } else {
+        None
     };
     Ok(AnalysisOutcome::Analyzed { rewritten })
 }
@@ -917,35 +966,35 @@ mod tests {
 
     // --- adversarial evaluation ------------------------------------------
     //
-    // The README calls first-contact trust a known limitation. Prose is cheap,
-    // so this measures it. The test below asserts the proxy does NOT block an
-    // attack — deliberately. It pins a limitation inherent to
-    // fingerprint-on-first-sight, so the documented claim is backed by a test,
-    // and anyone who later closes the gap is told by a failure to update it.
+    // The fingerprint is blind before a baseline exists, but the sanitizer is
+    // not. Enforce mode must use that stateless signal to close the known
+    // first-contact path without blessing the rejected schema.
 
     #[test]
-    fn known_evasion_a_tool_poisoned_from_first_contact_is_not_blocked() {
-        // There is no clean baseline to compare against or rewrite to: the
-        // first thing the proxy ever saw *is* the poison, so it is trusted and
-        // registered as-is. Nothing about the fingerprint can help here — the
-        // gap is inherent to trust-on-first-use, not a detector bug.
+    fn suspicious_first_contact_is_blocked_without_seeding_a_baseline() {
+        // There is no clean baseline to restore, so the only safe action is to
+        // remove the tool and leave the baseline empty.
         let mut store = temp_store("first-contact");
         let msg = tools_list_response(POISONED_DESC);
         let outcome =
             analyze_tools_list(&msg, &mut store, KEY, ShieldMode::Enforce).expect("analysis ok");
+        let AnalysisOutcome::Analyzed {
+            rewritten: Some(line),
+        } = outcome
+        else {
+            panic!("enforce mode must rewrite a suspicious first contact");
+        };
         assert!(
-            matches!(outcome, AnalysisOutcome::Analyzed { rewritten: None }),
-            "first contact cannot be a mismatch, so enforce mode has nothing to \
-             rewrite to and the poisoned schema reaches the agent"
+            !line.contains("read_file"),
+            "the unsafe tool must be removed"
         );
+        assert!(!store.contains("read_file"));
     }
 
     #[test]
     fn the_sanitizer_still_flags_a_first_contact_poisoning() {
-        // Bounds the damage above: the fingerprint layer is blind on first
-        // contact, but the description scan is not — it needs no history. So
-        // the attack is *reported* even though it is not *blocked*, which is
-        // the difference between a gap and a hole.
+        // The stateless sanitizer is what makes first-contact blocking
+        // possible even though the fingerprint layer has no history.
         let findings = crate::sanitizer::scan_description(POISONED_DESC);
         assert!(
             !findings.is_empty(),
@@ -955,11 +1004,10 @@ mod tests {
     }
 
     #[test]
-    fn a_rug_pull_after_a_poisoned_baseline_still_flags() {
-        // The evasion buys one serving, not immunity: once the poison is the
-        // baseline, any *further* mutation is still caught. The attacker has to
-        // stay poisoned to stay hidden.
-        let mut store = temp_store("first-contact-then-mutate");
+    fn a_clean_schema_can_register_after_a_blocked_first_contact() {
+        // A rejected first contact must not prevent a later reviewed schema
+        // from becoming the baseline.
+        let mut store = temp_store("blocked-then-clean");
         analyze_tools_list(
             &tools_list_response(POISONED_DESC),
             &mut store,
@@ -974,11 +1022,11 @@ mod tests {
             ShieldMode::Enforce,
         )
         .expect("analysis ok");
-        assert!(
-            matches!(outcome, AnalysisOutcome::Analyzed { rewritten: Some(_) }),
-            "any change from the registered baseline must be caught, even when \
-             the baseline itself was the poisoned schema"
-        );
+        assert!(matches!(
+            outcome,
+            AnalysisOutcome::Analyzed { rewritten: None }
+        ));
+        assert!(store.contains("read_file"));
     }
 
     #[test]
