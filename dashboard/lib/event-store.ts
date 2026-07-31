@@ -7,6 +7,8 @@ const knownModules = new Set(["mcp-shield", "vector-anchor", "trace-audit"]);
 const severities = new Set<Severity>(["info", "warning", "critical"]);
 const MAX_TEXT_LENGTH = 512;
 const MAX_ID_LENGTH = 128;
+const MAX_EVENT_TIMESTAMP_MS = 32_503_680_000_000; // 3000-01-01 UTC
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 // security_events.event_id is a Postgres `uuid`. A supplied id that is not a
 // UUID would fail the insert with 22P02, surface as a 503, and be retried
 // forever by the module outboxes (which correctly treat 5xx as transient) —
@@ -17,9 +19,13 @@ const MAX_ID_LENGTH = 128;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function optionalText(value: unknown): string | undefined {
-  return typeof value === "string" && value.length <= MAX_TEXT_LENGTH && value.length > 0
-    ? value
-    : undefined;
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") throw new Error("event text fields must be strings");
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > MAX_TEXT_LENGTH || CONTROL_CHARACTERS.test(trimmed)) {
+    throw new Error(`event text fields must be printable and at most ${MAX_TEXT_LENGTH} characters`);
+  }
+  return trimmed;
 }
 
 function identityText(value: unknown, field: string): string | undefined {
@@ -50,15 +56,31 @@ export function normalizeEvent(raw: unknown): MonolithEvent {
   const eventType = optionalText(value.event_type);
   if (!eventType) throw new Error("event.event_type is required");
 
-  const severity = severities.has(value.severity as Severity)
-    ? (value.severity as Severity)
-    : "info";
-  const candidateTimestamp = typeof value.timestamp_ms === "number"
-    ? Math.trunc(value.timestamp_ms)
-    : NaN;
-  const timestamp = Number.isSafeInteger(candidateTimestamp) && candidateTimestamp > 0
-    ? candidateTimestamp
-    : Date.now();
+  let severity: Severity = "info";
+  if (value.severity !== undefined) {
+    if (!severities.has(value.severity as Severity)) {
+      throw new Error("event.severity must be info, warning, or critical");
+    }
+    severity = value.severity as Severity;
+  }
+  let timestamp = Date.now();
+  if (value.timestamp_ms !== undefined) {
+    if (
+      typeof value.timestamp_ms !== "number"
+      || !Number.isSafeInteger(value.timestamp_ms)
+      || value.timestamp_ms < 1
+      || value.timestamp_ms > MAX_EVENT_TIMESTAMP_MS
+    ) {
+      throw new Error("event.timestamp_ms must be a supported positive Unix timestamp");
+    }
+    timestamp = value.timestamp_ms;
+  }
+  if (value.schema_version !== undefined && value.schema_version !== 1 && value.schema_version !== 2) {
+    throw new Error("event.schema_version must be 1 or 2");
+  }
+  if (value.details !== undefined && !isDetails(value.details)) {
+    throw new Error("event.details must be a JSON object");
+  }
   let eventId: string = randomUUID();
   if (value.event_id !== undefined && value.event_id !== null) {
     if (typeof value.event_id !== "string" || !UUID_PATTERN.test(value.event_id)) {
@@ -74,7 +96,7 @@ export function normalizeEvent(raw: unknown): MonolithEvent {
     module,
     event_type: eventType,
     severity,
-    details: isDetails(value.details) ? value.details : {},
+    details: value.details ?? {},
     tenant_id: identityText(value.tenant_id, "tenant_id") ?? "default",
     agent_id: identityText(value.agent_id, "agent_id"),
     session_id: identityText(value.session_id, "session_id"),
