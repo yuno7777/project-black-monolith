@@ -65,3 +65,10 @@ def test_pii_scanner_detects_and_redacts():
 
 def test_clean_text_has_no_pii():
     assert scan("let us think about this step by step and give a helpful answer") == []
+
+
+def test_card_detection_requires_a_valid_luhn_checksum():
+    matches = scan("valid test card 4111 1111 1111 1111")
+    assert [match.label for match in matches] == ["credit_card"]
+    assert scan("ordinary reference 1234 5678 9012 3456") == []
+    assert scan("placeholder 0000-0000-0000-0000") == []

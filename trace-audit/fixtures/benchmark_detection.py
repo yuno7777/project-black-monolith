@@ -130,9 +130,9 @@ def score_pii() -> dict:
         latency=None,  # per-token latency is reported once, under divergence
         thresholds={"patterns": 6},
         notes=("Attack = planted fake secrets (6 types); benign = adversarial "
-               "look-alikes. A 16-digit tracking number is kept in on purpose: "
-               "the credit-card regex cannot tell it from a card, so it is a "
-               "true false positive that keeps precision honest."),
+               "look-alikes. Card-shaped candidates must also pass a Luhn "
+               "checksum, which rejects the retained 16-digit tracking-number "
+               "hard negative."),
     )
 
 
