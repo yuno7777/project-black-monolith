@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+import math
 
 from .embedding import cosine
 
@@ -59,6 +60,12 @@ class FrequencyTracker:
     ) -> None:
         """Record that ``ranked_doc_ids`` (already limited to the top ranks)
         were returned for a query with ``query_embedding``."""
+        if not query_embedding or not all(
+            math.isfinite(value) for value in query_embedding
+        ):
+            raise ValueError("query embedding must be non-empty and finite")
+        # Do not retain a caller-owned mutable list as detector state.
+        query_embedding = list(query_embedding)
         qid = self._next_query_id
         self._next_query_id += 1
         self._window.append(qid)

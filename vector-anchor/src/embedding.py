@@ -16,6 +16,7 @@ a model on first use).
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -77,6 +78,10 @@ class HashingEmbeddingFunction:
 
 def cosine(a: list[float], b: list[float]) -> float:
     """Cosine similarity of two equal-length vectors (0.0 if either is zero)."""
+    if not a or len(a) != len(b):
+        raise ValueError("embedding vectors must be non-empty and have equal dimensions")
+    if not all(math.isfinite(value) for value in (*a, *b)):
+        raise ValueError("embedding vectors must contain only finite values")
     dot = sum(x * y for x, y in zip(a, b))
     na = sum(x * x for x in a) ** 0.5
     nb = sum(y * y for y in b) ** 0.5
