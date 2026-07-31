@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import { isBearerToken } from "@/lib/credentials";
 
 type TokenMap = Record<string, Record<string, string>>;
 
@@ -23,7 +24,7 @@ function configuredTokens(): TokenMap {
   // Backward compatibility for the original single-tenant module->token map.
   if (Object.values(value).every((token) => typeof token === "string")) {
     const modules = Object.fromEntries(
-      Object.entries(value).filter(([, token]) => (token as string).length >= 16),
+      Object.entries(value).filter(([, token]) => isBearerToken(token)),
     ) as Record<string, string>;
     if (!Object.keys(modules).length) {
       throw new Error("EVENT_INGEST_TOKENS_JSON has no usable module credentials.");
@@ -39,7 +40,7 @@ function configuredTokens(): TokenMap {
     }
     const modules = Object.fromEntries(
       Object.entries(rawModules as Record<string, unknown>).filter(
-        ([, token]) => typeof token === "string" && token.length >= 16,
+        ([, token]) => isBearerToken(token),
       ),
     ) as Record<string, string>;
     if (Object.keys(modules).length) tenants[tenant] = modules;
@@ -60,5 +61,5 @@ export function authenticateIngest(req: Request, tenant: string, module: string)
   const expected = configuredTokens()[tenant]?.[module];
   const header = req.headers.get("authorization");
   const token = header?.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
-  return Boolean(expected && token && sameToken(token, expected));
+  return Boolean(expected && isBearerToken(token) && sameToken(token, expected));
 }
