@@ -176,7 +176,7 @@ async fn forward_agent_to_server(
                     message = %msg.describe(),
                     "pass-through"
                 );
-                if msg.method.as_deref() == Some("tools/list") {
+                if msg.is_jsonrpc_2() && msg.method.as_deref() == Some("tools/list") {
                     if let Some(key) = msg.id_key() {
                         let evicted = {
                             let mut guard = pending
@@ -269,7 +269,8 @@ async fn forward_server_to_agent(
                     );
                     events::emit("tools_list_changed", Severity::Info, json!({}));
                 }
-                let is_tools_list_response = msg.is_response()
+                let is_tools_list_response = msg.is_jsonrpc_2()
+                    && msg.is_response()
                     && msg
                         .id_key()
                         .map(|key| {
