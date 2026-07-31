@@ -62,6 +62,10 @@ SAFE_REFUSAL = (
 # tokenizer can be recognized and redacted before any fragment is released.
 # The bound keeps streaming latency and memory finite.
 PII_TOKEN_WINDOW = 16
+OLLAMA_CONNECT_TIMEOUT_SECONDS = 5.0
+OLLAMA_READ_TIMEOUT_SECONDS = 30.0
+OLLAMA_WRITE_TIMEOUT_SECONDS = 10.0
+OLLAMA_POOL_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass
@@ -227,7 +231,13 @@ async def _mock_stream(prompt: str, max_tokens: int) -> AsyncIterator[str]:
         await asyncio.sleep(0.02)
 
 
-async def _ollama_stream(prompt: str, max_tokens: int, cfg: Config) -> AsyncIterator[str]:
+async def _ollama_stream(
+    prompt: str,
+    max_tokens: int,
+    cfg: Config,
+    *,
+    transport=None,
+) -> AsyncIterator[str]:
     import json
 
     import httpx  # lazily imported: only needed for the ollama backend
@@ -239,8 +249,15 @@ async def _ollama_stream(prompt: str, max_tokens: int, cfg: Config) -> AsyncIter
         "stream": True,
         "options": {"num_predict": max_tokens},
     }
-    async with httpx.AsyncClient(timeout=None) as client:
+    timeout = httpx.Timeout(
+        connect=OLLAMA_CONNECT_TIMEOUT_SECONDS,
+        read=OLLAMA_READ_TIMEOUT_SECONDS,
+        write=OLLAMA_WRITE_TIMEOUT_SECONDS,
+        pool=OLLAMA_POOL_TIMEOUT_SECONDS,
+    )
+    async with httpx.AsyncClient(timeout=timeout, transport=transport) as client:
         async with client.stream("POST", url, json=payload) as resp:
+            resp.raise_for_status()
             async for line in resp.aiter_lines():
                 if not line.strip():
                     continue

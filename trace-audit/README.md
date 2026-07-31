@@ -49,7 +49,8 @@ token stream in real time. It defends the reasoning layer two ways:
   the PII path has something to catch). Set `MONOLITH_MODEL_BACKEND=ollama`
   and `MONOLITH_OLLAMA_URL` to stream from a real local Ollama server (or any
   compatible `/api/generate` endpoint) instead — the detection logic is
-  identical.
+  identical. Connections use finite connect, write, pool, and idle-read
+  timeouts; non-success HTTP responses fail before model output is streamed.
 - **KL over a token-identity distribution** with an `<other>` catch-all for
   tokens unseen in the baseline. Off-baseline reasoning concentrates mass on
   `<other>` (near-zero baseline mass), which drives KL up sharply.
