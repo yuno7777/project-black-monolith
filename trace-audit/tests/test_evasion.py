@@ -117,3 +117,34 @@ def test_stream_auditor_never_releases_a_split_secret(monkeypatch):
     assert output == "[REDACTED:aws_access_key_id]"
     assert any(event["type"] == "pii" for event in events)
     assert emitted[0][0] == "pii_redacted"
+
+
+def test_duplicate_secret_is_reported_once_without_releasing_it(monkeypatch):
+    async def duplicate_stream():
+        yield SECRET
+        yield "ordinary"
+        yield SECRET
+
+    monkeypatch.setattr(
+        stream_proxy,
+        "_backend_stream",
+        lambda _prompt, _max_tokens, _cfg: duplicate_stream(),
+    )
+    cfg = SimpleNamespace(
+        max_tokens=3,
+        model_backend="mock",
+        kl_threshold=100.0,
+        window_size=20,
+        min_tokens_before_check=12,
+        smoothing=0.5,
+    )
+    emitted = []
+    auditor = StreamAuditor(cfg, {}, lambda *args: emitted.append(args))
+
+    async def collect():
+        return [event async for event in auditor.audit("ordinary prompt")]
+
+    events = asyncio.run(collect())
+    assert sum(event["type"] == "pii" for event in events) == 1
+    assert sum(event[0] == "pii_redacted" for event in emitted) == 1
+    assert SECRET not in repr(events)
