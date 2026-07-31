@@ -10,12 +10,21 @@ from src.retriever_proxy import RetrieverProxy
 
 
 class Collection:
+    def __init__(self):
+        self.documents = {"doc": "document"}
+
     def query(self, **_kwargs):
         return {
             "ids": [["doc"]],
             "documents": [["document"]],
             "distances": [[0.1]],
         }
+
+    def upsert(self, *, ids, documents):
+        self.documents.update(zip(ids, documents))
+
+    def count(self):
+        return len(self.documents)
 
 
 class RacyTracker:
@@ -31,6 +40,9 @@ class RacyTracker:
 
     def is_anomalous(self, _doc_id):
         return False
+
+    def forget_documents(self, _doc_ids):
+        pass
 
 
 def test_concurrent_retrievals_do_not_interleave_detector_updates():
@@ -61,3 +73,29 @@ def test_concurrent_retrievals_do_not_interleave_detector_updates():
 
     assert len(results) == 8
     assert tracker.max_active == 1
+
+
+def test_upsert_clears_stale_quarantine_and_tracker_state():
+    collection = Collection()
+    tracker = RacyTracker()
+    forgotten = []
+    tracker.forget_documents = lambda ids: forgotten.extend(ids)
+    quarantine = Quarantine()
+    from src.quarantine import QuarantinedDoc
+
+    quarantine.add(QuarantinedDoc("doc", "old-content", 4, "old", 1))
+    proxy = RetrieverProxy(
+        collection=collection,
+        embed_fn=lambda _queries: [[1.0]],
+        tracker=tracker,
+        quarantine=quarantine,
+        cfg=SimpleNamespace(),
+        emit=lambda *_args: None,
+    )
+
+    total = proxy.upsert_documents([("doc", "replacement")])
+
+    assert total == 1
+    assert collection.documents["doc"] == "replacement"
+    assert forgotten == ["doc"]
+    assert not quarantine.is_quarantined("doc")

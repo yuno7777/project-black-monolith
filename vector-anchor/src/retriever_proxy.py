@@ -165,3 +165,21 @@ class RetrieverProxy:
                 window_size=self.cfg.window_size,
             )
             self.quarantine = Quarantine()
+
+    def upsert_documents(self, documents: list[tuple[str, str]]) -> int:
+        """Replace corpus documents and invalidate detector state atomically.
+
+        Frequency and quarantine decisions describe specific content. Keeping
+        them after an administrator replaces that content would either leave a
+        remediated document blocked or immediately condemn the new version
+        using the old version's history.
+        """
+        ids = [doc_id for doc_id, _ in documents]
+        with self._state_lock:
+            self.collection.upsert(
+                ids=ids,
+                documents=[text for _, text in documents],
+            )
+            self.tracker.forget_documents(ids)
+            self.quarantine.remove_many(ids)
+            return self.collection.count()

@@ -107,3 +107,8 @@ class FrequencyTracker:
 
     def is_anomalous(self, doc_id: str) -> bool:
         return self.distinct_topic_count(doc_id) >= self.min_distinct_topics
+
+    def forget_documents(self, doc_ids: list[str]) -> None:
+        """Discard history for documents whose corpus content was replaced."""
+        for doc_id in doc_ids:
+            self._docs.pop(doc_id, None)
