@@ -218,6 +218,11 @@ def _stable_seed(prompt: str) -> int:
     return int.from_bytes(hashlib.sha256(prompt.encode("utf-8")).digest()[:8], "big")
 
 
+def _secret_fingerprint(value: str) -> bytes:
+    """One-way in-memory dedupe key; never retain the plaintext credential."""
+    return hashlib.sha256(value.encode("utf-8")).digest()
+
+
 async def _mock_stream(prompt: str, max_tokens: int) -> AsyncIterator[str]:
     rng = random.Random(_stable_seed(prompt))
     pool = DIVERGENT_TOKENS if _looks_divergent(prompt) else NORMAL_TOKENS
@@ -306,7 +311,7 @@ class StreamAuditor:
             min_tokens_before_check=self.cfg.min_tokens_before_check,
             smoothing=self.cfg.smoothing,
         )
-        reported_secrets: set[str] = set()
+        reported_secrets: set[bytes] = set()
         peak_kl = 0.0
         pii_buffer = PiiStreamBuffer()
 
@@ -323,9 +328,10 @@ class StreamAuditor:
             drain = pii_buffer.push(token, kl)
             if drain.matches:
                 for m in drain.matches:
-                    if m.value in reported_secrets:
+                    fingerprint = _secret_fingerprint(m.value)
+                    if fingerprint in reported_secrets:
                         continue
-                    reported_secrets.add(m.value)
+                    reported_secrets.add(fingerprint)
                     self.emit(
                         "pii_redacted",
                         "warning",
@@ -376,9 +382,10 @@ class StreamAuditor:
         drain = pii_buffer.finish()
         if drain.matches:
             for m in drain.matches:
-                if m.value in reported_secrets:
+                fingerprint = _secret_fingerprint(m.value)
+                if fingerprint in reported_secrets:
                     continue
-                reported_secrets.add(m.value)
+                reported_secrets.add(fingerprint)
                 self.emit(
                     "pii_redacted",
                     "warning",
