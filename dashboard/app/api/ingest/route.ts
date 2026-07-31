@@ -4,25 +4,17 @@
 import { getBroker } from "@/lib/event-ingest";
 import { normalizeEvent, persistEvents, checkDatabase } from "@/lib/event-store";
 import { authenticateIngest } from "@/lib/ingest-auth";
+import { jsonBodyError, readJsonBody } from "@/lib/request-body";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
-  const contentLength = Number(req.headers.get("content-length") ?? 0);
-  if (contentLength > 256 * 1024) {
-    return Response.json({ error: "payload exceeds 256 KiB" }, { status: 413 });
-  }
-
   let body: unknown;
   try {
-    const text = await req.text();
-    if (text.length > 256 * 1024) {
-      return Response.json({ error: "payload exceeds 256 KiB" }, { status: 413 });
-    }
-    body = JSON.parse(text);
-  } catch {
-    return Response.json({ error: "invalid JSON" }, { status: 400 });
+    body = await readJsonBody(req, 256 * 1024);
+  } catch (error) {
+    return jsonBodyError(error) ?? Response.json({ error: "invalid JSON" }, { status: 400 });
   }
 
   const items = Array.isArray(body) ? body : [body];

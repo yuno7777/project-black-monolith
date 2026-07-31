@@ -11,6 +11,7 @@ import { normalizeEvent } from "../lib/event-store";
 import { authenticateIngest } from "../lib/ingest-auth";
 import { authenticateOperatorToken, operatorCookie } from "../lib/operator-auth";
 import { requireOperator } from "../lib/route-auth";
+import { JsonBodyError, readJsonBody } from "../lib/request-body";
 
 function detector(overrides: Record<string, unknown> = {}) {
   return {
@@ -110,6 +111,28 @@ test("event normalization rejects malformed ledger fields", () => {
       details: { safe: true },
     }).severity,
     "critical",
+  );
+});
+
+test("JSON body limits count UTF-8 bytes and chunked content", async () => {
+  const multibyte = JSON.stringify({ value: "😀".repeat(10) });
+  await assert.rejects(
+    () =>
+      readJsonBody(
+        new Request("http://localhost/api", { method: "POST", body: multibyte }),
+        30,
+      ),
+    (error: unknown) => error instanceof JsonBodyError && error.status === 413,
+  );
+  assert.deepEqual(
+    await readJsonBody(
+      new Request("http://localhost/api", {
+        method: "POST",
+        body: JSON.stringify({ safe: true }),
+      }),
+      64,
+    ),
+    { safe: true },
   );
 });
 

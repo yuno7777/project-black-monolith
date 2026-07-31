@@ -7,6 +7,7 @@ import {
   operatorCookie,
   revokeOperatorSession,
 } from "@/lib/operator-auth";
+import { jsonBodyError, readJsonBody } from "@/lib/request-body";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -38,14 +39,10 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   let token = "";
   try {
-    const text = await req.text();
-    if (text.length > 8 * 1024) {
-      return Response.json({ error: "payload exceeds 8 KiB" }, { status: 413 });
-    }
-    const body = JSON.parse(text) as { token?: unknown };
+    const body = await readJsonBody(req, 8 * 1024) as { token?: unknown };
     token = typeof body?.token === "string" ? body.token.trim() : "";
-  } catch {
-    return Response.json({ error: "invalid JSON" }, { status: 400 });
+  } catch (error) {
+    return jsonBodyError(error) ?? Response.json({ error: "invalid JSON" }, { status: 400 });
   }
 
   try {
