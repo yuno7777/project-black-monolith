@@ -90,3 +90,20 @@ def test_rolling_window_removes_empty_document_records():
 
     assert "old-doc" not in t._docs
     assert set(t._docs) == {"current-doc"}
+
+
+def test_replaced_documents_lose_old_frequency_history():
+    t = make_tracker()
+    for query in [
+        "prune tomato garden",
+        "red giant star galaxy",
+        "boil pasta noodles",
+        "emergency savings budget",
+    ]:
+        t.record_query(["replaced"], emb(query))
+    assert t.is_anomalous("replaced")
+
+    t.forget_documents(["replaced"])
+
+    assert t.evaluate("replaced").total_queries == 0
+    assert not t.is_anomalous("replaced")

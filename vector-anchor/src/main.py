@@ -172,11 +172,8 @@ def add_documents(req: AddDocumentsRequest, request: Request) -> dict:
     contend on ChromaDB's SQLite store)."""
     _require_admin(request)
     proxy: RetrieverProxy = app.state.proxy
-    proxy.collection.upsert(
-        ids=[d.id for d in req.documents],
-        documents=[d.text for d in req.documents],
-    )
-    return {"added": len(req.documents), "total": proxy.collection.count()}
+    total = proxy.upsert_documents([(document.id, document.text) for document in req.documents])
+    return {"added": len(req.documents), "total": total}
 
 
 @app.get("/quarantine")
