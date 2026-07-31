@@ -5,7 +5,7 @@ import json
 import pytest
 
 from src.config import load_config
-from src.main import _load_baseline
+from src.main import MAX_BASELINE_TOKEN_COUNT, _load_baseline
 
 
 @pytest.mark.parametrize(
@@ -57,6 +57,8 @@ def test_dashboard_credentials_are_paired_and_header_safe(monkeypatch):
         {"counts": {"token": -1}},
         {"counts": {"token": 1.5}},
         {"counts": {"token": True}},
+        {"counts": {"token": MAX_BASELINE_TOKEN_COUNT + 1}},
+        {"counts": {" token ": 1, "token": 2}},
     ],
 )
 def test_invalid_baseline_distributions_fail_closed(tmp_path, payload):

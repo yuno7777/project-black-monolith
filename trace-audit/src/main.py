@@ -24,6 +24,8 @@ from .stream_proxy import StreamAuditor
 
 
 MAX_PROMPT_BYTES = 64 * 1024
+MAX_BASELINE_TOKEN_COUNT = 2_147_483_647
+MAX_BASELINE_TOTAL = 100_000_000_000_000
 
 
 class GenerateRequest(BaseModel):
@@ -56,11 +58,21 @@ def _load_baseline(path: str) -> dict[str, int]:
         token = str(raw_token).strip()
         if not token or len(token) > 512:
             raise ValueError("baseline tokens must be between 1 and 512 characters")
-        if isinstance(raw_count, bool) or not isinstance(raw_count, int) or raw_count <= 0:
-            raise ValueError("baseline counts must be positive integers")
+        if (
+            isinstance(raw_count, bool)
+            or not isinstance(raw_count, int)
+            or not 0 < raw_count <= MAX_BASELINE_TOKEN_COUNT
+        ):
+            raise ValueError(
+                f"baseline counts must be positive integers no greater than {MAX_BASELINE_TOKEN_COUNT}"
+            )
+        if token in counts:
+            raise ValueError("baseline tokens must be unique after trimming")
         counts[token] = raw_count
     if len(counts) > 100_000:
         raise ValueError("baseline vocabulary exceeds 100000 tokens")
+    if sum(counts.values()) > MAX_BASELINE_TOTAL:
+        raise ValueError("baseline total count exceeds the supported limit")
     return counts
 
 
