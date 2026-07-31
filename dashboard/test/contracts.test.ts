@@ -303,6 +303,56 @@ test("event streams release broker subscriptions when readers cancel", async () 
   assert.ok(subscriber, "the broker was subscribed before history replay");
 });
 
+test("event streams replay history before buffered live events without duplicates", async () => {
+  let subscriber: ((event: ReturnType<typeof normalizeEvent>) => void) | undefined;
+  let resolveHistory!: (events: ReturnType<typeof normalizeEvent>[]) => void;
+  const historyPromise = new Promise<ReturnType<typeof normalizeEvent>[]>((resolve) => {
+    resolveHistory = resolve;
+  });
+  const broker = {
+    subscribe(
+      _tenantId: string,
+      callback: (event: ReturnType<typeof normalizeEvent>) => void,
+    ) {
+      subscriber = callback;
+      return () => {};
+    },
+  };
+  const event = (id: string, timestamp: number) =>
+    normalizeEvent({
+      event_id: id,
+      module: "mcp-shield",
+      event_type: "probe",
+      timestamp_ms: timestamp,
+    });
+  const oldEvent = event("00000000-0000-4000-8000-000000000001", 1);
+  const caughtUpEvent = event("00000000-0000-4000-8000-000000000002", 2);
+  const liveEvent = event("00000000-0000-4000-8000-000000000003", 3);
+  const stream = createEventStream(
+    new Request("http://localhost/api/events"),
+    "default",
+    broker,
+    async () => historyPromise,
+  );
+  const reader = stream.getReader();
+  subscriber!(caughtUpEvent);
+  subscriber!(liveEvent);
+  resolveHistory([caughtUpEvent, oldEvent]);
+
+  const decoder = new TextDecoder();
+  const chunks = [];
+  for (let index = 0; index < 3; index++) {
+    const result = await reader.read();
+    chunks.push(decoder.decode(result.value));
+  }
+  await reader.cancel();
+
+  assert.match(chunks[0], new RegExp(oldEvent.event_id));
+  assert.match(chunks[1], new RegExp(caughtUpEvent.event_id));
+  assert.match(chunks[2], new RegExp(liveEvent.event_id));
+  assert.equal(chunks.join("").match(new RegExp(caughtUpEvent.event_id, "g"))?.length, 1);
+});
+
 test("trust-model migration keeps the runtime role least-privileged", () => {
   const sql = readFileSync(
     new URL("../../supabase/migrations/20260727091512_production_trust_model.sql", import.meta.url),
