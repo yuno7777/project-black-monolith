@@ -405,7 +405,7 @@ metric fits all would be the dishonesty this project argues against.
 | :-- | :-- | ---: | ---: | ---: | ---: |
 | VectorAnchor · frequency anomaly | threshold | **75%** | 100% | 0% | 0.857 |
 | TraceAudit · reasoning divergence | threshold | 100% | 100% | 0% | 1.000 |
-| TraceAudit · PII scanner | regex | 100% | **85.7%** | 11.1% | 0.923 |
+| TraceAudit · PII scanner | regex + Luhn | 100% | 100% | 0% | 1.000 |
 | MCP-Shield · description sanitizer | regex | **71.4%** | 100% | 0% | 0.833 |
 | MCP-Shield · schema fingerprint | exact | 100% | 100% | 0% | 1.000 |
 
@@ -415,10 +415,10 @@ baked into the corpus rather than smoothed away:
 - **VectorAnchor 75%** — of four engineered bait documents, the three that
   actually rank broadly are caught; a deliberately subtle bait that never ranks
   across enough topics is missed. Labelled by intent, so that miss counts.
-- **PII precision 85.7%** — a 16-digit shipment tracking number is
-  indistinguishable from a card number to the regex and is flagged. The
-  false positive is kept in the corpus on purpose, so the over-match is
-  reported, not hidden.
+- **PII precision 100% on this corpus** — the retained 16-digit shipment
+  tracking number has card-like syntax but fails the Luhn checksum, so it is
+  no longer over-matched. This remains a small synthetic fixture, not a claim
+  that arbitrary production PII has perfect precision.
 - **Sanitizer 71.4%** — it catches known injection markers but misses two novel
   phrasings with no marker. Pattern detection is precise (100%) but incomplete,
   and the corpus says so.

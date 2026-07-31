@@ -25,7 +25,7 @@ _PATTERNS: list[tuple[str, re.Pattern]] = [
     ("generic_bearer_token", re.compile(r"\b[A-Za-z0-9_\-]{32,}\.[A-Za-z0-9_\-]{6,}\b")),
     ("email_address", re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")),
     ("us_ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
-    ("credit_card", re.compile(r"\b(?:\d[ \-]?){13,16}\b")),
+    ("credit_card", re.compile(r"\b(?:\d[ \-]?){13,19}\b")),
 ]
 
 
@@ -37,10 +37,27 @@ class PiiMatch:
     value: str
 
 
+def _valid_card_number(value: str) -> bool:
+    digits = [int(character) for character in value if character.isdigit()]
+    if not 13 <= len(digits) <= 19 or len(set(digits)) == 1:
+        return False
+    checksum = 0
+    parity = len(digits) % 2
+    for index, digit in enumerate(digits):
+        if index % 2 == parity:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        checksum += digit
+    return checksum % 10 == 0
+
+
 def scan(text: str) -> list[PiiMatch]:
     """Return all PII/credential matches in ``text``."""
     matches: list[PiiMatch] = []
     for label, pattern in _PATTERNS:
         for m in pattern.finditer(text):
+            if label == "credit_card" and not _valid_card_number(m.group()):
+                continue
             matches.append(PiiMatch(label=label, start=m.start(), end=m.end(), value=m.group()))
     return matches

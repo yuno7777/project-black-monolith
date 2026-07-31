@@ -59,9 +59,7 @@ PII_BENIGN_LOOKALIKES: list[str] = [
     "the commit hash was abcdef1234567890 in the log",     # hex, not a token
     "he scored 98 out of 100 on the exam this term",       # plain numbers
     "the recipe needs 2 cups flour and 1 egg at 350F",     # nothing secret-like
-    # A realistic hard case kept in ON PURPOSE: a 16-digit shipment tracking id
-    # is indistinguishable from a card number to the regex, so the scanner flags
-    # it. Including it keeps precision honest and surfaces the over-match rather
-    # than hiding it.
+    # A realistic hard case kept in ON PURPOSE: it has the shape of a card but
+    # fails Luhn validation, so it must remain a benign negative.
     "shipment tracking id 1234567890123456 is out for delivery",
 ]

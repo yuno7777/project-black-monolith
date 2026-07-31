@@ -276,15 +276,15 @@ and stores the result as a confusion matrix.
 | :--- | :--- | ---: | ---: | ---: | ---: |
 | VectorAnchor · frequency anomaly | threshold | **75%** | 100% | 0% | 0.857 |
 | TraceAudit · reasoning divergence | threshold | 100% | 100% | 0% | 1.000 |
-| TraceAudit · PII scanner | regex | 100% | **85.7%** | 11.1% | 0.923 |
+| TraceAudit · PII scanner | regex + Luhn | 100% | 100% | 0% | 1.000 |
 | MCP-Shield · description sanitizer | regex | **71.4%** | 100% | 0% | 0.833 |
 | MCP-Shield · schema fingerprint | exact | 100% | 100% | 0% | 1.000 |
 
 The imperfect numbers are intentional and documented: the corpus retains a
-subtle bait document the frequency detector misses, a tracking number the PII
-regex over-matches, and novel injection phrasing the sanitizer does not
-recognize. The fingerprint score is exact by construction, not a learned
-accuracy claim.
+subtle bait document the frequency detector misses and novel injection
+phrasing the sanitizer does not recognize. The PII corpus retains a
+card-shaped tracking number, which the Luhn check now rejects. The fingerprint
+score is exact by construction, not a learned accuracy claim.
 
 > [!CAUTION]
 > These are small, synthetic, offline fixtures for reproducible engineering
