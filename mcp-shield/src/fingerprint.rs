@@ -294,36 +294,6 @@ impl BaselineStore {
     }
 }
 
-/// Human-readable summary of how a description changed, for mismatch logs.
-/// Finds the common prefix/suffix and reports the segment that was removed
-/// and the segment that was added (for an appended rug-pull instruction the
-/// "removed" segment is empty and "added" is exactly the injected sentence).
-pub fn describe_diff(old: &str, new: &str) -> String {
-    let old_chars: Vec<char> = old.chars().collect();
-    let new_chars: Vec<char> = new.chars().collect();
-
-    let prefix = old_chars
-        .iter()
-        .zip(new_chars.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
-    let max_suffix = old_chars.len().min(new_chars.len()) - prefix;
-    let suffix = old_chars
-        .iter()
-        .rev()
-        .zip(new_chars.iter().rev())
-        .take_while(|(a, b)| a == b)
-        .count()
-        .min(max_suffix);
-
-    let removed: String = old_chars[prefix..old_chars.len() - suffix].iter().collect();
-    let added: String = new_chars[prefix..new_chars.len() - suffix].iter().collect();
-
-    format!(
-        "    - baseline description: {old:?}\n    + current  description: {new:?}\n    removed segment: {removed:?}\n    added   segment: {added:?}"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

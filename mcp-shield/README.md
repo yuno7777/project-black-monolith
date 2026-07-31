@@ -14,7 +14,7 @@ classes:
    with **HMAC-SHA256 over a canonical (sorted-key) serialization**, stores
    the first-seen hash *and the full tool schema* as a trusted baseline in
    `baseline_hashes.json`, and raises a `SCHEMA MISMATCH DETECTED` warning
-   (with a description diff and old/new hashes) whenever a later sighting
+   (with content fingerprints, lengths, and old/new schema hashes) whenever a later sighting
    doesn't match. In **enforce mode (the default)** it goes further and
    actively blocks the mutation — see below.
 
@@ -102,7 +102,7 @@ limitations).
 - `src/proxy.rs` — pass-through routing, request/response id correlation,
   `tools/list` interception, enforce-mode response rewriting.
 - `src/fingerprint.rs` — canonical serialization, HMAC-SHA256, baseline
-  store (`baseline_hashes.json`), description diffing.
+  store (`baseline_hashes.json`), privacy-safe description fingerprints.
 - `src/sanitizer.rs` — description pattern scanning (3 detector families).
 - `src/jsonrpc.rs` — minimal JSON-RPC 2.0 message model.
 - `src/events.rs` — structured event emission in the shared Monolith shape.
