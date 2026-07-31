@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { isBearerToken } from "@/lib/credentials";
 import { withSessionDb, withTenantDb } from "@/lib/db";
 
 /**
@@ -11,7 +12,6 @@ import { withSessionDb, withTenantDb } from "@/lib/db";
  */
 
 export const OPERATOR_SESSION_COOKIE = "monolith-session";
-const MIN_TOKEN_LENGTH = 16;
 const MAX_ID_LENGTH = 128;
 const DEFAULT_SESSION_TTL_SECONDS = 8 * 60 * 60;
 
@@ -74,7 +74,7 @@ function configuredOperators(): OperatorMap {
     // Legacy string entries remain valid and are treated as single-tenant
     // administrators. New deployments should use {token, role, tenant_id}.
     if (typeof rawAccount === "string") {
-      if (rawAccount.length >= MIN_TOKEN_LENGTH) {
+      if (isBearerToken(rawAccount)) {
         accounts[actor] = { token: rawAccount, role: "admin", tenant_id: "default" };
       }
       continue;
@@ -84,13 +84,13 @@ function configuredOperators(): OperatorMap {
     const token = typeof value.token === "string" ? value.token : "";
     const role = isRole(value.role) ? value.role : null;
     const tenant = boundedId(value.tenant_id, "default");
-    if (token.length >= MIN_TOKEN_LENGTH && role && tenant) {
+    if (isBearerToken(token) && role && tenant) {
       accounts[actor] = { token, role, tenant_id: tenant };
     }
   }
   if (!Object.keys(accounts).length) {
     throw new OperatorAuthUnavailable(
-      `OPERATOR_TOKENS_JSON has no usable operator (tokens must be at least ${MIN_TOKEN_LENGTH} characters).`,
+      "OPERATOR_TOKENS_JSON has no usable operator (tokens must be 16-512 header-safe characters).",
     );
   }
   const tokens = Object.values(accounts).map((account) => account.token);
@@ -109,7 +109,7 @@ function sameSecret(actual: string, expected: string): boolean {
 }
 
 export function authenticateOperatorToken(token: string): OperatorIdentity | null {
-  if (!token) return null;
+  if (!isBearerToken(token)) return null;
   const operators = configuredOperators();
   let matched: OperatorIdentity | null = null;
   // Compare every entry so the match position is not disclosed by timing.

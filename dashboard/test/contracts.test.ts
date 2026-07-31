@@ -238,6 +238,29 @@ test("credential reuse is rejected instead of creating ambiguous identity", () =
   );
 });
 
+test("configured bearer credentials must be bounded and header-safe", () => {
+  process.env.OPERATOR_TOKENS_JSON = JSON.stringify({
+    operator: "invalid token with spaces",
+  });
+  assert.throws(
+    () => authenticateOperatorToken("valid-probe-token-000000"),
+    /no usable operator/,
+  );
+
+  process.env.EVENT_INGEST_TOKENS_JSON = JSON.stringify({
+    default: { "mcp-shield": "invalid token with spaces" },
+  });
+  assert.throws(
+    () =>
+      authenticateIngest(
+        new Request("http://localhost/api/ingest"),
+        "default",
+        "mcp-shield",
+      ),
+    /no usable tenant/,
+  );
+});
+
 test("role hierarchy denies viewer writes and admits analyst writes", async () => {
   process.env.OPERATOR_TOKENS_JSON = JSON.stringify({
     reader: { token: "reader-token-000000", role: "viewer", tenant_id: "tenant-a" },
