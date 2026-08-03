@@ -66,6 +66,7 @@ OLLAMA_CONNECT_TIMEOUT_SECONDS = 5.0
 OLLAMA_READ_TIMEOUT_SECONDS = 30.0
 OLLAMA_WRITE_TIMEOUT_SECONDS = 10.0
 OLLAMA_POOL_TIMEOUT_SECONDS = 5.0
+POLICY_VERSION = "trace-audit/1"
 
 
 @dataclass
@@ -341,6 +342,10 @@ class StreamAuditor:
                             "position_tokens": monitor.tokens_seen,
                         },
                         ctx,
+                        resource_type="reasoning_trace",
+                        resource_id=ctx.trace_id if ctx else None,
+                        outcome="redacted",
+                        policy_version=POLICY_VERSION,
                     )
                     yield {
                         "type": "pii",
@@ -369,6 +374,10 @@ class StreamAuditor:
                         "detection_latency_ms": now_ms() - start,
                     },
                     ctx,
+                    resource_type="reasoning_trace",
+                    resource_id=ctx.trace_id if ctx else None,
+                    outcome="terminated",
+                    policy_version=POLICY_VERSION,
                 )
                 yield {
                     "type": "terminated",
@@ -395,6 +404,10 @@ class StreamAuditor:
                         "position_tokens": monitor.tokens_seen,
                     },
                     ctx,
+                    resource_type="reasoning_trace",
+                    resource_id=ctx.trace_id if ctx else None,
+                    outcome="redacted",
+                    policy_version=POLICY_VERSION,
                 )
                 yield {
                     "type": "pii",

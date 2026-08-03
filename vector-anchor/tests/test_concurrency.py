@@ -60,7 +60,7 @@ def test_concurrent_retrievals_do_not_interleave_detector_updates():
             topic_similarity=0.2,
             window_size=50,
         ),
-        emit=lambda *_args: None,
+        emit=lambda *_args, **_kwargs: None,
     )
     barrier = threading.Barrier(8)
 
@@ -90,7 +90,7 @@ def test_upsert_clears_stale_quarantine_and_tracker_state():
         tracker=tracker,
         quarantine=quarantine,
         cfg=SimpleNamespace(),
-        emit=lambda *_args: None,
+        emit=lambda *_args, **_kwargs: None,
     )
 
     total = proxy.upsert_documents([("doc", "replacement")])

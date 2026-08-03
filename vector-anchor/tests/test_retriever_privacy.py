@@ -50,7 +50,7 @@ def proxy(document: str, anomalous: bool, events: list):
             top_rank_threshold=1,
             min_distinct_topics=4,
         ),
-        emit=lambda event_type, severity, details, _ctx: events.append(
+        emit=lambda event_type, severity, details, _ctx, **_evidence: events.append(
             (event_type, severity, details)
         ),
     )
