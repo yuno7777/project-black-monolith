@@ -1,5 +1,6 @@
 import { readLedgerHealth } from "@/lib/operations-store";
 import { requireOperator } from "@/lib/route-auth";
+import { alertConfigStatus } from "@/lib/alert-config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -52,7 +53,12 @@ export async function GET(req: Request) {
         ),
       ),
     ]);
-    return Response.json({ generated_at_ms: Date.now(), ledger, runtimes });
+    return Response.json({
+      generated_at_ms: Date.now(),
+      ledger,
+      runtimes,
+      alerting: alertConfigStatus(),
+    });
   } catch (error) {
     console.error("failed to read operations health", error);
     return Response.json({ error: "operations health is temporarily unavailable" }, { status: 503 });
