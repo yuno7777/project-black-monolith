@@ -15,25 +15,39 @@ Each module is standalone, with its own README, tests, and demo:
 | MCP-Shield (tool layer) | [`mcp-shield/`](mcp-shield/) | Rust / tokio |
 | VectorAnchor (memory layer) | [`vector-anchor/`](vector-anchor/) | Python / FastAPI + ChromaDB |
 | TraceAudit (reasoning layer) | [`trace-audit/`](trace-audit/) | Python / FastAPI |
-| Unified dashboard | [`dashboard/`](dashboard/) | Next.js 15 |
+| Unified dashboard | [`dashboard/`](dashboard/) | Next.js 16 / React 19.2 |
 
 ## Development setup
 
 ```sh
+# Shared contracts
+py -3.12 contracts/check_contracts.py
+
 # MCP-Shield
-cd mcp-shield && cargo build && cargo test && bash fixtures/run_demo.sh
+cd mcp-shield
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+bash fixtures/run_demo.sh
 
 # VectorAnchor
-cd vector-anchor && pip install -r requirements.txt && python -m pytest tests/
+cd vector-anchor
+python -m pip install --require-hashes -r requirements.lock -r ../requirements-quality.lock
+python -m pytest tests/
 
 # TraceAudit
-cd trace-audit && pip install -r requirements.txt && python -m pytest tests/
+cd trace-audit
+python -m pip install --require-hashes -r requirements.lock -r ../requirements-quality.lock
+python -m pytest tests/
 
 # Dashboard
-cd dashboard && npm install && npm run build
+cd dashboard && npm ci && npm test && npm run lint && npm run build
 
-# Full stack
+# Full stack (requires Docker)
 docker compose up -d --build && ./run_full_demo.sh
+
+# Full demo without Docker (requires a local PostgreSQL 17 server + psql)
+DASH_PORT=3101 bash scripts/run_local_demo.sh
 ```
 
 ## Ground rules
@@ -41,9 +55,11 @@ docker compose up -d --build && ./run_full_demo.sh
 - **Run the tests** for any module you touch, and add tests for new behavior.
   The unit tests for the Python detectors (`vector-anchor`, `trace-audit`)
   are dependency-light and run with just `pytest`.
-- **Keep the shared event shape.** All modules emit
-  `{ timestamp_ms, module, event_type, severity, details }`. Don't diverge —
-  the dashboard depends on it.
+- **Keep the shared contracts.** Update `contracts/schemas/`, OpenAPI, canonical
+  fixtures, and compatibility tests together. Do not silently diverge from the
+  versioned event envelope.
+- **Do not rewrite applied migrations.** Migration checksums deliberately fail
+  when historical SQL changes. Add a new ordered migration instead.
 - **No secrets or absolute local paths** in tracked files. Configuration is
   via environment variables (see each module's README).
 - **Keep dependencies minimal** — don't introduce a new framework beyond the
