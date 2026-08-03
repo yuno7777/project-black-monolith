@@ -1,0 +1,18 @@
+[
+  {
+    "type": "token",
+    "token": "First",
+    "kl": 0.12,
+    "threshold": 2.5
+  },
+  {
+    "type": "pii",
+    "label": "AWS_ACCESS_KEY",
+    "redacted": "[REDACTED:AWS_ACCESS_KEY]"
+  },
+  {
+    "type": "done",
+    "peak_kl": 0.48,
+    "tokens": 64
+  }
+]

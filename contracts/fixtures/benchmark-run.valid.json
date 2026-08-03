@@ -1,0 +1,15 @@
+{
+  "run_at_ms": 1785715200000,
+  "git_commit": "c0eeb86",
+  "detectors": [
+    {
+      "module": "vector-anchor",
+      "detector": "frequency_anomaly",
+      "paradigm": "threshold",
+      "benchmark_version": 2,
+      "confusion": { "tp": 3, "fp": 0, "tn": 24, "fn": 1 },
+      "latency_us": { "p50": 10.0, "p95": 20.0, "p99": 30.0 },
+      "thresholds": { "min_distinct_topics": 4 }
+    }
+  ]
+}
