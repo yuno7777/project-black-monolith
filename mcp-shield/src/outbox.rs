@@ -40,8 +40,6 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
-use tokio::net::TcpStream;
 
 /// Attempts after which an event is moved to the dead-letter file. Attempts
 /// persist across runs, so a permanently broken target cannot grow the spool
@@ -105,39 +103,24 @@ impl SpoolRecord {
     }
 }
 
-/// Parsed `http://host[:port]/path` dashboard ingest target.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DashboardTarget {
-    pub host: String,
-    pub port: u16,
-    pub path: String,
-}
-
-/// Minimal `http://host[:port]/path` parser (no external URL crate).
-pub(crate) fn parse_http_url(url: &str) -> Option<DashboardTarget> {
-    let rest = url.strip_prefix("http://")?;
-    let (authority, path) = match rest.find('/') {
-        Some(i) => (&rest[..i], &rest[i..]),
-        None => (rest, "/"),
-    };
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((h, p)) => (h.to_string(), p.parse().ok()?),
-        None => (authority.to_string(), 80u16),
-    };
-    if host.is_empty() {
+pub(crate) fn parse_dashboard_url(value: &str) -> Option<reqwest::Url> {
+    let url = reqwest::Url::parse(value).ok()?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
         return None;
     }
-    Some(DashboardTarget {
-        host,
-        port,
-        path: path.to_string(),
-    })
+    Some(url)
 }
 
 pub(crate) struct Outbox {
     path: PathBuf,
     dead_path: PathBuf,
-    target: DashboardTarget,
+    target: reqwest::Url,
+    client: reqwest::Client,
     token: String,
     /// Serializes every read-modify-write of the spool file. Held only across
     /// synchronous file I/O — never across an `.await`.
@@ -147,10 +130,10 @@ pub(crate) struct Outbox {
 impl Outbox {
     fn from_env() -> Option<Outbox> {
         let url = std::env::var("MONOLITH_DASHBOARD_URL").ok()?;
-        let target = match parse_http_url(&url) {
+        let target = match parse_dashboard_url(&url) {
             Some(t) => t,
             None => {
-                tracing::warn!(url = %url, "MONOLITH_DASHBOARD_URL is not a parseable http:// URL; dashboard forwarding disabled");
+                tracing::warn!(url = %url, "MONOLITH_DASHBOARD_URL must be an http(s) URL without credentials or a fragment; dashboard forwarding disabled");
                 return None;
             }
         };
@@ -177,10 +160,22 @@ impl Outbox {
                 return None;
             }
         }
+        let client = match reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(RESPONSE_TIMEOUT)
+            .build()
+        {
+            Ok(client) => client,
+            Err(error) => {
+                tracing::warn!(%error, "cannot initialize dashboard HTTP client; forwarding disabled");
+                return None;
+            }
+        };
         Some(Outbox {
             dead_path: path.with_extension("dead"),
             path,
             target,
+            client,
             token,
             file_lock: Mutex::new(()),
         })
@@ -201,36 +196,15 @@ impl Outbox {
     }
 
     async fn post(&self, body: &str) -> Result<u16, String> {
-        let connect = TcpStream::connect((self.target.host.as_str(), self.target.port));
-        let mut stream = match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
-            Err(_) => return Err("connect timeout".to_string()),
-            Ok(Err(e)) => return Err(format!("connect: {e}")),
-            Ok(Ok(s)) => s,
-        };
-        let request = format!(
-            "POST {} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            self.target.path,
-            self.target.host,
-            self.token,
-            body.len(),
-            body
-        );
-        let exchange = async {
-            stream.write_all(request.as_bytes()).await?;
-            stream.flush().await?;
-            // Read only the status line; the body is irrelevant and the
-            // connection closes on its own.
-            let mut status_line = String::new();
-            AsyncBufReader::new(&mut stream)
-                .read_line(&mut status_line)
-                .await?;
-            Ok::<String, std::io::Error>(status_line)
-        };
-        match tokio::time::timeout(RESPONSE_TIMEOUT, exchange).await {
-            Err(_) => Err("response timeout".to_string()),
-            Ok(Err(e)) => Err(format!("io: {e}")),
-            Ok(Ok(line)) => parse_status(&line).ok_or_else(|| "unparseable response".to_string()),
-        }
+        self.client
+            .post(self.target.clone())
+            .bearer_auth(&self.token)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body.to_owned())
+            .send()
+            .await
+            .map(|response| response.status().as_u16())
+            .map_err(|error| error.to_string())
     }
 
     /// Attempt delivery of spooled records within `budget`.
@@ -408,16 +382,6 @@ fn write_records_atomically(path: &Path, records: &[SpoolRecord]) -> std::io::Re
     fs::rename(&temp, path)
 }
 
-/// Parse `HTTP/1.1 201 Created` into `201`.
-fn parse_status(status_line: &str) -> Option<u16> {
-    let mut parts = status_line.split_whitespace();
-    let version = parts.next()?;
-    if !version.starts_with("HTTP/") {
-        return None;
-    }
-    parts.next()?.parse().ok()
-}
-
 static OUTBOX: OnceLock<Option<Outbox>> = OnceLock::new();
 
 pub(crate) fn outbox() -> Option<&'static Outbox> {
@@ -529,36 +493,17 @@ mod tests {
     }
 
     #[test]
-    fn status_lines_parse() {
-        assert_eq!(parse_status("HTTP/1.1 201 Created\r\n"), Some(201));
-        assert_eq!(
-            parse_status("HTTP/1.1 503 Service Unavailable\r\n"),
-            Some(503)
-        );
-        assert_eq!(parse_status("garbage"), None);
-        assert_eq!(parse_status(""), None);
-    }
+    fn dashboard_urls_require_http_without_embedded_secrets() {
+        let http = parse_dashboard_url("http://dashboard:3000/api/ingest").unwrap();
+        assert_eq!(http.as_str(), "http://dashboard:3000/api/ingest");
 
-    #[test]
-    fn urls_parse_with_and_without_a_port() {
-        assert_eq!(
-            parse_http_url("http://dashboard:3000/api/ingest"),
-            Some(DashboardTarget {
-                host: "dashboard".into(),
-                port: 3000,
-                path: "/api/ingest".into()
-            })
-        );
-        assert_eq!(
-            parse_http_url("http://localhost/api/ingest"),
-            Some(DashboardTarget {
-                host: "localhost".into(),
-                port: 80,
-                path: "/api/ingest".into()
-            })
-        );
-        assert_eq!(parse_http_url("https://dashboard:3000/api/ingest"), None);
-        assert_eq!(parse_http_url("not a url"), None);
+        let https = parse_dashboard_url("https://example.com/api/ingest").unwrap();
+        assert_eq!(https.scheme(), "https");
+
+        assert!(parse_dashboard_url("ftp://example.com/api/ingest").is_none());
+        assert!(parse_dashboard_url("https://user:pass@example.com/api/ingest").is_none());
+        assert!(parse_dashboard_url("https://example.com/api/ingest#secret").is_none());
+        assert!(parse_dashboard_url("not a url").is_none());
     }
 
     #[test]
