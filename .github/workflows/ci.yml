@@ -60,8 +60,11 @@ jobs:
         # (cargo exit 101) before it ever reads an advisory. Calling the CLI also
         # drops a third-party action, its GITHUB_TOKEN, the checks:write it
         # needed for its check run, and a Node 20 deprecation warning.
+        # Pinned to 0.22.1: 0.22.2 raised its own MSRV to rustc 1.88, which does
+        # not build on this crate's pinned 1.86 toolchain. Advisories are fetched
+        # at run time, so pinning the tool does not stale the data.
         run: |
-          cargo install cargo-audit --locked --version ^0.22
+          cargo install cargo-audit --locked --version 0.22.1
           cargo audit
       - name: Verify the durable outbox (spool / redeliver / dead-letter)
         run: bash fixtures/verify_outbox.sh
