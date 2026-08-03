@@ -14,19 +14,19 @@ _Reproduce with `python fixtures/calibrate.py` (deterministic hashing embedder).
 
 ## False-positive test
 
-18 diverse clean queries across six topics, clean corpus of 24 documents (no poison present).
+36 diverse clean queries across six topics, clean corpus of 60 documents (no poison present).
 
 | Clean document | Distinct-topic score | Flagged |
 | :--- | ---: | :---: |
-| garden-3 | 3 | no |
-| garden-4 | 2 | no |
-| astro-2 | 2 | no |
-| cook-1 | 2 | no |
-| cook-2 | 2 | no |
-| cook-4 | 2 | no |
+| coffee-6 | 3 | no |
+| lang-5 | 3 | no |
+| wx-6 | 3 | no |
 | fin-3 | 2 | no |
-| fin-4 | 2 | no |
-| _…16 more, all lower_ | | |
+| cyber-4 | 2 | no |
+| wood-1 | 2 | no |
+| coffee-3 | 2 | no |
+| photo-1 | 2 | no |
+| _…52 more, all lower_ | | |
 
 - **Highest clean-document score: 3**
 - **Documents flagged: 0** 
