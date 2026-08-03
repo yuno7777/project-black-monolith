@@ -9,9 +9,10 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-111111.svg?style=flat-square)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-tokio-111111?style=flat-square&logo=rust&logoColor=white)](mcp-shield/)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-111111?style=flat-square&logo=python&logoColor=white)](vector-anchor/)
-[![Next.js 15](https://img.shields.io/badge/Next.js-15-111111?style=flat-square&logo=nextdotjs&logoColor=white)](dashboard/)
+[![Next.js 16](https://img.shields.io/badge/Next.js-16-111111?style=flat-square&logo=nextdotjs&logoColor=white)](dashboard/)
 [![PostgreSQL 17](https://img.shields.io/badge/PostgreSQL-17-111111?style=flat-square&logo=postgresql&logoColor=white)](supabase/)
-[![Status](https://img.shields.io/badge/status-defensive_research-555555?style=flat-square)](EVALUATION.md)
+[![CodeQL](https://github.com/yuno7777/project-black-monolith/actions/workflows/codeql.yml/badge.svg)](https://github.com/yuno7777/project-black-monolith/actions/workflows/codeql.yml)
+[![Status](https://img.shields.io/badge/status-demo_ready-275c46?style=flat-square)](EVALUATION.md)
 
 <br />
 
@@ -96,7 +97,7 @@ flowchart LR
     D["Unified dashboard<br/>live feed · investigations · benchmarks"]
     H["Human operator"]
 
-    A -->|"MCP stdio"| S
+    A -->|"MCP stdio or Streamable HTTP"| S
     A -->|"retrieve"| V
     A -->|"generate (SSE)"| T
 
@@ -165,8 +166,14 @@ delivery follows one shared contract:
   `(tenant_id, agent_id, session_id)` identity.
 - **Benchmark ledger** — keeps detector scorecards separate from security
   events and recomputes metrics from the confusion matrix server-side.
+- **Operations command center** — shows ledger latency, layer reachability,
+  delivery backlog/dead-letter counts, policy coverage, and evidence age.
+- **Evidence export** — downloads an immutable event, its incident state,
+  append-only audit trail, and correlated session as one versioned JSON bundle.
 - **Operator sessions** — exchanges a bootstrap token for a revocable,
   expiring, `HttpOnly`, `SameSite=Strict` browser session.
+- **Production identity adapter** — validates asymmetric OIDC/Supabase JWTs,
+  explicit role and tenant claims, issuer/audience, and optional AAL2 MFA.
 - **Least-privilege database runtime** — the application uses a `NOLOGIN`,
   `NOSUPERUSER`, `NOBYPASSRLS` role with no table-level `DELETE` grants.
 
@@ -211,9 +218,9 @@ complete configuration contract.
 
 | Service | Port | Primary interface |
 | :--- | :---: | :--- |
-| Dashboard | `3000` | Web UI, `POST /api/ingest`, authenticated SSE |
-| VectorAnchor | `8001` | `POST /retrieve` |
-| TraceAudit | `8002` | `POST /generate` |
+| Dashboard | `127.0.0.1:3000` | Web UI, `POST /api/ingest`, resumable authenticated SSE |
+| VectorAnchor | `127.0.0.1:8001` | `POST /retrieve` |
+| TraceAudit | `127.0.0.1:8002` | `POST /generate` |
 | MCP-Shield | stdio | MCP JSON-RPC proxy |
 | PostgreSQL | internal | Event, incident, session, and benchmark ledgers |
 
@@ -253,6 +260,9 @@ triage does not rewrite history.
   are dead-lettered.
 - **Persist before publish** — the dashboard commits an event before notifying
   SSE subscribers.
+- **Multi-instance live delivery** — Postgres `LISTEN`/`NOTIFY` distributes a
+  committed event to every dashboard instance; reconnecting clients resume
+  from `Last-Event-ID` without duplicating evidence.
 - **Idempotent redelivery** — the source UUID is the ledger primary key.
 - **Immutable evidence** — operator decisions live in separate incident tables;
   security events are never updated by triage.
@@ -300,6 +310,19 @@ With the stack running, compute and upload a complete scorecard:
 bash scripts/run_benchmarks.sh
 ```
 
+For provenance-bearing local runs, use the evaluation profiles. Each result
+records the Git revision, source hashes, Python version, backend, command,
+duration, and copied detector outputs:
+
+```bash
+python evaluation/run_profile.py deterministic
+python evaluation/run_profile.py real  # requires Chroma's default embedder + Ollama
+```
+
+The deterministic profile is the reproducible CI/demo claim. The real profile
+is intentionally reported as **NOT MEASURED** until its external model and
+embedding dependencies are installed and the run actually completes.
+
 ---
 
 ## Verification
@@ -309,7 +332,9 @@ bash scripts/run_benchmarks.sh
 ```bash
 # Tool layer
 cd mcp-shield
-cargo test
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
 bash fixtures/verify_outbox.sh
 
 # Memory layer
@@ -325,6 +350,7 @@ python fixtures/benchmark_detection.py
 # Control plane
 cd ../dashboard
 npm ci
+npm run lint
 npm test
 npm run build
 ```
@@ -355,11 +381,14 @@ Project Black Monolith separates three principal types:
 | :--- | :--- | :--- |
 | Detection module | Per-tenant, per-module bearer token | Ingest for exactly one module and tenant |
 | Human operator | Bootstrap token or browser session | One role and tenant |
+| Federated operator | Validated OIDC/Supabase access token | Explicit role and tenant claims; optional AAL2 |
 | Dashboard runtime | PostgreSQL `monolith_app` role | Only required SQL operations |
 
 Credentials are not interchangeable: a module cannot close its own findings,
 an operator cannot claim another tenant or actor in a request body, and the
 dashboard sheds migration privileges before serving application queries.
+Cluster role creation and password rotation run only in the database bootstrap;
+application migrations reject role-management SQL before execution.
 
 Agent-facing `/retrieve` and `/generate` endpoints are intended for a trusted
 service network; their correlation headers provide attribution, not general
@@ -378,7 +407,7 @@ Each defense module is independently runnable:
 | MCP-Shield | Rust, Tokio, Serde, HMAC/SHA-256 | [mcp-shield/README.md](mcp-shield/README.md) |
 | VectorAnchor | Python, FastAPI, embedded ChromaDB | [vector-anchor/README.md](vector-anchor/README.md) |
 | TraceAudit | Python, FastAPI, streaming SSE | [trace-audit/README.md](trace-audit/README.md) |
-| Dashboard | Next.js 15, React 19, PostgreSQL | [dashboard/README.md](dashboard/README.md) |
+| Dashboard | Next.js 16, React 19.2, PostgreSQL | [dashboard/README.md](dashboard/README.md) |
 
 ```text
 project-black-monolith/
@@ -387,6 +416,9 @@ project-black-monolith/
 ├── trace-audit/         reasoning divergence and trace redaction
 ├── dashboard/           authenticated feed, investigations, benchmarks
 ├── supabase/            versioned PostgreSQL migrations
+├── contracts/           JSON Schema, OpenAPI, fixtures, compatibility gate
+├── evaluation/          deterministic and real-backend run profiles
+├── python-common/       shared durable Python event delivery
 ├── scripts/             secrets, benchmarks, and integration contracts
 ├── run_full_demo.sh     correlated three-layer demonstration
 └── .github/             CI and repository automation
@@ -410,7 +442,9 @@ project-black-monolith/
   behavior.
 - VectorAnchor defaults to hash embeddings for an offline demo; semantic
   embeddings require deployment-specific calibration.
-- MCP-Shield currently targets line-delimited MCP stdio framing.
+- MCP-Shield supports line-delimited stdio and MCP Streamable HTTP POST
+  responses in JSON or SSE. It does not open the optional standalone GET SSE
+  channel for unsolicited server notifications.
 - The project demonstrates layered controls; it is not a universal agent
   sandbox or a substitute for model, network, and host isolation.
 
