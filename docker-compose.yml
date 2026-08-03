@@ -204,10 +204,12 @@ services:
       MCP_SHIELD_BASELINE: "/var/lib/monolith/baseline_hashes.json"
     volumes:
       - mcp-shield-outbox:/var/lib/monolith
-    # No HTTP server (invoked on demand); healthcheck just confirms the binary
-    # is present so the container reports healthy.
+    # Keep a resident retry worker on the shared spool. Demo proxy invocations
+    # still run on demand through `docker compose exec` and append to the same
+    # volume without coupling delivery to the lifetime of an agent session.
+    command: ["mcp-shield", "--drain-outbox"]
     healthcheck:
-      test: ["CMD", "test", "-x", "/usr/local/bin/mcp-shield"]
+      test: ["CMD-SHELL", "test -x /usr/local/bin/mcp-shield && test -d /var/lib/monolith"]
       interval: 10s
       timeout: 3s
       retries: 3

@@ -21,7 +21,7 @@ RUN ln -sf /usr/bin/python3 /usr/local/bin/python \
     && useradd --system --uid 10001 --create-home monolith \
     && mkdir -p /var/lib/monolith \
     && chown -R monolith:monolith /app /var/lib/monolith
-# The proxy is invoked on demand (docker compose exec ... fixtures/run_demo.sh);
-# keep the container alive so the integration demo can trigger it.
+# The default Compose command runs the resident outbox drainer. Proxy sessions
+# are still invoked on demand with `docker compose exec`.
 USER monolith
-CMD ["sleep", "infinity"]
+CMD ["mcp-shield", "--drain-outbox"]
