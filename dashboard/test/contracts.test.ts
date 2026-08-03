@@ -333,6 +333,16 @@ test("browser mutations require a same-origin request", () => {
   );
 });
 
+test("dashboard responses declare a restrictive content security policy", () => {
+  const config = readFileSync(new URL("../next.config.mjs", import.meta.url), "utf8");
+  assert.match(config, /Content-Security-Policy/);
+  assert.match(config, /default-src 'self'/);
+  assert.match(config, /object-src 'none'/);
+  assert.match(config, /frame-ancestors 'none'/);
+  assert.match(config, /connect-src 'self'/);
+  assert.doesNotMatch(config, /default-src \*/);
+});
+
 test("event streams release broker subscriptions when readers cancel", async () => {
   let subscriber: ((event: ReturnType<typeof normalizeEvent>) => void) | undefined;
   let unsubscribeCalls = 0;
