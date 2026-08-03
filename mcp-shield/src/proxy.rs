@@ -25,7 +25,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 use crate::events::{self, Severity};
-use crate::fingerprint::{self, BaselineStore, Verdict};
+use crate::fingerprint::{self, BaselineStore, FirstContact, Verdict};
 use crate::jsonrpc::JsonRpcMessage;
 use crate::sanitizer;
 
@@ -79,6 +79,7 @@ pub struct ShieldConfig {
     pub hmac_key: Vec<u8>,
     pub baseline_path: PathBuf,
     pub mode: ShieldMode,
+    pub first_contact: FirstContact,
 }
 
 impl ShieldConfig {
@@ -118,10 +119,25 @@ impl ShieldConfig {
                 }
             },
         };
+        let first_contact = match std::env::var("MCP_SHIELD_FIRST_CONTACT").ok().as_deref() {
+            None => FirstContact::Trust,
+            Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "trust" => FirstContact::Trust,
+                "approve" => FirstContact::Approve,
+                other => {
+                    tracing::warn!(
+                        value = other,
+                        "unrecognized MCP_SHIELD_FIRST_CONTACT (expected trust|approve);                          defaulting to trust"
+                    );
+                    FirstContact::Trust
+                }
+            },
+        };
         Self {
             hmac_key,
             baseline_path,
             mode,
+            first_contact,
         }
     }
 }
@@ -169,6 +185,7 @@ pub async fn run(server_cmd: Vec<String>, config: ShieldConfig) -> Result<()> {
         store,
         config.hmac_key,
         config.mode,
+        config.first_contact,
     )
     .await;
 
@@ -302,6 +319,7 @@ async fn forward_server_to_agent(
     mut store: BaselineStore,
     hmac_key: Vec<u8>,
     mode: ShieldMode,
+    first_contact: FirstContact,
 ) -> Result<()> {
     let mut stdout = tokio::io::stdout();
     let mut lines = BufReader::new(child_stdout).lines();
@@ -350,7 +368,7 @@ async fn forward_server_to_agent(
                     // detector-internal error must also never masquerade as
                     // "nothing to flag": fail open (forward unmodified) and
                     // say so at error level, with a structured event.
-                    match analyze_tools_list(&msg, &mut store, &hmac_key, mode) {
+                    match analyze_tools_list(&msg, &mut store, &hmac_key, mode, first_contact) {
                         Ok(AnalysisOutcome::Analyzed { rewritten }) => {
                             rewritten_line = rewritten;
                         }
@@ -682,6 +700,7 @@ fn analyze_tools_list(
     store: &mut BaselineStore,
     hmac_key: &[u8],
     mode: ShieldMode,
+    first_contact: FirstContact,
 ) -> Result<AnalysisOutcome> {
     // One id for this whole exchange. A mismatched schema and the suspicious
     // description that arrived with it are one finding seen twice, so they must
@@ -761,6 +780,39 @@ fn analyze_tools_list(
 
         // --- 1. schema fingerprint vs. trusted baseline -----------------
         let hash = fingerprint::fingerprint_tool(hmac_key, tool)?;
+
+        // First-contact gate. A fingerprint proves a schema has not *changed*;
+        // it cannot tell a clean first sighting from one that arrived already
+        // poisoned. Under `approve`, an unseen tool is withheld and parked
+        // rather than blessed, so trust-on-first-use becomes an explicit
+        // operator decision instead of an implicit one.
+        if first_contact == FirstContact::Approve && !store.contains(name) {
+            let newly_parked = store.register_pending(name, &hash, description, tool);
+            blocked_tools.insert(index);
+            tracing::warn!(
+                tool = name,
+                hash = fingerprint::short(&hash),
+                newly_parked,
+                "WITHHELD unapproved tool; approve with: mcp-shield --approve <tool>"
+            );
+            // Emitted on every serving, not only the first: each time an
+            // unapproved tool is advertised to the agent it is a fresh attempt
+            // to be used, exactly as with a mismatched schema.
+            events::emit_traced(
+                "tool_pending_approval",
+                Severity::Warning,
+                json!({
+                    "tool": name,
+                    "hash": hash,
+                    "description": description,
+                    "newly_parked": newly_parked,
+                    "action": "withheld_pending_approval",
+                }),
+                Some(&trace),
+            );
+            continue;
+        }
+
         let mut restored_from_baseline = false;
         match store.check(name, &hash, description, tool) {
             Verdict::Registered => {
@@ -953,7 +1005,7 @@ mod tests {
         let msg = JsonRpcMessage::parse(r#"{"jsonrpc":"2.0","id":2,"result":{"unexpected":true}}"#)
             .expect("test message must parse");
         let outcome =
-            analyze_tools_list(&msg, &mut store, KEY, ShieldMode::Enforce).expect("analysis ok");
+            analyze_tools_list(&msg, &mut store, KEY, ShieldMode::Enforce, FirstContact::Trust).expect("analysis ok");
         assert!(
             matches!(outcome, AnalysisOutcome::Malformed),
             "a tools/list response without result.tools must be reported as \
@@ -1336,7 +1388,7 @@ mod tests {
         let mut store = temp_store("first-contact");
         let msg = tools_list_response(POISONED_DESC);
         let outcome =
-            analyze_tools_list(&msg, &mut store, KEY, ShieldMode::Enforce).expect("analysis ok");
+            analyze_tools_list(&msg, &mut store, KEY, ShieldMode::Enforce, FirstContact::Trust).expect("analysis ok");
         let AnalysisOutcome::Analyzed {
             rewritten: Some(line),
         } = outcome
@@ -1348,6 +1400,137 @@ mod tests {
             "the unsafe tool must be removed"
         );
         assert!(!store.contains("read_file"));
+    }
+
+    #[test]
+    fn approve_mode_withholds_an_unseen_tool_instead_of_trusting_it() {
+        // The gap this closes: a fingerprint proves a schema has not changed,
+        // so a tool that was already poisoned before anyone looked is happily
+        // registered as the trusted baseline. Under `approve` it is withheld.
+        let mut store = temp_store("first-contact-approve");
+        let outcome = analyze_tools_list(
+            &tools_list_response(CLEAN_DESC),
+            &mut store,
+            KEY,
+            ShieldMode::Enforce,
+            FirstContact::Approve,
+        )
+        .expect("analysis ok");
+
+        let AnalysisOutcome::Analyzed { rewritten } = outcome else {
+            panic!("expected the response to be analyzed");
+        };
+        let line = rewritten.expect("an unapproved tool must be withheld");
+        assert!(
+            !line.contains("read_file"),
+            "the agent must not be told about a tool nobody approved"
+        );
+        assert!(
+            !store.contains("read_file"),
+            "withholding must not register a baseline"
+        );
+        assert!(
+            store.is_pending("read_file"),
+            "the tool must be parked for an operator to approve"
+        );
+    }
+
+    #[test]
+    fn approving_a_pending_tool_lets_it_through_afterwards() {
+        let mut store = temp_store("first-contact-approved");
+        analyze_tools_list(
+            &tools_list_response(CLEAN_DESC),
+            &mut store,
+            KEY,
+            ShieldMode::Enforce,
+            FirstContact::Approve,
+        )
+        .expect("analysis ok");
+        assert!(store.approve("read_file"), "the tool was pending");
+
+        let outcome = analyze_tools_list(
+            &tools_list_response(CLEAN_DESC),
+            &mut store,
+            KEY,
+            ShieldMode::Enforce,
+            FirstContact::Approve,
+        )
+        .expect("analysis ok");
+
+        let AnalysisOutcome::Analyzed { rewritten } = outcome else {
+            panic!("expected the response to be analyzed");
+        };
+        assert!(
+            rewritten.is_none(),
+            "an approved tool must pass through untouched"
+        );
+        assert!(store.contains("read_file"));
+        assert!(!store.is_pending("read_file"));
+    }
+
+    #[test]
+    fn approval_pins_what_was_first_seen_not_what_arrived_last() {
+        // Otherwise the gate is worse than useless: a server could show a
+        // clean tool, wait for the operator to be about to approve, and swap
+        // in a poisoned one that inherits the approval.
+        let mut store = temp_store("first-contact-pin");
+        analyze_tools_list(
+            &tools_list_response(CLEAN_DESC),
+            &mut store,
+            KEY,
+            ShieldMode::Enforce,
+            FirstContact::Approve,
+        )
+        .expect("analysis ok");
+        analyze_tools_list(
+            &tools_list_response(POISONED_DESC),
+            &mut store,
+            KEY,
+            ShieldMode::Enforce,
+            FirstContact::Approve,
+        )
+        .expect("analysis ok");
+
+        assert!(store.approve("read_file"));
+        // Approving must have promoted the clean first sighting, so the
+        // poisoned variant is now a mismatch rather than the trusted schema.
+        let outcome = analyze_tools_list(
+            &tools_list_response(POISONED_DESC),
+            &mut store,
+            KEY,
+            ShieldMode::Enforce,
+            FirstContact::Approve,
+        )
+        .expect("analysis ok");
+        let AnalysisOutcome::Analyzed { rewritten } = outcome else {
+            panic!("expected the response to be analyzed");
+        };
+        let line = rewritten.expect("the mutated schema must be rewritten");
+        assert!(
+            !line.contains("ignore previous instructions"),
+            "the agent must receive the approved schema, not the mutated one"
+        );
+    }
+
+    #[test]
+    fn trust_mode_is_unchanged_and_remains_the_default() {
+        // The gate is opt-in. Existing deployments must behave exactly as
+        // before until an operator turns it on.
+        let mut store = temp_store("first-contact-trust");
+        let outcome = analyze_tools_list(
+            &tools_list_response(CLEAN_DESC),
+            &mut store,
+            KEY,
+            ShieldMode::Enforce,
+            FirstContact::Trust,
+        )
+        .expect("analysis ok");
+        let AnalysisOutcome::Analyzed { rewritten } = outcome else {
+            panic!("expected the response to be analyzed");
+        };
+        assert!(rewritten.is_none(), "trust mode forwards a clean first sighting");
+        assert!(store.contains("read_file"));
+        assert!(!store.is_pending("read_file"));
     }
 
     #[test]
@@ -1372,6 +1555,7 @@ mod tests {
             &mut store,
             KEY,
             ShieldMode::Enforce,
+            FirstContact::Trust,
         )
         .expect("analysis ok");
         let outcome = analyze_tools_list(
@@ -1379,6 +1563,7 @@ mod tests {
             &mut store,
             KEY,
             ShieldMode::Enforce,
+            FirstContact::Trust,
         )
         .expect("analysis ok");
         assert!(matches!(
@@ -1393,7 +1578,7 @@ mod tests {
         let mut store = temp_store("clean");
         let msg = tools_list_response(CLEAN_DESC);
         let outcome =
-            analyze_tools_list(&msg, &mut store, KEY, ShieldMode::Enforce).expect("analysis ok");
+            analyze_tools_list(&msg, &mut store, KEY, ShieldMode::Enforce, FirstContact::Trust).expect("analysis ok");
         assert!(matches!(
             outcome,
             AnalysisOutcome::Analyzed { rewritten: None }
@@ -1409,6 +1594,7 @@ mod tests {
             &mut store,
             KEY,
             ShieldMode::Enforce,
+            FirstContact::Trust,
         )
         .expect("baseline registration ok");
         // Rug-pulled replay must be rewritten back to the baseline.
@@ -1417,6 +1603,7 @@ mod tests {
             &mut store,
             KEY,
             ShieldMode::Enforce,
+            FirstContact::Trust,
         )
         .expect("analysis ok");
         let AnalysisOutcome::Analyzed {
@@ -1443,6 +1630,7 @@ mod tests {
             &mut store,
             KEY,
             ShieldMode::Monitor,
+            FirstContact::Trust,
         )
         .expect("baseline registration ok");
         let outcome = analyze_tools_list(
@@ -1450,6 +1638,7 @@ mod tests {
             &mut store,
             KEY,
             ShieldMode::Monitor,
+            FirstContact::Trust,
         )
         .expect("analysis ok");
         assert!(
