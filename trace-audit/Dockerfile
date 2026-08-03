@@ -11,8 +11,12 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY src ./src
 COPY fixtures ./fixtures
+RUN useradd --system --uid 10001 --create-home monolith \
+    && mkdir -p /var/lib/monolith \
+    && chown -R monolith:monolith /app /var/lib/monolith
 ENV MONOLITH_BASELINE_PATH=/app/baseline_distribution.json \
     MONOLITH_MODEL_BACKEND=mock
 EXPOSE 8002
 # Capture the baseline distribution at startup, then serve.
+USER monolith
 CMD ["sh", "-c", "python fixtures/baseline_capture.py && uvicorn src.main:app --host 0.0.0.0 --port 8002"]
