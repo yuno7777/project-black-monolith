@@ -75,7 +75,7 @@ services:
       context: .
       dockerfile: dashboard/Dockerfile
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       DATABASE_URL: postgresql://monolith_runtime:${MONOLITH_DATABASE_RUNTIME_PASSWORD:?set MONOLITH_DATABASE_RUNTIME_PASSWORD in .env}@database:5432/postgres
       DATABASE_APP_ROLE: monolith_app
@@ -100,7 +100,7 @@ services:
   vector-anchor:
     build: ./vector-anchor
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
     environment:
       MONOLITH_DASHBOARD_URL: "http://dashboard:3000/api/ingest"
       MONOLITH_EVENT_TOKEN: ${MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR:?set MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR in .env}
@@ -128,7 +128,7 @@ services:
   trace-audit:
     build: ./trace-audit
     ports:
-      - "8002:8002"
+      - "127.0.0.1:8002:8002"
     environment:
       MONOLITH_DASHBOARD_URL: "http://dashboard:3000/api/ingest"
       MONOLITH_EVENT_TOKEN: ${MONOLITH_EVENT_TOKEN_TRACE_AUDIT:?set MONOLITH_EVENT_TOKEN_TRACE_AUDIT in .env}
