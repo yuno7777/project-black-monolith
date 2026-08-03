@@ -7,6 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createEventStream } from "../lib/sse-event-stream";
 import { BenchmarkInputError, normalizeRun } from "../lib/benchmark-store";
+import { decodeIncidentCursor, IncidentInputError } from "../lib/incident-store";
 import { normalizeEvent } from "../lib/event-store";
 import { authenticateIngest } from "../lib/ingest-auth";
 import { authenticateOperatorToken, operatorCookie } from "../lib/operator-auth";
@@ -414,6 +415,26 @@ test("database event notifications reject malformed routing data", () => {
   assert.equal(parseEventNotification(undefined), null);
   assert.equal(parseEventNotification("not-json"), null);
   assert.equal(parseEventNotification('{"event_id":"bad","tenant_id":"tenant-a"}'), null);
+});
+
+test("incident cursors are opaque, bounded, and strictly validated", () => {
+  const encoded = Buffer.from(JSON.stringify({
+    severity_rank: 1,
+    received_ms: 1785715200000,
+    event_id: "00000000-0000-4000-8000-000000000001",
+  })).toString("base64url");
+  assert.deepEqual(decodeIncidentCursor(encoded), {
+    severity_rank: 1,
+    received_ms: 1785715200000,
+    event_id: "00000000-0000-4000-8000-000000000001",
+  });
+  assert.throws(() => decodeIncidentCursor("not-a-cursor"), IncidentInputError);
+  const invalidRank = Buffer.from(JSON.stringify({
+    severity_rank: 9,
+    received_ms: 1,
+    event_id: "00000000-0000-4000-8000-000000000001",
+  })).toString("base64url");
+  assert.throws(() => decodeIncidentCursor(invalidRank), /cursor is invalid/);
 });
 
 test("trust-model migration keeps the runtime role least-privileged", () => {
