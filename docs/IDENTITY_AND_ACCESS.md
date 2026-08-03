@@ -6,8 +6,8 @@ not interchangeable:
 | Principal | Credential | Scope | Allowed operations |
 | --- | --- | --- | --- |
 | Detection module | Per-tenant, per-module bearer token | One tenant and one module | Ingest only |
-| Human operator | Operator bootstrap token or browser session | One tenant and one role | Dashboard reads; triage/benchmark writes by role |
-| Dashboard runtime | PostgreSQL `monolith_app` role | Control-plane tables | Only the SQL verbs needed by the application |
+| Human operator | Bootstrap token, browser session, or validated OIDC JWT | One tenant and one role | Dashboard reads; triage/benchmark writes by role |
+| Dashboard runtime | PostgreSQL `monolith_runtime` login → `monolith_app` role | Control-plane tables | Only the SQL verbs needed by the application |
 
 ## Tenant and correlation identity
 
@@ -65,6 +65,25 @@ Scripts may continue to send the bootstrap token as
 `Authorization: Bearer <token>`. Browser code never stores it in
 `localStorage`.
 
+### Production OIDC / Supabase Auth
+
+Configure these values together or leave all three unset:
+
+```text
+OPERATOR_OIDC_ISSUER=https://<project-ref>.supabase.co/auth/v1
+OPERATOR_OIDC_AUDIENCE=authenticated
+OPERATOR_OIDC_JWKS_URL=https://<project-ref>.supabase.co/auth/v1/.well-known/jwks.json
+OPERATOR_OIDC_REQUIRE_MFA=true
+```
+
+The adapter validates an asymmetric signature through the provider JWKS,
+issuer, audience, expiry, and subject. It never derives authorization from a
+display name: the JWT must contain a recognized `monolith_role` and an explicit
+`tenant_id` (or a deliberately configured `OPERATOR_OIDC_DEFAULT_TENANT`). When
+MFA is required, the Supabase `aal` claim must be `aal2`. A valid external
+token is exchanged for the same revocable browser-session format as a local
+bootstrap credential.
+
 ## Dashboard authorization matrix
 
 | Route | Minimum role |
@@ -73,9 +92,11 @@ Scripts may continue to send the bootstrap token as
 | `GET /api/incidents` | `viewer` |
 | `GET /api/incidents/:id/audit` | `viewer` |
 | `GET /api/incidents/:id/session` | `viewer` |
+| `GET /api/incidents/:id/export` | `viewer` |
 | `POST /api/incidents` | `analyst` |
 | `GET /api/benchmarks` | `viewer` |
 | `POST /api/benchmarks` | `analyst` |
+| `GET /api/operations` | `viewer` |
 
 The `admin` role includes `analyst` and `viewer`; `analyst` includes `viewer`.
 Page middleware redirects missing-cookie browser requests to `/login`, while
@@ -119,11 +140,17 @@ then uses `SET ROLE monolith_app`, a `NOLOGIN`, `NOSUPERUSER`,
 - incident state: `SELECT`, `INSERT`, `UPDATE`;
 - append-only incident audit: `SELECT`, `INSERT`;
 - benchmark ledger: `SELECT`, `INSERT`;
-- operator sessions: `SELECT`, `INSERT`, `UPDATE`.
+- operator sessions: `SELECT`, `INSERT`, `UPDATE`, plus policy-constrained
+  `DELETE` only for expired/revoked session cleanup.
 
-No runtime table grants `DELETE`, and the event/audit ledgers grant no
-`UPDATE`. Row-level security remains enabled with policies scoped to the
-runtime role.
+The event/audit ledgers grant neither `UPDATE` nor `DELETE`. Row-level security
+remains enabled with policies scoped to the runtime role.
+
+Cluster role creation and runtime-password rotation live in
+`supabase/bootstrap/001-runtime-role.sh`, which requires administrative
+credentials. The one-shot migrator uses a separate administrative connection;
+the long-running dashboard receives only `monolith_runtime`, whose unsafe role
+attributes are checked and whose membership grants only `monolith_app`.
 
 Every tenant-scoped store operation starts a transaction and sets
 `monolith.tenant_id` with transaction-local `set_config`. RLS compares table
