@@ -41,9 +41,15 @@ export function Rail() {
         <IconGauge />
       </Link>
       <div className="rail-foot">
-        <button className="rail-btn" aria-label="Settings (coming soon)" title="Settings — not built yet" disabled>
+        <Link
+          href="/operations"
+          className={`rail-btn${path === "/operations" ? " on" : ""}`}
+          aria-label="Operations"
+          aria-current={path === "/operations" ? "page" : undefined}
+          title="Operations"
+        >
           <IconGear />
-        </button>
+        </Link>
       </div>
     </nav>
   );
