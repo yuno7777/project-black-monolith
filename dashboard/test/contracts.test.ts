@@ -16,6 +16,7 @@ import { requireSameOrigin } from "../lib/route-auth";
 import { JsonBodyError, readJsonBody } from "../lib/request-body";
 import { parseEventNotification } from "../lib/live-event-listener";
 import { operatorRateLimitKey } from "../lib/login-rate-limit";
+import { externalIdentityFromClaims } from "../lib/external-auth";
 
 function detector(overrides: Record<string, unknown> = {}) {
   return {
@@ -363,6 +364,36 @@ test("login rate-limit keys trust proxy headers only when explicitly enabled", (
   assert.match(direct, /^[0-9a-f]{64}$/);
   assert.match(proxied, /^[0-9a-f]{64}$/);
   assert.notEqual(direct, proxied);
+});
+
+test("external identities require explicit project role, tenant, and MFA", () => {
+  process.env.OPERATOR_OIDC_REQUIRE_MFA = "true";
+  assert.deepEqual(
+    externalIdentityFromClaims({
+      sub: "user-1",
+      email: "analyst@example.com",
+      aal: "aal2",
+      app_metadata: {
+        monolith_role: "analyst",
+        monolith_tenant_id: "tenant-a",
+      },
+    }),
+    {
+      actor: "analyst@example.com",
+      role: "analyst",
+      tenant_id: "tenant-a",
+      auth_type: "bearer",
+    },
+  );
+  assert.equal(
+    externalIdentityFromClaims({
+      sub: "user-1",
+      aal: "aal1",
+      app_metadata: { monolith_role: "admin", monolith_tenant_id: "tenant-a" },
+    }),
+    null,
+  );
+  assert.equal(externalIdentityFromClaims({ sub: "user-1", aal: "aal2" }), null);
 });
 
 test("event streams release broker subscriptions when readers cancel", async () => {
