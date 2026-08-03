@@ -161,6 +161,11 @@ export async function createOperatorSession(identity: OperatorIdentity): Promise
     identity.tenant_id,
     async (db) => {
       await db.query(
+        `delete from monolith.operator_sessions
+         where tenant_id = $1 and (expires_at <= now() or revoked_at is not null)`,
+        [identity.tenant_id],
+      );
+      await db.query(
         `insert into monolith.operator_sessions
            (session_hash, actor, role, tenant_id, expires_at)
          values ($1, $2, $3, $4, now() + ($5 * interval '1 second'))`,
@@ -182,12 +187,21 @@ async function authenticateSession(token: string): Promise<OperatorIdentity | nu
         role: OperatorRole;
         tenant_id: string;
       }>(
-        `update monolith.operator_sessions
-         set last_seen_at = now()
-         where session_hash = $1
-           and revoked_at is null
-           and expires_at > now()
-         returning actor, role, tenant_id`,
+        `with valid as (
+           select session_hash, actor, role, tenant_id
+           from monolith.operator_sessions
+           where session_hash = $1
+             and revoked_at is null
+             and expires_at > now()
+         ), touched as (
+           update monolith.operator_sessions sessions
+           set last_seen_at = now()
+           from valid
+           where sessions.session_hash = valid.session_hash
+             and sessions.last_seen_at < now() - interval '5 minutes'
+           returning sessions.session_hash
+         )
+         select actor, role, tenant_id from valid`,
         [hash],
       );
       const row = result.rows[0];
