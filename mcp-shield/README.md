@@ -3,10 +3,10 @@
 **Project Black Monolith — tool-layer defense (Module 1 of 3)**
 
 MCP-Shield is a security proxy for the
-[Model Context Protocol](https://modelcontextprotocol.io) (stdio transport).
-It sits between an AI agent and a real MCP server, forwards JSON-RPC
-traffic, and watches the `tools/list` channel for two documented attack
-classes:
+[Model Context Protocol](https://modelcontextprotocol.io) over line-delimited
+stdio or Streamable HTTP. It sits between an AI agent and a real MCP server,
+forwards JSON-RPC traffic, and inspects `tools/list`, prompt/resource catalogs,
+and text tool results for two documented attack classes:
 
 1. **Schema mutation ("MCP rug pull")** — a server presents a clean tool
    schema when the user first approves it, then silently swaps in a mutated
@@ -119,6 +119,11 @@ limitations).
   never runs again, those events remain on disk undelivered — preserved, not
   lost.
 
+- `src/http_transport.rs` adapts concurrent Streamable HTTP POSTs to the
+  stdio pipeline, accepts JSON or SSE responses, propagates session IDs, and
+  terminates established sessions on shutdown. Redirects and URL-embedded
+  credentials are rejected.
+
 Framing: line-delimited JSON-RPC (one message per `\n`-terminated line),
 matching the MCP stdio transport. Logs go exclusively to **stderr**; stdout
 carries only the (possibly rewritten) protocol stream.
@@ -140,6 +145,13 @@ Run against any stdio MCP server:
 ./target/debug/mcp-shield python fixtures/fake_mcp_server.py
 ```
 
+Run against a Streamable HTTP endpoint:
+
+```sh
+MCP_SHIELD_REMOTE_TOKEN="<server bearer token>" \
+  ./target/debug/mcp-shield --remote-url https://server.example/mcp
+```
+
 Configuration (environment variables):
 
 | Variable              | Default                         | Purpose                                  |
@@ -148,6 +160,10 @@ Configuration (environment variables):
 | `MCP_SHIELD_KEY`      | built-in dev key (banner-warns) | HMAC-SHA256 secret key                   |
 | `MCP_SHIELD_BASELINE` | `baseline_hashes.json`          | baseline store path                      |
 | `MONOLITH_DASHBOARD_URL` | *(unset)*                    | if set (e.g. `http://localhost:3000/api/ingest`), events are also POSTed here |
+| `MONOLITH_EVENT_OUTBOX_PATH` | *(unset)*                | durable JSONL event spool path |
+| `MCP_SHIELD_REMOTE_TOKEN` | *(unset)*                   | bearer token for `--remote-url`; never put credentials in the URL |
+| `MCP_SHIELD_PROTOCOL_VERSION` | `2025-11-25`            | MCP version sent to a remote endpoint |
+| `MCP_SHIELD_REMOTE_TIMEOUT_SECS` | `300`                | positive per-request timeout for a remote endpoint |
 | `RUST_LOG`            | `info`                          | log filter (`monolith_event=info` isolates the JSON event feed) |
 
 If `MCP_SHIELD_KEY` is unset, a **boxed `DEVELOPMENT HMAC KEY IN USE`
@@ -204,29 +220,26 @@ Three phases, run in CI:
 3. **Dashboard returns 401** — a permanent rejection must dead-letter rather
    than retry forever.
 
-Unit tests (`cargo test`, currently 30 non-ignored tests) cover the sanitizer
+Unit tests (`cargo test`, currently 45 non-ignored tests) cover the sanitizer
 families, exact fixture hit counts, canonicalization, re-flag semantics,
 malformed responses, enforce/monitor rewrites, event identity/tenant
 envelopes, and durable-outbox recovery/dead-letter behavior.
 
 ## Known limitations
 
-- **Only request-matched `tools/list` responses are analyzed.** The proxy
-  correlates responses to `tools/list` requests by JSON-RPC id; any MCP
-  transport pattern where a server pushes schema data outside that exact
-  request/response pairing is not inspected. In the current MCP spec the
-  server-initiated path is `notifications/tools/list_changed`, which
-  carries **no schema data** itself — it only tells the client to re-query,
-  and that re-query *is* analyzed. MCP-Shield logs the notification and
-  emits a `tools_list_changed` event when it sees one (it is the classic
-  prelude to a rug pull). A future pass would need to also fingerprint
-  schema data embedded in other surfaces (e.g. `prompts/list`,
-  `resources/list`, tool *results* that define further tools) if those are
-  ever used to smuggle schemas.
+- **Tool fingerprinting remains request-matched.** The proxy correlates
+  `tools/list` responses by JSON-RPC id. `notifications/tools/list_changed`
+  is logged and the required follow-up query is inspected. Prompt/resource
+  catalog text and text tool results are sanitizer-inspected, but only tool
+  schemas currently receive authenticated persistent fingerprints.
 - The dev HMAC key is for local use only; set `MCP_SHIELD_KEY` in any real
   deployment.
-- Only line-delimited framing is implemented (the MCP stdio standard);
-  `Content-Length` framing is future work.
+- Streamable HTTP supports JSON and SSE responses to POST requests and MCP
+  session identifiers. It does not open the optional standalone GET SSE
+  channel, so unsolicited out-of-band notifications require a later transport
+  extension.
+- The stdio adapter uses the MCP line-delimited framing standard; legacy
+  `Content-Length` framing is not supported.
 - A tool that is poisoned from its very first sighting has no clean
   fingerprint to compare against. In `enforce` mode, the description
   sanitizer removes a suspicious first-contact tool and refuses to register
