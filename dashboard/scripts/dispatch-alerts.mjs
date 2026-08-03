@@ -13,11 +13,17 @@ const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const MAX_ATTEMPTS = 10;
 
 if (!targetValue && !secret) {
+  // Park instead of exiting: `docker compose --wait` treats an exited service as
+  // a failed one. Signal listeners are not ref'd handles, so awaiting one does
+  // NOT hold the event loop open — without the timer Node exited immediately and
+  // the restart policy turned that into a crash loop.
   console.log("[alerts] webhook delivery is disabled");
+  const keepAlive = setInterval(() => {}, 1 << 30);
   await new Promise((resolve) => {
     process.once("SIGINT", resolve);
     process.once("SIGTERM", resolve);
   });
+  clearInterval(keepAlive);
   process.exit(0);
 }
 if (!databaseUrl) throw new Error("DATABASE_URL is required for alert delivery");
