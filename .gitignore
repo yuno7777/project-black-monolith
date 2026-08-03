@@ -41,8 +41,8 @@ CLAUDE.md
 *.swp
 
 # ── Local presentation material (not part of the codebase) ───────────
-AEOS_Guard_Project_Overview.pdf
-build_aeos_pdf.py
+AEOS_Guard_*.pdf
+build_aeos_*.py
 _aeos_p*.png
 
 # ── Generated benchmark reports (per-run artifacts, uploaded not stored) ──
