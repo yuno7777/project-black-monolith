@@ -379,7 +379,7 @@ unlimited.
 | **Slow drip** — surface the bait for one topic at a time, let earlier hits age out | VectorAnchor | **Closed at the old rate; still works 10× slower.** A drip at the historical one-topic-per-50-queries is now caught; only a drip slower than the whole horizon still evades | ~500 covering retrievals per hidden topic (= `retention_horizon`), up from ~50. Drip any faster and it is caught |
 | **Retention-cap flood** — fill a document's retained hits with varied same-topic queries to push out earned topics | VectorAnchor | **Blocked.** Found while building the fix above, and cheaper than the attack it would have replaced (~8 retrievals per topic erased) | Eviction drops what the newest hit most duplicates, so a flood evicts itself; displacing a real topic requires a more distinct one, which raises the score |
 | **Token-boundary split** — a secret the tokenizer splits across two tokens | TraceAudit | **Blocked.** All 19 possible split points of a 20-char key are reconstructed and redacted before release | A split across more than the 16-token output window can still evade; the bound keeps streaming latency finite |
-| **First-contact poisoning** — the tool is poisoned the first time it is ever seen | MCP-Shield | **Blocked for known sanitizer patterns.** The tool is removed and no baseline is registered | Novel phrasings outside the sanitizer corpus remain a trust-on-first-use limitation |
+| **First-contact poisoning** — the tool is poisoned the first time it is ever seen | MCP-Shield | **Blocked for known sanitizer patterns; closable entirely.** The tool is removed and no baseline is registered. `MCP_SHIELD_FIRST_CONTACT=approve` additionally withholds *every* unseen tool, regardless of phrasing, until an operator approves it by name | Under the default `trust`, novel phrasings outside the sanitizer corpus remain a trust-on-first-use limitation. Under `approve` the limitation is removed and paid for in operator effort instead |
 
 Reproduce: `python -m pytest tests/test_evasion.py` in `vector-anchor/` and
 `trace-audit/`; `cargo test known_evasion` in `mcp-shield/`.
@@ -399,9 +399,16 @@ What the numbers say beyond "it evades":
   text when a match crosses token boundaries. The test covers every two-part
   split and the full 16-token window, while retaining a measured evasion at 17+
   fragments so the remaining boundary stays explicit.
-- **MCP-Shield still has a trust-on-first-use boundary** for novel poison that
-  matches none of the sanitizer patterns. Known patterns are blocked before a
-  baseline is registered; the adversarial test pins that enforcement behavior.
+- **MCP-Shield's trust-on-first-use boundary is now a choice, not a fact.**
+  Under the default `trust`, novel poison matching none of the sanitizer
+  patterns is still registered as the baseline — a fingerprint can only prove
+  a schema has not *changed*. `MCP_SHIELD_FIRST_CONTACT=approve` withholds every
+  unseen tool and emits `tool_pending_approval` until an operator runs
+  `mcp-shield --approve <tool>`, which removes the boundary outright at the cost
+  of an approval step per new tool. Four tests pin it: the withholding, the
+  approval, that `trust` is unchanged and remains the default, and that a
+  pending record is *not* overwritten by a later serving — otherwise a server
+  could show a clean tool and swap in a poisoned one just before approval.
 
 ---
 

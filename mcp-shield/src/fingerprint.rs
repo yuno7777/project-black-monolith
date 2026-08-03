@@ -89,6 +89,23 @@ pub struct BaselineEntry {
     pub tool: Value,
 }
 
+/// What to do the first time a tool is ever seen.
+///
+/// A fingerprint can only prove that a schema has not *changed*; it cannot tell
+/// a clean first sighting from one that was already poisoned before anyone
+/// looked. The stateless sanitizer closes that for phrasings it recognises, but
+/// novel wording outside its corpus is silently blessed as the baseline.
+/// `Approve` removes the guesswork: an unseen tool is withheld from the agent
+/// and parked as pending until an operator approves it by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirstContact {
+    /// Register the first sighting as trusted. Convenient, and the reason
+    /// "trust on first use" is a documented limitation.
+    Trust,
+    /// Withhold unseen tools until explicitly approved.
+    Approve,
+}
+
 /// Outcome of checking a freshly computed fingerprint against the store.
 #[derive(Debug)]
 pub enum Verdict {
@@ -111,11 +128,17 @@ pub enum Verdict {
 pub struct BaselineStore {
     path: PathBuf,
     tools: HashMap<String, BaselineEntry>,
+    /// Seen but not yet approved. Held to the same authentication rules as
+    /// trusted entries so that a pending record cannot be edited on disk into
+    /// a rewrite payload, then promoted.
+    pending: HashMap<String, BaselineEntry>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct BaselineFile {
     tools: HashMap<String, BaselineEntry>,
+    #[serde(default)]
+    pending: HashMap<String, BaselineEntry>,
 }
 
 impl BaselineStore {
@@ -163,6 +186,7 @@ impl BaselineStore {
                 return Ok(Self {
                     path: path.to_path_buf(),
                     tools: HashMap::new(),
+                    pending: HashMap::new(),
                 });
             }
             Err(error) => {
@@ -180,7 +204,14 @@ impl BaselineStore {
                 MAX_BASELINE_TOOLS
             );
         }
-        for (name, entry) in &file.tools {
+        if file.pending.len() > MAX_BASELINE_TOOLS {
+            bail!(
+                "baseline store contains {} pending tools; maximum is {}",
+                file.pending.len(),
+                MAX_BASELINE_TOOLS
+            );
+        }
+        for (name, entry) in file.tools.iter().chain(file.pending.iter()) {
             if name.is_empty() || name.len() > MAX_TOOL_NAME_BYTES {
                 bail!(
                     "baseline tool names must be between 1 and {} bytes",
@@ -222,7 +253,59 @@ impl BaselineStore {
         Ok(Self {
             path: path.to_path_buf(),
             tools: file.tools,
+            pending: file.pending,
         })
+    }
+
+    /// Whether this tool has been seen and is awaiting approval.
+    pub fn is_pending(&self, tool_name: &str) -> bool {
+        self.pending.contains_key(tool_name)
+    }
+
+    /// Tool names awaiting approval, sorted for stable operator output.
+    pub fn pending_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.pending.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    /// Park an unseen tool as pending. Deliberately does NOT overwrite an
+    /// existing pending record: if a tool is re-served with different content
+    /// while awaiting approval, the operator must approve what they first saw,
+    /// not whatever arrived most recently.
+    pub fn register_pending(
+        &mut self,
+        tool_name: &str,
+        hash: &str,
+        description: &str,
+        tool: &Value,
+    ) -> bool {
+        if self.pending.contains_key(tool_name) {
+            return false;
+        }
+        self.pending.insert(
+            tool_name.to_string(),
+            BaselineEntry {
+                hash: hash.to_string(),
+                description: description.to_string(),
+                first_seen_ms: crate::events::now_ms(),
+                tool: tool.clone(),
+            },
+        );
+        true
+    }
+
+    /// Promote a pending tool to trusted. Returns false when nothing is
+    /// pending under that name, so an operator approving a typo is told so
+    /// rather than silently succeeding.
+    pub fn approve(&mut self, tool_name: &str) -> bool {
+        match self.pending.remove(tool_name) {
+            None => false,
+            Some(entry) => {
+                self.tools.insert(tool_name.to_string(), entry);
+                true
+            }
+        }
     }
 
     /// Compare a freshly computed hash against the baseline, registering it
@@ -262,6 +345,7 @@ impl BaselineStore {
     pub fn save(&self) -> Result<()> {
         let file = BaselineFile {
             tools: self.tools.clone(),
+            pending: self.pending.clone(),
         };
         let json =
             serde_json::to_string_pretty(&file).context("failed to serialize baseline store")?;

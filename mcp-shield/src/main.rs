@@ -12,6 +12,8 @@
 //!   mcp-shield <server-command> [server-args...]
 //!   mcp-shield --remote-url <https://server.example/mcp>
 //!   mcp-shield --drain-outbox
+//!   mcp-shield --list-pending
+//!   mcp-shield --approve <tool-name>
 //!
 //! Example:
 //!   mcp-shield python fixtures/fake_mcp_server.py
@@ -54,6 +56,7 @@ async fn main() -> Result<()> {
         bail!(
             "usage: mcp-shield <server-command> [server-args...]\n\
              or: mcp-shield --remote-url <https://server.example/mcp>\n\
+             or: mcp-shield --list-pending | --approve <tool-name>\n\
              example: mcp-shield python fixtures/fake_mcp_server.py"
         );
     }
@@ -79,6 +82,45 @@ async fn main() -> Result<()> {
         ];
     }
 
+    // Operator commands for the first-contact approval gate. Both act on the
+    // baseline file and exit without starting a proxy, so they can be run
+    // while an agent is not connected.
+    if server_cmd.first().map(String::as_str) == Some("--list-pending") {
+        let config = proxy::ShieldConfig::from_env();
+        let store = fingerprint::BaselineStore::load(&config.baseline_path, &config.hmac_key)?;
+        let pending = store.pending_names();
+        if pending.is_empty() {
+            eprintln!("no tools are awaiting approval");
+        } else {
+            eprintln!("tools awaiting approval ({}):", pending.len());
+            for name in pending {
+                eprintln!("  {name}");
+            }
+        }
+        return Ok(());
+    }
+
+    if server_cmd.first().map(String::as_str) == Some("--approve") {
+        if server_cmd.len() != 2 {
+            bail!("--approve expects exactly one tool name");
+        }
+        let tool = &server_cmd[1];
+        let config = proxy::ShieldConfig::from_env();
+        let mut store = fingerprint::BaselineStore::load(&config.baseline_path, &config.hmac_key)?;
+        if !store.approve(tool) {
+            // Not an error to be swallowed: approving a name that is not
+            // pending means the operator approved something other than what
+            // they think they did.
+            bail!(
+                "no tool named {tool:?} is awaiting approval; \
+                 run --list-pending to see what is"
+            );
+        }
+        store.save()?;
+        eprintln!("approved {tool:?}; it is now the trusted baseline");
+        return Ok(());
+    }
+
     if server_cmd == ["--drain-outbox"] {
         tracing::info!(
             module = events::MODULE,
@@ -100,6 +142,7 @@ async fn main() -> Result<()> {
         server_command = ?server_cmd,
         baseline = %config.baseline_path.display(),
         mode = ?config.mode,
+        first_contact = ?config.first_contact,
         "starting MCP-Shield proxy"
     );
 
