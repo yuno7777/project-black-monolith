@@ -18,6 +18,8 @@ from .events import EventContext, now_ms
 from .frequency_tracker import FrequencyTracker
 from .quarantine import Quarantine, QuarantinedDoc
 
+POLICY_VERSION = "vector-anchor/1"
+
 
 def _content_fingerprint(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
@@ -115,6 +117,10 @@ class RetrieverProxy:
                                 "detection_latency_ms": now_ms() - start,
                             },
                             ctx,
+                            resource_type="document",
+                            resource_id=doc_id,
+                            outcome="quarantined",
+                            policy_version=POLICY_VERSION,
                         )
                     withheld.append({"id": doc_id, "reason": "quarantined_now"})
                     continue
@@ -126,6 +132,7 @@ class RetrieverProxy:
             served = clean[:k]
             quarantine_size = len(self.quarantine)
 
+        query_sha256 = _content_fingerprint(query)
         self.emit(
             "retrieval",
             "info",
@@ -133,13 +140,17 @@ class RetrieverProxy:
                 # Queries often carry end-user text or secrets from an agent's
                 # context. Preserve repeat-correlation without copying their
                 # contents into stderr, the outbox, and the event ledger.
-                "query_sha256": _content_fingerprint(query),
+                "query_sha256": query_sha256,
                 "query_chars": len(query),
                 "returned": len(served),
                 "withheld": len(withheld),
                 "latency_ms": now_ms() - start,
             },
             ctx,
+            resource_type="retrieval_query",
+            resource_id=query_sha256,
+            outcome="filtered" if withheld else "served",
+            policy_version=POLICY_VERSION,
         )
 
         return {

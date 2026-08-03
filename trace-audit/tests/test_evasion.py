@@ -104,7 +104,7 @@ def test_stream_auditor_never_releases_a_split_secret(monkeypatch):
         smoothing=0.5,
     )
     emitted = []
-    auditor = StreamAuditor(cfg, {}, lambda *args: emitted.append(args))
+    auditor = StreamAuditor(cfg, {}, lambda *args, **_kwargs: emitted.append(args))
 
     async def collect():
         return [event async for event in auditor.audit("ordinary prompt")]
@@ -139,7 +139,7 @@ def test_duplicate_secret_is_reported_once_without_releasing_it(monkeypatch):
         smoothing=0.5,
     )
     emitted = []
-    auditor = StreamAuditor(cfg, {}, lambda *args: emitted.append(args))
+    auditor = StreamAuditor(cfg, {}, lambda *args, **_kwargs: emitted.append(args))
 
     async def collect():
         return [event async for event in auditor.audit("ordinary prompt")]
