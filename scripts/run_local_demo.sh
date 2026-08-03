@@ -10,7 +10,7 @@
 #   ./scripts/run_local_demo.sh
 #   open http://localhost:3000
 #
-# Requires: python (fastapi/uvicorn/chromadb installed), node/npm, cargo.
+# Requires: PostgreSQL 17 + psql, Python 3.12, node/npm, cargo, and bash.
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -23,6 +23,18 @@ VA_PORT="${VA_PORT:-8001}"
 TA_PORT="${TA_PORT:-8002}"
 DASH_URL="http://localhost:${DASH_PORT}/api/ingest"
 PY="${PYTHON:-python}"; command -v "$PY" >/dev/null 2>&1 || PY=python3
+
+# Docker normally constructs these URLs inside its network. The local runner
+# targets PostgreSQL on loopback unless explicit URLs are supplied. Only the
+# administrative connection bootstraps roles and applies migrations.
+DATABASE_ADMIN_URL="${DATABASE_ADMIN_URL:-postgresql://postgres:${MONOLITH_POSTGRES_PASSWORD}@127.0.0.1:5432/postgres}"
+DATABASE_URL="${DATABASE_URL:-postgresql://monolith_runtime:${MONOLITH_DATABASE_RUNTIME_PASSWORD}@127.0.0.1:5432/postgres}"
+export DATABASE_URL DATABASE_APP_ROLE=monolith_app
+export EVENT_INGEST_TOKENS_JSON="{\"${MONOLITH_TENANT_ID}\":{\"mcp-shield\":\"${MONOLITH_EVENT_TOKEN_MCP_SHIELD}\",\"vector-anchor\":\"${MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR}\",\"trace-audit\":\"${MONOLITH_EVENT_TOKEN_TRACE_AUDIT}\"}}"
+export OPERATOR_TOKENS_JSON="{\"${MONOLITH_OPERATOR_NAME}\":{\"token\":\"${MONOLITH_OPERATOR_TOKEN}\",\"role\":\"admin\",\"tenant_id\":\"${MONOLITH_TENANT_ID}\"}}"
+export MONOLITH_MODULE_ADMIN_TOKEN="$MONOLITH_ADMIN_TOKEN"
+export VECTOR_ANCHOR_INTERNAL_URL="http://127.0.0.1:${VA_PORT}"
+export TRACE_AUDIT_INTERNAL_URL="http://127.0.0.1:${TA_PORT}"
 
 TMP="$(mktemp -d)"
 PIDS=()
@@ -51,11 +63,30 @@ echo "================================================================"
 echo " Project Black Monolith — LOCAL demo (no Docker)"
 echo "================================================================"
 
+echo "== bootstrapping and migrating PostgreSQL =="
+command -v psql >/dev/null 2>&1 || {
+  echo "ERROR: psql is required for the Docker-free demo" >&2
+  exit 1
+}
+DATABASE_ADMIN_URL="$DATABASE_ADMIN_URL" \
+  bash supabase/bootstrap/001-runtime-role.sh >"$TMP/bootstrap.log" 2>&1 || {
+    cat "$TMP/bootstrap.log" >&2
+    exit 1
+  }
+( cd dashboard
+  DATABASE_URL="$DATABASE_ADMIN_URL" \
+    DATABASE_MIGRATIONS_DIR="$ROOT/supabase/migrations" \
+    node scripts/migrate.mjs >"$TMP/migrations.log" 2>&1 ) || {
+      cat "$TMP/migrations.log" >&2
+      exit 1
+    }
+echo "  database ready"
+
 # --- 1. Dashboard ------------------------------------------------------
 echo "== starting dashboard on :${DASH_PORT} =="
 ( cd dashboard
   [ -f .next/BUILD_ID ] || npm run build >/dev/null 2>&1
-  npm start >"$TMP/dashboard.log" 2>&1 ) &
+  npx next start -H 127.0.0.1 -p "$DASH_PORT" >"$TMP/dashboard.log" 2>&1 ) &
 PIDS+=($!)
 wait_health "http://localhost:${DASH_PORT}/api/ingest" "dashboard" || exit 1
 echo "  dashboard up: $(curl -s http://localhost:${DASH_PORT}/api/ingest)"
@@ -63,7 +94,11 @@ echo "  dashboard up: $(curl -s http://localhost:${DASH_PORT}/api/ingest)"
 # --- 2. VectorAnchor ---------------------------------------------------
 echo "== starting VectorAnchor on :${VA_PORT} =="
 ( cd vector-anchor
-  MONOLITH_DASHBOARD_URL="$DASH_URL" MONOLITH_EMBEDDING=hash \
+  MONOLITH_DASHBOARD_URL="$DASH_URL" \
+    MONOLITH_EVENT_TOKEN="$MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR" \
+    MONOLITH_EVENT_OUTBOX_PATH="$TMP/vector-outbox.db" \
+    MONOLITH_DETECTOR_STATE_PATH="$TMP/vector-state.json" \
+    MONOLITH_EMBEDDING=hash \
     MONOLITH_CHROMA_PATH="$TMP/chroma" \
     "$PY" -m uvicorn src.main:app --host 127.0.0.1 --port "$VA_PORT" --log-level warning \
     >"$TMP/vector-anchor.log" 2>&1 ) &
@@ -76,7 +111,10 @@ echo "== starting TraceAudit on :${TA_PORT} =="
 ( cd trace-audit
   export MONOLITH_BASELINE_PATH="$TMP/baseline.json"
   "$PY" fixtures/baseline_capture.py >"$TMP/ta_baseline.log" 2>&1
-  MONOLITH_DASHBOARD_URL="$DASH_URL" MONOLITH_MODEL_BACKEND=mock \
+  MONOLITH_DASHBOARD_URL="$DASH_URL" \
+    MONOLITH_EVENT_TOKEN="$MONOLITH_EVENT_TOKEN_TRACE_AUDIT" \
+    MONOLITH_EVENT_OUTBOX_PATH="$TMP/trace-outbox.db" \
+    MONOLITH_MODEL_BACKEND=mock \
     "$PY" -m uvicorn src.main:app --host 127.0.0.1 --port "$TA_PORT" --log-level warning \
     >"$TMP/trace-audit.log" 2>&1 ) &
 PIDS+=($!)
@@ -88,7 +126,10 @@ echo; echo ">> Open http://localhost:${DASH_PORT} to watch the live feed <<"; sl
 
 # ======================================================================
 echo; echo "== ATTACK 1/3 — MCP-Shield rug pull =="
-MONOLITH_DASHBOARD_URL="$DASH_URL" bash mcp-shield/fixtures/run_demo.sh 2>&1 \
+MONOLITH_DASHBOARD_URL="$DASH_URL" \
+  MONOLITH_EVENT_TOKEN="$MONOLITH_EVENT_TOKEN_MCP_SHIELD" \
+  MONOLITH_EVENT_OUTBOX_PATH="$TMP/mcp-outbox.jsonl" \
+  bash mcp-shield/fixtures/run_demo.sh 2>&1 \
   | grep -E "SCHEMA MISMATCH DETECTED|SUSPICIOUS DESCRIPTION FLAGGED|\[OK\]|DEMO" | head -12
 
 echo; echo "== ATTACK 2/3 — VectorAnchor corpus poisoning =="

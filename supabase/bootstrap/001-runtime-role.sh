@@ -3,17 +3,17 @@ set -euo pipefail
 
 : "${MONOLITH_DATABASE_RUNTIME_PASSWORD:?runtime database password is required}"
 
-# Cluster roles are infrastructure, not application schema. This script runs
-# only during first-time Postgres initialization as the database superuser.
-# Application migrations deliberately reject role-management statements.
-psql_args=(
-  --username postgres \
-  --dbname postgres \
-  --set=ON_ERROR_STOP=1 \
-  --set=runtime_password="$MONOLITH_DATABASE_RUNTIME_PASSWORD"
-)
-if [[ -n "${PGHOST:-}" ]]; then
-  psql_args+=(--host "$PGHOST")
+# Cluster roles are infrastructure, not application schema. Compose runs this
+# as the database superuser; a Docker-free setup may provide an equivalent
+# administrative connection in DATABASE_ADMIN_URL.
+psql_args=(--set=ON_ERROR_STOP=1 --set=runtime_password="$MONOLITH_DATABASE_RUNTIME_PASSWORD")
+if [[ -n "${DATABASE_ADMIN_URL:-}" ]]; then
+  psql_args=("$DATABASE_ADMIN_URL" "${psql_args[@]}")
+else
+  psql_args=(--username postgres --dbname postgres "${psql_args[@]}")
+  if [[ -n "${PGHOST:-}" ]]; then
+    psql_args+=(--host "$PGHOST")
+  fi
 fi
 
 psql "${psql_args[@]}" <<'SQL'
