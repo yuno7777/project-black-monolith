@@ -1,5 +1,5 @@
 fastapi>=0.110
-uvicorn[standard]>=0.29
+uvicorn[standard]>=0.52.0
 pydantic>=2.6
 chromadb>=0.5
 # ChromaDB requests uvicorn[standard]. Declare its Linux-only event loop
