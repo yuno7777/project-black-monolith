@@ -13,10 +13,11 @@ WORKDIR /app
 ENV NODE_ENV=production \
     PORT=3000 \
     HOSTNAME=0.0.0.0
-COPY --from=build /app/public ./public
-COPY --from=build /app/.next/standalone ./
-COPY --from=build /app/.next/static ./.next/static
-COPY dashboard/scripts ./scripts
-COPY supabase/migrations /app/supabase/migrations
+COPY --chown=node:node --from=build /app/public ./public
+COPY --chown=node:node --from=build /app/.next/standalone ./
+COPY --chown=node:node --from=build /app/.next/static ./.next/static
+COPY --chown=node:node dashboard/scripts ./scripts
+COPY --chown=node:node supabase/migrations /app/supabase/migrations
 EXPOSE 3000
+USER node
 CMD ["node", "server.js"]
