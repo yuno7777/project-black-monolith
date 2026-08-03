@@ -430,6 +430,7 @@ project-black-monolith/
 | :--- | :--- |
 | [EVALUATION.md](EVALUATION.md) | Calibration, accuracy, false positives, evasions, and overhead |
 | [docs/IDENTITY_AND_ACCESS.md](docs/IDENTITY_AND_ACCESS.md) | Credentials, roles, tenants, sessions, RLS, and database grants |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Health signals, evidence export, retention, and response checklist |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Local setup, ground rules, and commit conventions |
 | [SECURITY.md](SECURITY.md) | Defensive intent, disclosure process, and scope |
 
