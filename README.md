@@ -174,8 +174,9 @@ delivery follows one shared contract:
   expiring, `HttpOnly`, `SameSite=Strict` browser session.
 - **Production identity adapter** — validates asymmetric OIDC/Supabase JWTs,
   explicit role and tenant claims, issuer/audience, and optional AAL2 MFA.
-- **Least-privilege database runtime** — the application uses a `NOLOGIN`,
-  `NOSUPERUSER`, `NOBYPASSRLS` role with no table-level `DELETE` grants.
+- **Least-privilege database runtime** — the restricted login assumes a
+  `NOLOGIN`, `NOSUPERUSER`, `NOBYPASSRLS` application role; immutable evidence
+  has no `UPDATE` or `DELETE` grant.
 
 See the [dashboard guide](dashboard/README.md) and
 [identity and access model](docs/IDENTITY_AND_ACCESS.md) for the full
@@ -198,7 +199,7 @@ backend. The full demo does not require Ollama or an external vector database.
 git clone https://github.com/yuno7777/project-black-monolith.git
 cd project-black-monolith
 
-# Generates six random local secrets in a gitignored .env file.
+# Generates eight random local secrets in a gitignored .env file.
 bash scripts/generate_secrets.sh
 
 # Builds all five services and waits for real health checks.
@@ -223,6 +224,29 @@ complete configuration contract.
 | TraceAudit | `127.0.0.1:8002` | `POST /generate` |
 | MCP-Shield | stdio | MCP JSON-RPC proxy |
 | PostgreSQL | internal | Event, incident, session, and benchmark ledgers |
+
+### Docker-free college/demo setup
+
+Install PostgreSQL 17 with `psql`, Python 3.12, Node.js/npm, Rust, Bash, and
+`curl`; then install the checked-in dependency graphs and run:
+
+```bash
+bash scripts/generate_secrets.sh
+cd dashboard && npm ci && cd ..
+py -3.12 -m pip install -r vector-anchor/requirements.lock
+py -3.12 -m pip install -r trace-audit/requirements.lock
+
+# Defaults: dashboard 3000, VectorAnchor 8001, TraceAudit 8002.
+# Override any occupied port, for example: DASH_PORT=3101.
+DASH_PORT=3101 bash scripts/run_local_demo.sh
+```
+
+The runner targets a local PostgreSQL server on `127.0.0.1:5432`, bootstraps
+the restricted roles, applies checksum-verified migrations, builds/starts the
+dashboard, drives all three attacks, and keeps the services open until Ctrl-C.
+Set `DATABASE_ADMIN_URL` and `DATABASE_URL` to override the administrative and
+runtime connections. The generated operator token stays in `.env` and is the
+credential used on the sign-in page.
 
 ---
 
