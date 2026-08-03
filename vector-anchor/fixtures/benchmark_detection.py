@@ -30,8 +30,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
 from src.config import load_config  # noqa: E402
-from src.embedding import HashingEmbeddingFunction, cosine  # noqa: E402
+from src.embedding import cosine  # noqa: E402
 from src.frequency_tracker import FrequencyTracker  # noqa: E402
+from src.store import build_embedding_function  # noqa: E402
 import corpus_data as cd  # noqa: E402
 import benchmark as latency  # noqa: E402
 
@@ -43,7 +44,7 @@ MIN_DETECTION_RATE = 0.70   # the subtle bait (scenario D) is expected to evade
 MAX_FALSE_POSITIVE_RATE = 0.0  # no clean document may be flagged
 
 CFG = load_config()
-EF = HashingEmbeddingFunction(dim=CFG.embedding_dim)
+EF = build_embedding_function(CFG)
 
 # The same 18 diverse clean queries the calibration uses, plus the hard-negative
 # gardening battery, so the benign scenario stresses the false-positive surface.
@@ -132,7 +133,8 @@ def main() -> None:
             "top_rank_threshold": CFG.top_rank_threshold,
             "window_size": CFG.window_size,
         },
-        "notes": ("Positives are engineered universal-bait documents; scenario D "
+        "notes": (f"Embedding backend: {CFG.embedding}. Positives are engineered "
+                  "universal-bait documents; scenario D "
                   "is a deliberately subtle bait expected to evade, so a detection "
                   "rate below 100% is the honest result. Negatives include the "
                   "broad single-domain hard negative (garden-*)."),

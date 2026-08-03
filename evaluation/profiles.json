@@ -1,0 +1,42 @@
+{
+  "deterministic": {
+    "description": "Offline regression profile used by CI",
+    "steps": [
+      {
+        "name": "vector-anchor-hash",
+        "cwd": "vector-anchor",
+        "command": ["{python}", "fixtures/benchmark_detection.py"],
+        "result": "fixtures/benchmark_results.json",
+        "sources": ["fixtures/corpus_data.py", "fixtures/calibrate.py"]
+      },
+      {
+        "name": "trace-audit-mock",
+        "cwd": "trace-audit",
+        "command": ["{python}", "fixtures/benchmark_detection.py"],
+        "result": "fixtures/benchmark_results.json",
+        "sources": ["fixtures/benchmark_corpus.py", "fixtures/baseline_capture.py", "fixtures/calibrate.py"]
+      }
+    ]
+  },
+  "real": {
+    "description": "External-model evaluation; downloads the Chroma embedding model and requires Ollama",
+    "steps": [
+      {
+        "name": "vector-anchor-semantic",
+        "cwd": "vector-anchor",
+        "command": ["{python}", "fixtures/benchmark_detection.py"],
+        "environment": { "MONOLITH_EMBEDDING": "default" },
+        "result": "fixtures/benchmark_results.json",
+        "sources": ["fixtures/corpus_data.py", "fixtures/calibrate.py"]
+      },
+      {
+        "name": "trace-audit-ollama",
+        "cwd": "trace-audit",
+        "command": ["{python}", "fixtures/benchmark_detection.py"],
+        "environment": { "MONOLITH_MODEL_BACKEND": "ollama" },
+        "result": "fixtures/benchmark_results.json",
+        "sources": ["fixtures/benchmark_corpus.py", "fixtures/baseline_capture.py", "fixtures/calibrate.py"]
+      }
+    ]
+  }
+}
