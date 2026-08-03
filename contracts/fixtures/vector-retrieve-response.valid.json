@@ -1,0 +1,17 @@
+{
+  "query": "incident response procedure",
+  "results": [
+    {
+      "id": "runbook-01",
+      "document": "Escalate the incident to the security on-call.",
+      "distance": 0.14
+    }
+  ],
+  "withheld": [
+    {
+      "id": "universal-bait",
+      "reason": "quarantined_now"
+    }
+  ],
+  "quarantine_size": 1
+}

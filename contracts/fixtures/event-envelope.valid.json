@@ -1,0 +1,21 @@
+{
+  "event_id": "a6f4de52-2010-4b64-a8dc-2ad46b778d98",
+  "schema_version": 2,
+  "timestamp_ms": 1785715200000,
+  "module": "vector-anchor",
+  "event_type": "corpus_poison_quarantine",
+  "severity": "critical",
+  "details": {
+    "doc_id": "universal-bait",
+    "anomaly_score": 0.93
+  },
+  "source": "module",
+  "tenant_id": "college-demo",
+  "agent_id": "research-agent",
+  "session_id": "demo-session-01",
+  "trace_id": "7136487e-d540-4ef9-ab26-90d4bc8737ad",
+  "resource_type": "document",
+  "resource_id": "universal-bait",
+  "outcome": "quarantined",
+  "policy_version": "vector-anchor/1"
+}
