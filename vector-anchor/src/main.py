@@ -209,6 +209,7 @@ def stats(request: Request) -> dict:
         "module": MODULE_NAME,
         "documents": proxy.collection.count(),
         "quarantined": proxy.quarantine_size(),
+        "delivery": proxy.emit.delivery_stats(),
         "config": {
             "top_k": proxy.cfg.top_k,
             "min_distinct_topics": proxy.cfg.min_distinct_topics,

@@ -156,6 +156,7 @@ def stats(request: Request) -> dict:
         "window_size": cfg.window_size,
         "min_tokens_before_check": cfg.min_tokens_before_check,
         "baseline_vocab": len(app.state.baseline_counts),
+        "delivery": app.state.emit.delivery_stats(),
     }
 
 
