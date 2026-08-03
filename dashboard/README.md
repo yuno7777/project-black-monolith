@@ -1,6 +1,6 @@
 # Unified Dashboard
 
-**Project Black Monolith — real-time threat dashboard (Next.js 15)**
+**Project Black Monolith — operations and investigation console (Next.js 16)**
 
 A single live view of detection events from all three defense modules
 (MCP-Shield, VectorAnchor, TraceAudit). Events stream in over Server-Sent
@@ -18,8 +18,8 @@ each module). No message queue, no log-file tailing, no shared volume.
 ```text
   MCP-Shield ─┐                      ┌─▶ Postgres ledger ─┐
   VectorAnchor├─POST /api/ingest ───▶│   (persist first)  │─SSE /api/events─▶ browser
-  TraceAudit ─┘  Bearer <token>      └─▶ in-process broker┘   (replay + live)
-     │                                    (fan-out only)
+  TraceAudit ─┘  Bearer <token>      └─▶ LISTEN / NOTIFY ─┘   (resume + live)
+     │                                    (all instances)
      └── durable on-disk outbox: spool → retry → dead-letter
 ```
 
@@ -27,35 +27,39 @@ Each module spools every event to a local outbox and fsyncs it *before* the
 detection path continues, then delivers asynchronously with exponential
 backoff. The dashboard being down costs delivery latency, not evidence.
 
-- `lib/event-ingest.ts` — process-wide, tenant-aware live fan-out broker.
-  History comes from Postgres; the broker retains no evidence or cross-tenant
-  replay buffer. It lives on `globalThis` so dev hot-reloads share subscribers.
+- `lib/live-event-listener.ts` — one tenant-aware Postgres notification
+  listener per process. It reconnects after database interruptions and fans a
+  committed event out to local SSE subscribers.
 - `app/api/ingest/route.ts` — `POST` accepts one event or an array; `GET` is a
   liveness probe.
-- `app/api/events/route.ts` — `GET` SSE stream: replays the recent buffer to a
-  newly-connected client, then streams new events live, with keep-alives and
-  clean teardown on disconnect.
+- `app/api/events/route.ts` — `GET` resumable SSE stream: keyset-replays from
+  `Last-Event-ID`, then streams new committed events with bounded de-duplication,
+  keep-alives, and clean teardown on disconnect.
 - `app/page.tsx` — client component; subscribes via `EventSource`, de-dupes by
   durable `event_id`, derives all stats client-side.
 - `lib/incident-store.ts` — the investigation queue and incident lifecycle.
 - `app/api/incidents/route.ts` — `GET` the queue (filtered, worst-first), `POST`
   a triage transition.
 - `app/api/incidents/[eventId]/audit/route.ts` — `GET` one incident's trail.
+- `app/api/incidents/[eventId]/export/route.ts` — downloads a versioned evidence
+  bundle containing the immutable event, incident, audit trail, and session.
 - `app/investigate/page.tsx` — the queue UI.
+- `app/operations/page.tsx` — ledger latency, evidence age, policy coverage,
+  module reachability, and durable-delivery backlog/dead-letter telemetry.
 - `app/components/` — `ThreatFeed` (newest-first, click to expand),
   `ModuleStatusCard` (per-module status + counts), `SessionSummary` (totals,
   severity distribution, per-layer breakdown, avg detection latency),
   `EventDetail` (full payload).
 
-Because ingest is a plain HTTP endpoint, the feed also works without the other
-services running — `curl -X POST localhost:3000/api/ingest -d '{...}'` pushes a
-synthetic event straight onto the live feed.
+Because ingest is a plain HTTP endpoint, a properly authenticated `curl` can
+also push a synthetic contract event without the three detector services.
 
 ## Run
 
 ```sh
 cd dashboard
-npm install
+npm ci
+# Run the database bootstrap and migrations described in the root README.
 npm run dev        # http://localhost:3000
 # or: npm run build && npm start
 ```
@@ -77,11 +81,10 @@ root `run_full_demo.sh` against the full Docker stack.
   a single module, so one module's credential cannot forge another's events.
   An unknown or cross-module token is a 401.
 - **Events are persisted**, not just buffered: they are written to the
-  Postgres ledger before being published to SSE, and a newly connected client
-  is replayed that history. `event_id` is the primary key, so a module that
+  Postgres ledger before `NOTIFY`, and a newly connected client replays that
+  history. `event_id` is the primary key, so a module that
   retries an uncertain delivery is deduplicated (`accepted: 0,
-  duplicates: 1`) rather than double-inserted. The in-process broker is now
-  only a live fan-out over the durable store.
+  duplicates: 1`) rather than double-inserted.
 - A supplied `event_id` must be a UUID (the column is a Postgres `uuid`); a
   malformed one is a permanent 422 rather than a 503 that outboxes would
   retry forever.
@@ -124,6 +127,13 @@ operator to a bootstrap token, role (`viewer`, `analyst`, or `admin`) and
 tenant. The login page exchanges that credential for an opaque, revocable,
 expiring HttpOnly browser session; the bootstrap token is never stored in
 `localStorage`. Scripts may still use it directly as a bearer credential.
+
+For production, configure `OPERATOR_OIDC_ISSUER`, `OPERATOR_OIDC_AUDIENCE`,
+and `OPERATOR_OIDC_JWKS_URL` together. The adapter accepts only asymmetric JWT
+algorithms, verifies issuer and audience, requires explicit `monolith_role`
+and `tenant_id` claims, and can require Supabase `aal2` with
+`OPERATOR_OIDC_REQUIRE_MFA=true`. Bootstrap tokens remain available for a
+local demonstration and recovery access.
 
 This credential is deliberately separate from the per-module ingest tokens:
 those identify a *module*, and if one worked here any module could close its
