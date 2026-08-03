@@ -1,7 +1,7 @@
 fastapi>=0.110
 uvicorn[standard]>=0.29
 pydantic>=2.6
-chromadb>=0.5
+chromadb>=1.5.9
 # ChromaDB requests uvicorn[standard]. Declare its Linux-only event loop
 # explicitly so the hashed lock remains complete when compiled on Windows.
 uvloop>=0.22.1; sys_platform != "win32"
