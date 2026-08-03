@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import { getDb, withTenantDb } from "@/lib/db";
 import type { MonolithEvent, Severity } from "@/lib/types";
+import { alertConfigStatus } from "@/lib/alert-config";
 
 const knownModules = new Set(["mcp-shield", "vector-anchor", "trace-audit"]);
 const severities = new Set<Severity>(["info", "warning", "critical"]);
@@ -180,7 +181,17 @@ async function insertWithClient(client: PoolClient, event: MonolithEvent) {
       event.tenant_id,
     ],
   );
-  return result.rows[0] ? { inserted: true, event: fromRow(result.rows[0]) } : { inserted: false, event };
+  if (!result.rows[0]) return { inserted: false, event };
+  const persisted = fromRow(result.rows[0]);
+  if (persisted.severity === "critical" && alertConfigStatus().enabled) {
+    await client.query(
+      `insert into monolith.alert_outbox (event_id, tenant_id, payload)
+       values ($1::uuid, $2, $3::jsonb)
+       on conflict (event_id) do nothing`,
+      [persisted.event_id, persisted.tenant_id, JSON.stringify(persisted)],
+    );
+  }
+  return { inserted: true, event: persisted };
 }
 
 export async function persistEvents(events: MonolithEvent[]) {

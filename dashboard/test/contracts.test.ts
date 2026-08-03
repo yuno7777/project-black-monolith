@@ -18,6 +18,7 @@ import { parseEventNotification } from "../lib/live-event-listener";
 import { operatorRateLimitKey } from "../lib/login-rate-limit";
 import { externalIdentityFromClaims } from "../lib/external-auth";
 import { normalizeModuleLedgerHealth } from "../lib/operations-store";
+import { alertConfigStatus } from "../lib/alert-config";
 
 function detector(overrides: Record<string, unknown> = {}) {
   return {
@@ -50,6 +51,23 @@ test("operations health retains quiet defense layers", () => {
   assert.equal(modules[0].events_24h, 0);
   assert.equal(modules[1].critical_24h, 1);
   assert.equal(modules[2].latest_received_ms, null);
+});
+
+test("alert webhooks require a signed HTTPS destination", () => {
+  assert.deepEqual(alertConfigStatus({}), { enabled: false });
+  assert.equal(alertConfigStatus({ MONOLITH_ALERT_WEBHOOK_URL: "https://alerts.example.test" }).enabled, false);
+  assert.equal(alertConfigStatus({
+    MONOLITH_ALERT_WEBHOOK_URL: "http://alerts.example.test/hook",
+    MONOLITH_ALERT_WEBHOOK_SECRET: "s".repeat(32),
+  }).enabled, false);
+  assert.equal(alertConfigStatus({
+    MONOLITH_ALERT_WEBHOOK_URL: "https://alerts.example.test/hook",
+    MONOLITH_ALERT_WEBHOOK_SECRET: "s".repeat(32),
+  }).enabled, true);
+  assert.equal(alertConfigStatus({
+    MONOLITH_ALERT_WEBHOOK_URL: "http://127.0.0.1:8787/hook",
+    MONOLITH_ALERT_WEBHOOK_SECRET: "s".repeat(32),
+  }).enabled, true);
 });
 
 test("benchmark normalization derives tenant and metrics server-side", () => {
