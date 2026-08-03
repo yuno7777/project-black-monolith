@@ -17,6 +17,7 @@ import { JsonBodyError, readJsonBody } from "../lib/request-body";
 import { parseEventNotification } from "../lib/live-event-listener";
 import { operatorRateLimitKey } from "../lib/login-rate-limit";
 import { externalIdentityFromClaims } from "../lib/external-auth";
+import { normalizeModuleLedgerHealth } from "../lib/operations-store";
 
 function detector(overrides: Record<string, unknown> = {}) {
   return {
@@ -30,6 +31,26 @@ function detector(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+test("operations health retains quiet defense layers", () => {
+  const modules = normalizeModuleLedgerHealth([
+    {
+      module: "vector-anchor",
+      events_24h: "7",
+      critical_24h: "1",
+      latest_ms: "1785700000000",
+      policy_versions: ["frequency-anomaly@2"],
+    },
+  ]);
+  assert.deepEqual(modules.map((module) => module.module), [
+    "mcp-shield",
+    "vector-anchor",
+    "trace-audit",
+  ]);
+  assert.equal(modules[0].events_24h, 0);
+  assert.equal(modules[1].critical_24h, 1);
+  assert.equal(modules[2].latest_received_ms, null);
+});
 
 test("benchmark normalization derives tenant and metrics server-side", () => {
   const run = normalizeRun({ detectors: [detector()] }, "tenant-a");
