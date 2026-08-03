@@ -43,10 +43,14 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: "22"
+      - name: Format and lint
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets -- -D warnings
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --locked --verbose
       - name: Test
-        run: cargo test --verbose
+        run: cargo test --locked --verbose
       - name: Rust dependency vulnerability gate
         uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
