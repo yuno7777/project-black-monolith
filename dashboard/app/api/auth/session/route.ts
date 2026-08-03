@@ -9,6 +9,10 @@ import {
 } from "@/lib/operator-auth";
 import { jsonBodyError, readJsonBody } from "@/lib/request-body";
 import { requireSameOrigin } from "@/lib/route-auth";
+import {
+  clearOperatorLoginAttempts,
+  recordOperatorLoginAttempt,
+} from "@/lib/login-rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,6 +44,20 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   const originError = requireSameOrigin(req);
   if (originError) return originError;
+  let rateLimitKey: string;
+  try {
+    const rateLimit = await recordOperatorLoginAttempt(req);
+    rateLimitKey = rateLimit.key;
+    if (!rateLimit.allowed) {
+      return Response.json(
+        { error: "too many operator sign-in attempts; try again later" },
+        { status: 429, headers: { "Retry-After": "900" } },
+      );
+    }
+  } catch (error) {
+    console.error("operator login rate limiter is unavailable", error);
+    return Response.json({ error: "operator authentication is unavailable" }, { status: 503 });
+  }
   let token = "";
   try {
     const body = await readJsonBody(req, 8 * 1024) as { token?: unknown };
@@ -53,6 +71,7 @@ export async function POST(req: Request) {
     if (!identity) {
       return Response.json({ error: "invalid operator credential" }, { status: 401 });
     }
+    await clearOperatorLoginAttempts(rateLimitKey);
     const session = await createOperatorSession(identity);
     return Response.json(
       {

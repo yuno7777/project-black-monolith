@@ -15,6 +15,7 @@ import { requireOperator } from "../lib/route-auth";
 import { requireSameOrigin } from "../lib/route-auth";
 import { JsonBodyError, readJsonBody } from "../lib/request-body";
 import { parseEventNotification } from "../lib/live-event-listener";
+import { operatorRateLimitKey } from "../lib/login-rate-limit";
 
 function detector(overrides: Record<string, unknown> = {}) {
   return {
@@ -348,6 +349,20 @@ test("operator sessions throttle activity writes and clean expired rows", () => 
   assert.match(auth, /last_seen_at < now\(\) - interval '5 minutes'/);
   assert.match(auth, /delete from monolith\.operator_sessions[\s\S]*expires_at <= now\(\)/);
   assert.doesNotMatch(auth, /update monolith\.operator_sessions\s+set last_seen_at = now\(\)\s+where session_hash/);
+});
+
+test("login rate-limit keys trust proxy headers only when explicitly enabled", () => {
+  const req = new Request("https://console.example/api/auth/session", {
+    method: "POST",
+    headers: { "x-forwarded-for": "203.0.113.5, 10.0.0.1" },
+  });
+  process.env.OPERATOR_TRUST_PROXY_HEADERS = "false";
+  const direct = operatorRateLimitKey(req);
+  process.env.OPERATOR_TRUST_PROXY_HEADERS = "true";
+  const proxied = operatorRateLimitKey(req);
+  assert.match(direct, /^[0-9a-f]{64}$/);
+  assert.match(proxied, /^[0-9a-f]{64}$/);
+  assert.notEqual(direct, proxied);
 });
 
 test("event streams release broker subscriptions when readers cancel", async () => {
