@@ -1,0 +1,22 @@
+name: SBOM
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Generate SPDX software bill of materials
+        uses: anchore/sbom-action@43a17d6e7add2b5535efe4dcae9952337c479a93 # v0.20.11
+        with:
+          path: .
+          format: spdx-json
+          artifact-name: project-black-monolith.spdx.json
