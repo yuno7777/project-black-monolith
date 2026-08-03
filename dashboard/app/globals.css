@@ -391,6 +391,12 @@ html, body {
 
 /* ============================ threat feed ============================ */
 .feed { flex: 1; min-height: 0; overflow-y: auto; }
+.feed-more {
+  display: flex;
+  justify-content: center;
+  padding: 14px 18px 18px;
+  border-top: 1px solid var(--line);
+}
 .empty { padding: 60px 20px; text-align: center; color: var(--ink-faint); font-size: 13.5px; }
 .empty .empty-ic { color: var(--line); margin-bottom: 12px; display: inline-flex; }
 
