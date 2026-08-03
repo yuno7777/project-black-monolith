@@ -85,7 +85,8 @@ it and serves the next-best clean result instead.
 | `MONOLITH_TOP_RANK_THRESHOLD`| `2`                | a doc "ranks highly" if in the top this-many (calibrated) |
 | `MONOLITH_MIN_DISTINCT_TOPICS`| `4`               | distinct topics before a doc is quarantined         |
 | `MONOLITH_TOPIC_SIMILARITY`  | `0.20`             | queries at/above this cosine count as one topic (calibrated) |
-| `MONOLITH_WINDOW_SIZE`       | `50`               | rolling window (number of recent queries)           |
+| `MONOLITH_RETENTION_HORIZON` | `500`              | how far back a hit still counts (detection reach)   |
+| `MONOLITH_MAX_QUERIES_PER_DOC`| `8`               | hits retained per document (memory + cost bound)    |
 | `MONOLITH_DASHBOARD_URL`     | *(unset)*          | if set, events are also POSTed here                 |
 | `MONOLITH_EVENT_TOKEN`       | *(unset)*          | module-scoped ingest token; required with dashboard URL |
 | `MONOLITH_EVENT_OUTBOX_PATH` | `./event_outbox.db` | bounded SQLite retry/dead-letter queue             |
@@ -144,14 +145,15 @@ truly-unrelated triggers (pairwise ~0.0) separate, restoring a clean margin.
 
 ## Known limitations
 
-- **Slow-drip evasion.** Detection is frequency-based within a *bounded rolling
-  window* (`window_size`, default 50 queries), not persistent long-term
-  tracking. An attacker who spaces retrievals of a bait document so it never
-  reaches `min_distinct_topics` distinct topics *within any single window* —
-  e.g. surfacing it for one unrelated topic per window, letting earlier hits
-  age out — would stay under the threshold and evade detection. Catching that
-  would require long-horizon per-document accumulation, which this window-based
-  approach deliberately trades away for bounded memory and recency.
+- **Slow-drip evasion — repriced, not removed.** Detection reaches back
+  `retention_horizon` queries (default 500) and no further. An attacker who
+  spaces retrievals of a bait document so that no two topics fall inside one
+  horizon still evades. What changed is the price: retention is now per
+  document, so the horizon (detection reach) and `max_queries_per_doc`
+  (memory and clustering cost) are independent knobs. The drip that previously
+  worked at ~50 covering retrievals per hidden topic now needs ~500 — a 10x
+  increase for 1.5x the per-retrieval cost. Measured in EVALUATION.md §2a;
+  `tests/test_evasion.py` pins both the closure and the remaining boundary.
 - Detection is retrieval-driven: a bait document is only flagged once it has
   actually ranked across enough dissimilar queries. A document that has not
   yet been broadly retrieved is not pre-emptively flagged.
