@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { isBearerToken } from "@/lib/credentials";
 import { withSessionDb, withTenantDb } from "@/lib/db";
+import { authenticateExternalToken } from "@/lib/external-auth";
 
 /**
  * Operator authentication and revocable browser sessions.
@@ -126,6 +127,10 @@ export function authenticateOperatorToken(token: string): OperatorIdentity | nul
   return matched;
 }
 
+export async function authenticateOperatorCredential(token: string): Promise<OperatorIdentity | null> {
+  return authenticateOperatorToken(token) ?? authenticateExternalToken(token);
+}
+
 function cookieValue(req: Request, name: string): string {
   const raw = req.headers.get("cookie") ?? "";
   for (const pair of raw.split(";")) {
@@ -238,7 +243,7 @@ export async function authenticateOperator(req: Request): Promise<OperatorIdenti
   }
   const header = req.headers.get("authorization");
   const bearer = header?.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
-  return authenticateOperatorToken(bearer);
+  return authenticateOperatorCredential(bearer);
 }
 
 export function hasRole(identity: OperatorIdentity, minimum: OperatorRole): boolean {

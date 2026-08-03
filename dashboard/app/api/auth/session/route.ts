@@ -1,6 +1,6 @@
 import {
   authenticateOperator,
-  authenticateOperatorToken,
+  authenticateOperatorCredential,
   createOperatorSession,
   expiredOperatorCookie,
   OperatorAuthUnavailable,
@@ -67,7 +67,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    const identity = authenticateOperatorToken(token);
+    const identity = await authenticateOperatorCredential(token);
     if (!identity) {
       return Response.json({ error: "invalid operator credential" }, { status: 401 });
     }
