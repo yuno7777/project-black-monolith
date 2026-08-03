@@ -28,8 +28,10 @@ services:
       # migration portable to a real Supabase target.
       POSTGRES_DB: postgres
       POSTGRES_PASSWORD: ${MONOLITH_POSTGRES_PASSWORD:?set MONOLITH_POSTGRES_PASSWORD in .env}
+      MONOLITH_DATABASE_RUNTIME_PASSWORD: ${MONOLITH_DATABASE_RUNTIME_PASSWORD:?set MONOLITH_DATABASE_RUNTIME_PASSWORD in .env}
     volumes:
       - monolith-postgres-data:/var/lib/postgresql/data
+      - ./supabase/bootstrap/001-runtime-role.sh:/docker-entrypoint-initdb.d/001-runtime-role.sh:ro
     healthcheck:
       # Deliberately not pg_isready: it only checks that the server accepts
       # connections — it neither authenticates nor runs a query, so it
@@ -41,6 +43,19 @@ services:
       retries: 20
       start_period: 10s
 
+  dashboard-migrator:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://postgres:${MONOLITH_POSTGRES_PASSWORD:?set MONOLITH_POSTGRES_PASSWORD in .env}@database:5432/postgres
+      DATABASE_MIGRATIONS_DIR: /app/supabase/migrations
+    command: ["node", "scripts/migrate.mjs"]
+    restart: "no"
+    depends_on:
+      database:
+        condition: service_healthy
+
   dashboard:
     build:
       context: .
@@ -48,7 +63,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      DATABASE_URL: postgresql://postgres:${MONOLITH_POSTGRES_PASSWORD:?set MONOLITH_POSTGRES_PASSWORD in .env}@database:5432/postgres
+      DATABASE_URL: postgresql://monolith_runtime:${MONOLITH_DATABASE_RUNTIME_PASSWORD:?set MONOLITH_DATABASE_RUNTIME_PASSWORD in .env}@database:5432/postgres
       DATABASE_APP_ROLE: monolith_app
       EVENT_INGEST_TOKENS_JSON: >-
         {"${MONOLITH_TENANT_ID:-default}":{"mcp-shield":"${MONOLITH_EVENT_TOKEN_MCP_SHIELD:?set MONOLITH_EVENT_TOKEN_MCP_SHIELD in .env}","vector-anchor":"${MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR:?set MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR in .env}","trace-audit":"${MONOLITH_EVENT_TOKEN_TRACE_AUDIT:?set MONOLITH_EVENT_TOKEN_TRACE_AUDIT in .env}"}}
@@ -59,8 +74,8 @@ services:
       OPERATOR_TOKENS_JSON: >-
         {"${MONOLITH_OPERATOR_NAME:-operator}":{"token":"${MONOLITH_OPERATOR_TOKEN:?set MONOLITH_OPERATOR_TOKEN in .env — run scripts/generate_secrets.sh}","role":"admin","tenant_id":"${MONOLITH_TENANT_ID:-default}"}}
     depends_on:
-      database:
-        condition: service_healthy
+      dashboard-migrator:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/ingest').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 5s

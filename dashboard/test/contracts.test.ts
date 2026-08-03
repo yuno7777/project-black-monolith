@@ -408,6 +408,23 @@ test("trust-model migration keeps the runtime role least-privileged", () => {
   );
 });
 
+test("Compose separates migration authority from the dashboard runtime", () => {
+  const compose = readFileSync(new URL("../../docker-compose.yml", import.meta.url), "utf8");
+  const dockerfile = readFileSync(new URL("../Dockerfile", import.meta.url), "utf8");
+  const bootstrap = readFileSync(
+    new URL("../../supabase/bootstrap/001-runtime-role.sh", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(compose, /dashboard-migrator:[\s\S]*DATABASE_URL:\s+postgresql:\/\/postgres:/);
+  assert.match(compose, /dashboard:[\s\S]*DATABASE_URL:\s+postgresql:\/\/monolith_runtime:/);
+  assert.match(compose, /condition:\s+service_completed_successfully/);
+  assert.doesNotMatch(dockerfile, /migrate\.mjs\s*&&\s*node server\.js/);
+  assert.match(bootstrap, /create role monolith_runtime login password %L/i);
+  assert.match(bootstrap, /nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls/i);
+  assert.match(bootstrap, /grant monolith_app to monolith_runtime/i);
+});
+
 test("migration policy rejects privileged role mutations", () => {
   const migrationsDir = mkdtempSync(join(tmpdir(), "monolith-migrations-"));
   try {
