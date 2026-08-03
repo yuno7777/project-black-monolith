@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-black-monolith.local/contracts/trace-audit-api.v1.schema.json",
+  "title": "TraceAudit API contracts",
+  "$defs": {
+    "generateRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prompt"],
+      "properties": {
+        "prompt": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "max_tokens": { "type": "integer", "minimum": 1, "maximum": 4096 }
+      }
+    },
+    "tokenEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "token", "kl", "threshold"],
+      "properties": {
+        "type": { "const": "token" },
+        "token": { "type": "string", "minLength": 1 },
+        "kl": { "type": ["number", "null"], "minimum": 0 },
+        "threshold": { "type": "number", "minimum": 0 }
+      }
+    },
+    "piiEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "label", "redacted"],
+      "properties": {
+        "type": { "const": "pii" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "redacted": { "type": "string", "pattern": "^\\[REDACTED:[^]]+\\]$" }
+      }
+    },
+    "terminatedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "reason", "kl", "threshold", "safe_refusal"],
+      "properties": {
+        "type": { "const": "terminated" },
+        "reason": { "const": "reasoning_divergence" },
+        "kl": { "type": "number", "minimum": 0 },
+        "threshold": { "type": "number", "minimum": 0 },
+        "safe_refusal": { "type": "string", "minLength": 1 }
+      }
+    },
+    "doneEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "peak_kl", "tokens"],
+      "properties": {
+        "type": { "const": "done" },
+        "peak_kl": { "type": "number", "minimum": 0 },
+        "tokens": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "streamEvent": {
+      "oneOf": [
+        { "$ref": "#/$defs/tokenEvent" },
+        { "$ref": "#/$defs/piiEvent" },
+        { "$ref": "#/$defs/terminatedEvent" },
+        { "$ref": "#/$defs/doneEvent" }
+      ]
+    }
+  }
+}
