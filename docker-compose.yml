@@ -115,6 +115,7 @@ services:
       MONOLITH_CHROMA_PATH: "/app/chroma_store"
     volumes:
       - vector-anchor-outbox:/var/lib/monolith
+      - vector-anchor-state:/app/chroma_store
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:8001/health"]
       interval: 5s
@@ -188,5 +189,6 @@ services:
 volumes:
   monolith-postgres-data:
   vector-anchor-outbox:
+  vector-anchor-state:
   trace-audit-outbox:
   mcp-shield-outbox:
