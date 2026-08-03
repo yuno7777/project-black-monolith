@@ -87,7 +87,7 @@ fixture (3.29) crosses decisively.
 | ---------------- | ---------------------------------------------------------- |
 | `GET  /health`   | minimal liveness response                                  |
 | `POST /generate` | `{prompt, max_tokens?}` → SSE token stream (audited)        |
-| `GET  /stats`    | admin-authenticated detector configuration                 |
+| `GET  /stats`    | admin-authenticated detector + delivery health              |
 
 Each SSE `data:` line is a JSON event: `{type: "token", token, kl, threshold}`,
 `{type: "pii", label, redacted}`, `{type: "terminated", reason, kl, safe_refusal}`,
@@ -106,6 +106,8 @@ or `{type: "done", peak_kl, tokens}`.
 | `MONOLITH_MIN_TOKENS`       | `12`       | minimum tokens before evaluating divergence    |
 | `MONOLITH_MAX_TOKENS`       | `60`       | max tokens generated per request               |
 | `MONOLITH_DASHBOARD_URL`    | *(unset)*  | if set, events are also POSTed here             |
+| `MONOLITH_EVENT_TOKEN`      | *(unset)*  | module-scoped ingest token; required with dashboard URL |
+| `MONOLITH_EVENT_OUTBOX_PATH`| `./event_outbox.db` | bounded SQLite retry/dead-letter queue       |
 | `MONOLITH_TENANT_ID`        | `default`  | tenant stamped onto emitted events              |
 | `MONOLITH_ADMIN_TOKEN`      | *(unset)*  | bearer token required by `GET /stats`           |
 
@@ -116,7 +118,7 @@ and an absent or incorrect bearer token returns `401`.
 
 ```sh
 cd trace-audit
-pip install -r requirements.txt          # mock backend needs only stdlib + fastapi/uvicorn
+python -m pip install --require-hashes -r requirements.lock
 
 bash fixtures/run_demo.sh                 # baseline -> normal -> divergence -> PII
 python -m pytest tests/                   # unit tests, no backend needed
