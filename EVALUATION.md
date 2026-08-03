@@ -346,21 +346,40 @@ trust-on-first-use limitation.
 
 ## 5. Dashboard — malformed-event resilience
 
-**Test.** `dashboard/test/malformed-event.test.mjs` now exercises the
-authenticated contract. It expects five invalid envelopes (missing required
-identity, bare scalar, malformed UUID) to return permanent `422` responses,
-then submits five events with malformed optional fields and verifies their
-tenant-scoped replay over the authenticated `/api/events` stream.
+**Test.** `dashboard/test/malformed-event.test.mjs` exercises the authenticated
+contract against a live stack: **11 invalid envelopes** must return permanent
+`422` responses, and **5 valid events** must be accepted, defaulted
+server-side, and replayed tenant-scoped over the authenticated `/api/events`
+stream.
 
-The strict boundary is intentional: `module`, `event_type`, tenant/module
-credential scope, and UUID idempotency cannot be guessed safely. Optional
-`severity`, timestamp, and `details` can be normalized to safe values.
+**Result: PASSED — 11 rejected, 5 accepted and replayed.**
 
-**Current live result after the trust-model update: NOT MEASURED.** The updated
-integration test needs a running dashboard and migrated Postgres database. It
-was deliberately not run during the non-Docker validation pass. The same
-normalization and rejection rules are covered by the dashboard's executable
-unit contract suite.
+Running it finally, rather than leaving it NOT MEASURED, found two things.
+
+**1. The documented contract was wrong.** This section previously said optional
+`severity`, timestamp and `details` "can be normalized to safe values", and the
+test asserted exactly that. The implementation does not normalize them — it
+rejects them with `422`. That changed in `39f6998` ("validate security event
+envelopes strictly"), which updated the unit contract suite but not this
+integration test or this document. The stale expectation is the reason the test
+was never green, and leaving it unrun is what hid the drift.
+
+**The strict behaviour is correct and is now what the test pins.** Coercing an
+unrecognised severity to `info` would silently *downgrade* a finding, and
+coercing a non-object `details` would discard the evidence the detection exists
+to carry. A permanent `422` dead-letters the event where a human can see it.
+What genuinely is optional — an absent `severity`, timestamp, or `event_id` —
+is still defaulted server-side, and the test covers that separately.
+
+**2. The test could never have reported success anyway.** Its SSE helper
+released the `/api/events` stream only on the error path. On the success path
+the socket stayed open, Node's event loop never drained, and the process hung
+with its buffered stdout unflushed — indistinguishable from a slow test. Fixed
+by aborting the controller in `finally`.
+
+The strict boundary itself is unchanged and intentional: `module`,
+`event_type`, tenant/module credential scope, and UUID idempotency cannot be
+guessed safely.
 
 ---
 
