@@ -32,7 +32,9 @@ it and serves the next-best clean result instead.
 - `src/retriever_proxy.py` — the choke point every retrieval passes through.
 - `src/frequency_tracker.py` — pure-Python anomaly detector (no ChromaDB
   dependency, so it is unit-testable in isolation).
-- `src/quarantine.py` — in-memory flagged-document store.
+- `src/quarantine.py` — serializable flagged-document store.
+- `src/state_store.py` — atomic detector snapshots, restored on restart so a
+  process failure does not silently re-trust an already quarantined document.
 - `src/embedding.py` — the embedding function (see design note below).
 - `src/store.py` — ChromaDB collection helpers.
 - `src/events.py` — structured event emission in the shared Project Black
@@ -58,8 +60,9 @@ it and serves the next-best clean result instead.
   client; the seed/inject fixtures add documents through
   `POST /admin/add-documents` rather than opening a second client (which would
   contend on ChromaDB's SQLite store).
-- **Quarantine is in-memory** — this is a single-process research/demo
-  detector; a restart re-learns from the live stream.
+- **Detector decisions are durable.** Frequency-window and quarantine state are
+  written atomically to `MONOLITH_DETECTOR_STATE_PATH` and restored before the
+  service accepts retrievals.
 
 ## Endpoints
 
@@ -84,6 +87,9 @@ it and serves the next-best clean result instead.
 | `MONOLITH_TOPIC_SIMILARITY`  | `0.20`             | queries at/above this cosine count as one topic (calibrated) |
 | `MONOLITH_WINDOW_SIZE`       | `50`               | rolling window (number of recent queries)           |
 | `MONOLITH_DASHBOARD_URL`     | *(unset)*          | if set, events are also POSTed here                 |
+| `MONOLITH_EVENT_TOKEN`       | *(unset)*          | module-scoped ingest token; required with dashboard URL |
+| `MONOLITH_EVENT_OUTBOX_PATH` | `./event_outbox.db` | bounded SQLite retry/dead-letter queue             |
+| `MONOLITH_DETECTOR_STATE_PATH` | `./detector_state.json` | atomic frequency/quarantine snapshot           |
 | `MONOLITH_TENANT_ID`         | `default`          | tenant stamped onto emitted events                  |
 | `MONOLITH_ADMIN_TOKEN`       | *(unset)*          | bearer token for protected read/mutation routes     |
 
@@ -96,7 +102,7 @@ token returns `401`. The demo and seed/inject fixtures read
 
 ```sh
 cd vector-anchor
-pip install -r requirements.txt
+python -m pip install --require-hashes -r requirements.lock
 
 # End-to-end corpus-poisoning detection demo (starts the service, seeds a
 # clean corpus, runs clean queries, injects the bait, triggers detection):
@@ -152,4 +158,6 @@ truly-unrelated triggers (pairwise ~0.0) separate, restoring a clean margin.
 - The hashing embedder is intentionally simple (shared-vocabulary similarity).
   Adversarial paraphrase attacks that avoid vocabulary overlap are better
   handled by the `default` semantic embedder; swapping it in is one env var.
-- Quarantine and frequency state are per-process and reset on restart.
+- State snapshots are single-writer files. Run one VectorAnchor worker per
+  state path; multi-worker coordination would require a shared transactional
+  state store.
