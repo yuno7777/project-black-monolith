@@ -22,6 +22,9 @@ venv/
 chroma_store/
 **/chroma_store/
 baseline_distribution.json
+# Runtime detector state (rolling retention + quarantine), written by the service
+detector_state.json
+**/detector_state.json
 .ollama/
 
 # ── Node / Next.js (dashboard) ───────────────────────────────────────
