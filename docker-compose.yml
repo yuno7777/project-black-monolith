@@ -169,6 +169,7 @@ services:
       # MONOLITH_SESSION_ID in at exec time rather than baking one here.
       MONOLITH_AGENT_ID: ${MONOLITH_AGENT_ID:-demo-agent}
       MCP_SHIELD_MODE: "enforce"
+      MCP_SHIELD_KEY: ${MCP_SHIELD_KEY:?set MCP_SHIELD_KEY in .env}
       MCP_SHIELD_BASELINE: "/tmp/baseline_hashes.json"
     volumes:
       - mcp-shield-outbox:/var/lib/monolith
