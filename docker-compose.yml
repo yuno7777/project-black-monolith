@@ -38,7 +38,12 @@ services:
       MONOLITH_DATABASE_RUNTIME_PASSWORD: ${MONOLITH_DATABASE_RUNTIME_PASSWORD:?set MONOLITH_DATABASE_RUNTIME_PASSWORD in .env}
     volumes:
       - monolith-postgres-data:/var/lib/postgresql/data
-      - ./supabase/bootstrap/001-runtime-role.sh:/docker-entrypoint-initdb.d/001-runtime-role.sh:ro
+      # Deliberately NOT mounted into /docker-entrypoint-initdb.d: that runs
+      # during initdb, before this image has created the `postgres` role, so the
+      # script died with 'role "postgres" does not exist' and took the database
+      # with it (exit 2) on any fresh volume. The `database-bootstrap` service
+      # runs the same script once the server is healthy, which is the only point
+      # at which the role it connects as exists.
     healthcheck:
       # Deliberately not pg_isready: it only checks that the server accepts
       # connections — it neither authenticates nor runs a query, so it
