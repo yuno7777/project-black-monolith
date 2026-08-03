@@ -141,7 +141,7 @@ services:
       # the caller supplies it per request via X-Monolith-Session-Id.
       MONOLITH_AGENT_ID: ${MONOLITH_AGENT_ID:-demo-agent}
       MONOLITH_MODEL_BACKEND: "mock"
-      MONOLITH_BASELINE_PATH: "/app/baseline_distribution.json"
+      MONOLITH_BASELINE_PATH: "/var/lib/monolith/baseline_distribution.json"
     volumes:
       - trace-audit-outbox:/var/lib/monolith
     # start_period covers the baseline_capture step the entrypoint runs before
