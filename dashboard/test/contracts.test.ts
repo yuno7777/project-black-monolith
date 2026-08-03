@@ -12,6 +12,7 @@ import { normalizeEvent } from "../lib/event-store";
 import { authenticateIngest } from "../lib/ingest-auth";
 import { authenticateOperatorToken, operatorCookie } from "../lib/operator-auth";
 import { requireOperator } from "../lib/route-auth";
+import { requireSameOrigin } from "../lib/route-auth";
 import { JsonBodyError, readJsonBody } from "../lib/request-body";
 import { parseEventNotification } from "../lib/live-event-listener";
 
@@ -299,6 +300,37 @@ test("operator cookie security follows the actual request transport", () => {
   assert.doesNotMatch(local, /; Secure/);
   assert.match(proxied, /; Secure/);
   assert.match(local, /HttpOnly; SameSite=Strict/);
+});
+
+test("browser mutations require a same-origin request", () => {
+  assert.equal(
+    requireSameOrigin(new Request("https://console.example/api/incidents", {
+      method: "POST",
+      headers: { origin: "https://console.example" },
+    })),
+    null,
+  );
+  assert.equal(
+    requireSameOrigin(new Request("https://console.example/api/incidents", {
+      method: "POST",
+      headers: { origin: "https://attacker.example" },
+    }))?.status,
+    403,
+  );
+  assert.equal(
+    requireSameOrigin(new Request("https://console.example/api/incidents", {
+      method: "POST",
+      headers: { "sec-fetch-site": "cross-site" },
+    }))?.status,
+    403,
+  );
+  assert.equal(
+    requireSameOrigin(new Request("https://console.example/api/incidents", {
+      method: "POST",
+      headers: { authorization: "Bearer script-token" },
+    })),
+    null,
+  );
 });
 
 test("event streams release broker subscriptions when readers cancel", async () => {

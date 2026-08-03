@@ -8,6 +8,7 @@ import {
   revokeOperatorSession,
 } from "@/lib/operator-auth";
 import { jsonBodyError, readJsonBody } from "@/lib/request-body";
+import { requireSameOrigin } from "@/lib/route-auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -37,6 +38,8 @@ export async function GET(req: Request) {
 
 /** Exchange a long-lived operator token for an opaque, revocable browser session. */
 export async function POST(req: Request) {
+  const originError = requireSameOrigin(req);
+  if (originError) return originError;
   let token = "";
   try {
     const body = await readJsonBody(req, 8 * 1024) as { token?: unknown };
@@ -68,6 +71,8 @@ export async function POST(req: Request) {
 
 /** Revoke the current browser session and expire the cookie. */
 export async function DELETE(req: Request) {
+  const originError = requireSameOrigin(req);
+  if (originError) return originError;
   try {
     await revokeOperatorSession(req);
   } catch (error) {
