@@ -12,6 +12,7 @@ import {
   normalizeRun,
   persistRun,
 } from "@/lib/benchmark-store";
+import { observedAccuracy } from "@/lib/incident-store";
 import { requireOperator } from "@/lib/route-auth";
 import { jsonBodyError, readJsonBody } from "@/lib/request-body";
 
@@ -22,11 +23,15 @@ export async function GET(req: Request) {
   const identity = await requireOperator(req);
   if (identity instanceof Response) return identity;
   try {
-    const [run, history] = await Promise.all([
+    // Lab accuracy and observed accuracy are served together on purpose: the
+    // page's whole argument is the comparison, and fetching them separately
+    // would let one render without the other.
+    const [run, history, observed] = await Promise.all([
       latestRun(identity.tenant_id),
       detectorHistory(identity.tenant_id),
+      observedAccuracy(identity.tenant_id),
     ]);
-    return Response.json({ run, history });
+    return Response.json({ run, history, observed });
   } catch (error) {
     console.error("failed to read benchmark runs", error);
     return Response.json({ error: "the benchmark ledger is temporarily unavailable" }, { status: 503 });

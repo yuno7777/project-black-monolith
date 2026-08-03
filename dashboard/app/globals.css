@@ -765,3 +765,21 @@ option {
 .ops-empty { padding: 42px 18px; color: var(--ink-faint); font-size: 12px; text-align: center; }
 @media (max-width: 980px) { .ops-kpis { grid-template-columns: repeat(2, 1fr); } .ops-module { grid-template-columns: 36px 1fr 1fr; } }
 @media (max-width: 620px) { .ops-hero { align-items: flex-start; flex-direction: column; } .ops-kpis { grid-template-columns: 1fr; } .ops-module { grid-template-columns: 32px 1fr; } .ops-cell { grid-column: 2; } }
+
+/* --- Observed accuracy (benchmarks page) ---------------------------------
+   Sits under the labelled-corpus scorecards. Same card language on purpose:
+   the point of the section is that these two numbers are comparable. */
+.bm-obs-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 11px; }
+.bm-obs-counts {
+  display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 10px;
+  font-size: 11.5px; color: var(--ink-muted);
+}
+.bm-obs-counts b { color: var(--ink); font-weight: 600; }
+.bm-obs-empty, .bm-observed-empty {
+  padding: 16px 18px; border: 1px dashed var(--line); border-radius: 10px;
+  font-size: 12.5px; line-height: 1.6; color: var(--ink-muted); max-width: 68ch;
+}
+.bm-obs-note {
+  margin-top: 11px; font-size: 11px; line-height: 1.55;
+  color: var(--ink-faint); max-width: 78ch;
+}

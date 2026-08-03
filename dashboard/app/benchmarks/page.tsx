@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { KNOWN_MODULES, MODULE_ACCENT, MODULE_LABELS, MODULE_LAYER } from "@/lib/types";
 import type { BenchmarkDetector, BenchmarkRun } from "@/lib/benchmark-store";
+import type { ObservedAccuracy } from "@/lib/incident-store";
 import { Rail } from "../components/Sidebar";
 import ThemeToggle from "../components/ThemeToggle";
 import OperatorBadge from "../components/OperatorBadge";
@@ -108,8 +109,69 @@ function Scorecard({ d }: { d: BenchmarkDetector }) {
   );
 }
 
+/** Precision as analysts actually judged it, next to the corpus number.
+ *
+ *  The lab figure says how a detector scores against documents we wrote. This
+ *  says how it scored against whatever really arrived, judged by whoever
+ *  handled it. Divergence between the two is a finding in either direction: a
+ *  corpus that flatters the detector, or production traffic the corpus never
+ *  anticipated.
+ */
+function ObservedPanel({ rows }: { rows: ObservedAccuracy[] }) {
+  const scored = rows.filter((r) => r.scored > 0);
+  return (
+    <section className="bm-section">
+      <div className="bm-section-head">
+        <span className="bm-sec-ic"><IconBolt size={15} /></span>
+        <span className="bm-sec-name">Observed in operation</span>
+        <span className="bm-sec-layer">from analyst verdicts</span>
+      </div>
+      {scored.length === 0 ? (
+        <div className="bm-observed-empty">
+          No incidents resolved with a verdict yet. Precision here is computed
+          from real triage decisions, so this fills in as incidents are closed
+          on the investigation queue — it is deliberately empty rather than
+          seeded.
+        </div>
+      ) : (
+        <div className="bm-obs-grid">
+          {scored.map((r) => (
+            <div
+              className="card bm-card"
+              key={r.module}
+              style={{ ["--accent-mod" as string]: MODULE_ACCENT[r.module] ?? "var(--ink-faint)" }}
+            >
+              <div className="bm-head">
+                <span className="bm-ic"><ModuleGlyph module={r.module} size={16} /></span>
+                <div className="bm-title">
+                  <span className="bm-name">{MODULE_LABELS[r.module] ?? r.module}</span>
+                  <span className="bm-para">{r.scored} verdict{r.scored === 1 ? "" : "s"} scored</span>
+                </div>
+              </div>
+              <Metric label="observed precision" value={r.precision ?? 0} />
+              <div className="bm-obs-counts">
+                <span><b className="num">{r.true_positive}</b> true positive</span>
+                <span><b className="num">{r.false_positive}</b> false positive</span>
+                <span><b className="num">{r.benign}</b> benign</span>
+                <span><b className="num">{r.duplicate}</b> duplicate</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <p className="bm-obs-note">
+        Benign and duplicate verdicts are counted but excluded from precision.
+        Neither means the detector was wrong — benign is a real finding that
+        needed no action, duplicate is the same real finding twice — so
+        counting them as errors would make good triage look like a regression.
+      </p>
+    </section>
+  );
+}
+
 export default function BenchmarksPage() {
   const [run, setRun] = useState<BenchmarkRun | null>(null);
+  const [observed, setObserved] = useState<ObservedAccuracy[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -120,6 +182,7 @@ export default function BenchmarksPage() {
       .then((d) => {
         if (cancelled) return;
         setRun(d.run ?? null);
+        setObserved(Array.isArray(d.observed) ? d.observed : []);
         setError(null);
       })
       .catch(() => {
@@ -193,6 +256,7 @@ export default function BenchmarksPage() {
                 </section>
               ))
             )}
+            {!error && !loading ? <ObservedPanel rows={observed} /> : null}
           </div>
         </main>
       </div>
