@@ -243,6 +243,27 @@ export async function listIncidents(query: IncidentQuery): Promise<IncidentPage>
   });
 }
 
+export async function getIncident(eventId: string, tenantId: string): Promise<Incident | null> {
+  return withTenantDb(tenantId, async (db) => {
+    const result = await db.query<IncidentRow>(
+      `select
+         e.event_id, e.schema_version, e.occurred_at_ms,
+         (extract(epoch from e.received_at) * 1000)::bigint as received_ms,
+         e.module, e.event_type, e.severity, e.details, e.tenant_id,
+         e.correlation_id, e.session_id, e.trace_id, e.agent_id, e.outcome,
+         t.status, t.assignee, t.note, t.resolution,
+         (extract(epoch from t.updated_at) * 1000)::bigint as updated_ms,
+         t.updated_by
+       from monolith.security_events e
+       left join monolith.incident_triage t using (event_id)
+       where e.event_id = $1 and e.tenant_id = $2
+       limit 1`,
+      [eventId, tenantId],
+    );
+    return result.rows[0] ? toIncident(result.rows[0]) : null;
+  });
+}
+
 export async function getAuditTrail(eventId: string, tenantId: string): Promise<AuditEntry[]> {
   return withTenantDb(tenantId, async (db) => {
     const result = await db.query<{
