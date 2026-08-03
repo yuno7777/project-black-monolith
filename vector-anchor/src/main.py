@@ -116,12 +116,17 @@ def build_proxy() -> RetrieverProxy:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.proxy = build_proxy()
-    app.state.proxy.emit(
+    emit = app.state.proxy.emit
+    emit(
         "service_start",
         "info",
         {"message": "VectorAnchor memory-layer defense online"},
     )
-    yield
+    try:
+        yield
+    finally:
+        emit("service_stop", "info", {"message": "VectorAnchor shutting down"})
+        emit.close()
 
 
 app = FastAPI(title="Project Black Monolith — VectorAnchor", lifespan=lifespan)

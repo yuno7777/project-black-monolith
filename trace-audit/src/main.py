@@ -109,7 +109,11 @@ async def lifespan(app: FastAPI):
             "warning",
             {"message": "no baseline distribution loaded; divergence detection disabled until one is captured"},
         )
-    yield
+    try:
+        yield
+    finally:
+        emit("service_stop", "info", {"message": "TraceAudit shutting down"})
+        emit.close()
 
 
 app = FastAPI(title="Project Black Monolith — TraceAudit", lifespan=lifespan)
