@@ -63,8 +63,12 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt pytest
+          python -m pip install --require-hashes -r requirements.lock -r ../requirements-quality.lock
+      - name: Lint and type-check
+        run: |
+          python -m ruff check ../python-common/monolith_events src
+          python -m mypy ../python-common/monolith_events
+          python -m mypy src
       - name: Run tests
         run: python -m pytest tests/ -q
       - name: Detection-accuracy benchmark (gated, deterministic)
@@ -83,8 +87,12 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt pytest
+          python -m pip install --require-hashes -r requirements.lock -r ../requirements-quality.lock
+      - name: Lint and type-check
+        run: |
+          python -m ruff check ../python-common/monolith_events src
+          python -m mypy ../python-common/monolith_events
+          python -m mypy src
       - name: Run tests
         run: python -m pytest tests/ -q
       - name: Detection-accuracy benchmark (gated, deterministic)
@@ -107,6 +115,8 @@ jobs:
         run: npm audit --audit-level=high
       - name: Dashboard contract tests
         run: npm test
+      - name: Dashboard lint
+        run: npm run lint
       - name: Build
         run: npm run build
 
