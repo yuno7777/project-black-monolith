@@ -6,6 +6,10 @@ WORKDIR /app
 COPY dashboard/package.json dashboard/package-lock.json ./
 RUN npm ci
 COPY dashboard .
+# Middleware resolves env when the bundle is built, so the demo auth escape
+# hatch has to be present at build time as well as at run time.
+ARG MONOLITH_DISABLE_AUTH=false
+ENV MONOLITH_DISABLE_AUTH=$MONOLITH_DISABLE_AUTH
 RUN npm run build
 
 FROM node:22-slim

@@ -8,6 +8,34 @@ import {
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
+/**
+ * Demo escape hatch: skip operator sign-in entirely.
+ *
+ * Off unless explicitly set to the exact string "true", so the secure path is
+ * what you get by forgetting to configure anything. When on, every request is
+ * treated as a full admin, which means anyone who can reach the port can read
+ * the ledger and close incidents. Local demos only.
+ *
+ * The synthetic actor is named for what actually happened rather than borrowing
+ * a person's name — the audit trail should not imply someone signed in when
+ * nobody did.
+ */
+export const AUTH_DISABLED = process.env.MONOLITH_DISABLE_AUTH === "true";
+
+const DEMO_IDENTITY: OperatorIdentity = {
+  actor: "auth-disabled",
+  role: "admin",
+  tenant_id: process.env.MONOLITH_TENANT_ID || "default",
+  auth_type: "bearer",
+};
+
+if (AUTH_DISABLED) {
+  console.warn(
+    "[auth] MONOLITH_DISABLE_AUTH=true — operator sign-in is OFF and every "
+      + "request is treated as admin. Never run this exposed.",
+  );
+}
+
 /** Reject cross-site browser mutations while preserving non-browser bearer clients. */
 export function requireSameOrigin(req: Request): Response | null {
   if (SAFE_METHODS.has(req.method.toUpperCase())) return null;
@@ -32,6 +60,7 @@ export async function requireOperator(
   req: Request,
   minimum: OperatorRole = "viewer",
 ): Promise<OperatorIdentity | Response> {
+  if (AUTH_DISABLED) return DEMO_IDENTITY;
   try {
     const identity = await authenticateOperator(req);
     if (!identity) {
