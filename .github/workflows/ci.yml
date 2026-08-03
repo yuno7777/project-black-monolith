@@ -166,7 +166,13 @@ jobs:
         # .env is gitignored so none of it can be committed.
         run: bash scripts/generate_secrets.sh
       - name: Bring the stack up
-        run: docker compose up -d --build --wait
+        shell: bash
+        run: |
+          set +e
+          docker compose up -d --build --wait 2>&1 | tee compose-up.log
+          compose_status="${PIPESTATUS[0]}"
+          set -e
+          exit "$compose_status"
       - name: Verify the ingestion contract
         run: bash scripts/verify_ingest.sh
       - name: Verify outage recovery (spool -> drain)
@@ -183,7 +189,7 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          diagnostics="$({ docker compose ps -a; docker compose logs --no-color --tail=120; } 2>&1 | tail -n 100)"
+          diagnostics="$({ cat compose-up.log 2>/dev/null || true; docker compose ps -a; docker compose logs --no-color --tail=120; } 2>&1 | tail -n 120)"
           printf '%s\n' "$diagnostics"
 
           # Raw public logs require a signed-in GitHub session. Mirror a bounded,
@@ -198,7 +204,7 @@ jobs:
           diagnostics="${diagnostics//'%'/'%25'}"
           diagnostics="${diagnostics//$'\r'/'%0D'}"
           diagnostics="${diagnostics//$'\n'/'%0A'}"
-          echo "::error title=Compose startup diagnostics::$diagnostics"
+          echo "::error file=.github/workflows/ci.yml,line=168,title=Compose startup diagnostics::$diagnostics"
       - name: Tear the stack down
         if: always()
         run: docker compose down -v
