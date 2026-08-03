@@ -2,14 +2,15 @@
 # ChromaDB runs embedded, so there is no separate vector-DB service.
 
 FROM python:3.12-slim
-WORKDIR /app
+WORKDIR /app/vector-anchor
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
-COPY requirements.txt ./
+COPY vector-anchor/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
-COPY src ./src
-COPY fixtures ./fixtures
+COPY python-common /app/python-common
+COPY vector-anchor/src ./src
+COPY vector-anchor/fixtures ./fixtures
 RUN useradd --system --uid 10001 --create-home monolith \
     && mkdir -p /var/lib/monolith /app/chroma_store \
     && chown -R monolith:monolith /app /var/lib/monolith
