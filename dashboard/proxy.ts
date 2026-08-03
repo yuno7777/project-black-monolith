@@ -11,13 +11,20 @@ export function proxy(req: NextRequest) {
   // Matches the API-side escape hatch in lib/route-auth.ts. Read at module
   // scope because middleware env is resolved when the bundle is built, so
   // toggling this takes a rebuild (`docker compose up -d --build`).
-  if (process.env.MONOLITH_DISABLE_AUTH === "true") return NextResponse.next();
-  if (req.cookies.has(OPERATOR_SESSION_COOKIE)) return NextResponse.next();
+  const authDisabled = process.env.MONOLITH_DISABLE_AUTH === "true";
+  const onLogin = req.nextUrl.pathname === "/login";
+
+  if (authDisabled) {
+    // Send /login to the console too. Without this a cached redirect or a
+    // bookmark still lands on a sign-in form that can no longer sign anyone in.
+    return onLogin ? NextResponse.redirect(new URL("/", req.url)) : NextResponse.next();
+  }
+  if (onLogin || req.cookies.has(OPERATOR_SESSION_COOKIE)) return NextResponse.next();
   const login = new URL("/login", req.url);
   login.searchParams.set("next", `${req.nextUrl.pathname}${req.nextUrl.search}`);
   return NextResponse.redirect(login);
 }
 
 export const config = {
-  matcher: ["/", "/investigate/:path*", "/benchmarks/:path*", "/operations/:path*"],
+  matcher: ["/", "/login", "/investigate/:path*", "/benchmarks/:path*", "/operations/:path*"],
 };
