@@ -392,6 +392,74 @@ export async function crossLayerSessionCount(tenantId: string): Promise<number> 
   });
 }
 
+export interface ObservedAccuracy {
+  module: string;
+  true_positive: number;
+  false_positive: number;
+  benign: number;
+  duplicate: number;
+  /** Verdicts counted toward precision (true + false positives only). */
+  scored: number;
+  /** null until at least one incident has been resolved as true or false. */
+  precision: number | null;
+}
+
+/**
+ * Precision as observed in operation, derived from analysts' resolution
+ * verdicts.
+ *
+ * This is the reason resolving an incident requires a verdict at all: a
+ * benchmark measures a detector against a corpus we wrote, whereas this
+ * measures it against whatever actually happened, judged by whoever handled
+ * it. The two belong side by side — agreement is evidence the corpus is
+ * representative, and divergence is a finding either way.
+ *
+ * `benign` and `duplicate` are counted and reported but deliberately excluded
+ * from the denominator. Neither says the detector was wrong: "benign" means it
+ * saw a real thing that needed no action, and "duplicate" means it saw the same
+ * real thing twice. Folding either into precision would let good triage hygiene
+ * look like a detector regression.
+ */
+export async function observedAccuracy(tenantId: string): Promise<ObservedAccuracy[]> {
+  return withTenantDb(tenantId, async (db) => {
+    const result = await db.query<{
+      module: string;
+      tp: string;
+      fp: string;
+      benign: string;
+      duplicate: string;
+    }>(
+      `select e.module,
+              count(*) filter (where t.resolution = 'true_positive')::bigint  as tp,
+              count(*) filter (where t.resolution = 'false_positive')::bigint as fp,
+              count(*) filter (where t.resolution = 'benign')::bigint         as benign,
+              count(*) filter (where t.resolution = 'duplicate')::bigint      as duplicate
+         from monolith.security_events e
+         join monolith.incident_triage t using (event_id)
+        where e.tenant_id = $1
+          and t.status = 'resolved'
+          and t.resolution is not null
+        group by e.module
+        order by e.module`,
+      [tenantId],
+    );
+    return result.rows.map((row) => {
+      const truePositive = Number(row.tp);
+      const falsePositive = Number(row.fp);
+      const scored = truePositive + falsePositive;
+      return {
+        module: row.module,
+        true_positive: truePositive,
+        false_positive: falsePositive,
+        benign: Number(row.benign),
+        duplicate: Number(row.duplicate),
+        scored,
+        precision: scored === 0 ? null : truePositive / scored,
+      };
+    });
+  });
+}
+
 /** Counts for the queue's status tabs, in one round trip. */
 export async function incidentCounts(tenantId: string): Promise<Record<string, number>> {
   return withTenantDb(tenantId, async (db) => {
