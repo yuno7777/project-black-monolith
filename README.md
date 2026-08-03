@@ -170,6 +170,8 @@ delivery follows one shared contract:
   delivery backlog/dead-letter counts, policy coverage, and evidence age.
 - **Evidence export** — downloads an immutable event, its incident state,
   append-only audit trail, and correlated session as one versioned JSON bundle.
+- **Critical alerts** — transactionally queues signed webhook notifications,
+  retries transient failures, and exposes permanent dead letters in operations.
 - **Operator sessions** — exchanges a bootstrap token for a revocable,
   expiring, `HttpOnly`, `SameSite=Strict` browser session.
 - **Production identity adapter** — validates asymmetric OIDC/Supabase JWTs,

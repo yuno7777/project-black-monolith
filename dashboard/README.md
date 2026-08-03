@@ -46,6 +46,8 @@ backoff. The dashboard being down costs delivery latency, not evidence.
 - `app/investigate/page.tsx` — the queue UI.
 - `app/operations/page.tsx` — ledger latency, evidence age, policy coverage,
   module reachability, and durable-delivery backlog/dead-letter telemetry.
+- `scripts/dispatch-alerts.mjs` — resident delivery for transactionally queued
+  critical-event webhooks with HMAC signatures and idempotency headers.
 - `app/components/` — `ThreatFeed` (newest-first, click to expand),
   `ModuleStatusCard` (per-module status + counts), `SessionSummary` (totals,
   severity distribution, per-layer breakdown, avg detection latency),
