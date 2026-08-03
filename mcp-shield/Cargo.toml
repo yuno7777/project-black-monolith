@@ -2,6 +2,7 @@
 name = "mcp-shield"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.86"
 description = "Project Black Monolith tool-layer defense: MCP proxy that fingerprints tool schemas and detects poisoning / rug-pull mutations"
 license = "MIT"
 
