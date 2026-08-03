@@ -8,7 +8,7 @@ import {
   revokeOperatorSession,
 } from "@/lib/operator-auth";
 import { jsonBodyError, readJsonBody } from "@/lib/request-body";
-import { requireSameOrigin } from "@/lib/route-auth";
+import { AUTH_DISABLED, requireOperator, requireSameOrigin } from "@/lib/route-auth";
 import {
   clearOperatorLoginAttempts,
   recordOperatorLoginAttempt,
@@ -25,6 +25,22 @@ function unavailable(error: unknown): Response | null {
 
 /** Return the current browser/bearer identity without exposing credentials. */
 export async function GET(req: Request) {
+  // Honour the demo escape hatch here too. This route authenticated directly
+  // instead of going through requireOperator, so with sign-in disabled it still
+  // answered 401 — and OperatorBadge reacts to a 401 by sending the browser to
+  // /login, which the proxy bounces straight back to /. That was a reload loop
+  // several times a second, not a stuck page.
+  if (AUTH_DISABLED) {
+    const demo = await requireOperator(req);
+    if (!(demo instanceof Response)) {
+      return Response.json({
+        authenticated: true,
+        actor: demo.actor,
+        role: demo.role,
+        tenant_id: demo.tenant_id,
+      });
+    }
+  }
   try {
     const identity = await authenticateOperator(req);
     if (!identity) return Response.json({ authenticated: false }, { status: 401 });
