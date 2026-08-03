@@ -10,7 +10,11 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY src ./src
 COPY fixtures ./fixtures
+RUN useradd --system --uid 10001 --create-home monolith \
+    && mkdir -p /var/lib/monolith /app/chroma_store \
+    && chown -R monolith:monolith /app /var/lib/monolith
 ENV MONOLITH_CHROMA_PATH=/app/chroma_store \
     MONOLITH_EMBEDDING=hash
 EXPOSE 8001
+USER monolith
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8001"]
