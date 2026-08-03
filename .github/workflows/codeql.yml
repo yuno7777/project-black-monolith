@@ -29,4 +29,4 @@ jobs:
       - name: Autobuild compiled languages
         uses: github/codeql-action/autobuild@bce182f857edf1feab116e9795a3393d21977282 # v4
       - name: Analyze
-        uses: github/codeql-action/analyze@bce182f857edf1feab116e9795a3393d21977282 # v4
+        uses: github/codeql-action/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4
