@@ -151,7 +151,9 @@ services:
     <<: *service-hardening
     mem_limit: 512m
     pids_limit: 256
-    build: ./trace-audit
+    build:
+      context: .
+      dockerfile: trace-audit/Dockerfile
     ports:
       - "127.0.0.1:8002:8002"
     environment:
