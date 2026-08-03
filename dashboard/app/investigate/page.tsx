@@ -59,6 +59,8 @@ function InvestigateConsole() {
   const [selectedId, setSelectedId] = useState<string | null>(deepLinkId);
   const [canTriage, setCanTriage] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Debounce the free-text box so typing does not fire a query per keystroke.
@@ -72,9 +74,8 @@ function InvestigateConsole() {
   // filters change faster than the queries return.
   const requestSeq = useRef(0);
 
-  const load = useCallback(async () => {
-    const seq = ++requestSeq.current;
-    const params = new URLSearchParams({ status, severity, limit: "300" });
+  const buildParams = useCallback(() => {
+    const params = new URLSearchParams({ status, severity, limit: "100" });
     if (module) params.set("module", module);
     if (debouncedQuery) params.set("q", debouncedQuery);
     if (sessionFilter) {
@@ -83,6 +84,12 @@ function InvestigateConsole() {
     }
     const win = WINDOWS.find((w) => w.key === windowKey);
     if (win?.ms) params.set("since_ms", String(Date.now() - win.ms));
+    return params;
+  }, [status, severity, module, windowKey, debouncedQuery, sessionFilter]);
+
+  const load = useCallback(async () => {
+    const seq = ++requestSeq.current;
+    const params = buildParams();
 
     try {
       const res = await fetch(`/api/incidents?${params}`);
@@ -90,6 +97,7 @@ function InvestigateConsole() {
       const data = await res.json();
       if (seq !== requestSeq.current) return;
       setIncidents(data.incidents ?? []);
+      setNextCursor(data.next_cursor ?? null);
       setCounts(data.counts ?? {});
       setError(null);
     } catch (e) {
@@ -98,7 +106,33 @@ function InvestigateConsole() {
     } finally {
       if (seq === requestSeq.current) setLoading(false);
     }
-  }, [status, severity, module, windowKey, debouncedQuery, sessionFilter]);
+  }, [buildParams]);
+
+  const loadMore = useCallback(async () => {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    const params = buildParams();
+    params.set("cursor", nextCursor);
+    try {
+      const res = await fetch(`/api/incidents?${params}`);
+      if (!res.ok) throw new Error((await res.json()).error ?? "request failed");
+      const data = await res.json();
+      setIncidents((current) => {
+        const known = new Set(current.map((incident) => incident.event_id));
+        return [
+          ...current,
+          ...(data.incidents ?? []).filter((incident: Incident) => !known.has(incident.event_id)),
+        ];
+      });
+      setNextCursor(data.next_cursor ?? null);
+      setCounts(data.counts ?? {});
+      setError(null);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "could not reach the ledger");
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [buildParams, loadingMore, nextCursor]);
 
   useEffect(() => {
     load();
@@ -333,6 +367,13 @@ function InvestigateConsole() {
                     );
                   })
                 )}
+                {!loading && incidents.length > 0 && nextCursor ? (
+                  <div className="feed-more">
+                    <button className="ghost-btn" onClick={loadMore} disabled={loadingMore}>
+                      {loadingMore ? "Loading older incidents…" : "Load older incidents"}
+                    </button>
+                  </div>
+                ) : null}
               </div>
             </div>
 
