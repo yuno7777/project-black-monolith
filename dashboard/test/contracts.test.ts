@@ -343,6 +343,13 @@ test("dashboard responses declare a restrictive content security policy", () => 
   assert.doesNotMatch(config, /default-src \*/);
 });
 
+test("operator sessions throttle activity writes and clean expired rows", () => {
+  const auth = readFileSync(new URL("../lib/operator-auth.ts", import.meta.url), "utf8");
+  assert.match(auth, /last_seen_at < now\(\) - interval '5 minutes'/);
+  assert.match(auth, /delete from monolith\.operator_sessions[\s\S]*expires_at <= now\(\)/);
+  assert.doesNotMatch(auth, /update monolith\.operator_sessions\s+set last_seen_at = now\(\)\s+where session_hash/);
+});
+
 test("event streams release broker subscriptions when readers cancel", async () => {
   let subscriber: ((event: ReturnType<typeof normalizeEvent>) => void) | undefined;
   let unsubscribeCalls = 0;
