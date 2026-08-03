@@ -46,6 +46,7 @@ const MAX_ID_LENGTH: usize = 128;
 /// Current event-contract version. The dashboard accepts 1 and 2; 2 adds the
 /// correlation/evidence fields and `event_id`.
 const SCHEMA_VERSION: u8 = 2;
+const POLICY_VERSION: &str = "mcp-shield/1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -75,6 +76,12 @@ pub struct ShieldEvent<'a> {
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_type: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_id: Option<String>,
+    pub outcome: String,
+    pub policy_version: &'static str,
 }
 
 /// Who these detections belong to, read once from the environment.
@@ -191,6 +198,21 @@ pub fn emit(event_type: &str, severity: Severity, details: Value) {
 /// seen twice, not two unrelated ones.
 pub fn emit_traced(event_type: &str, severity: Severity, details: Value, trace_id: Option<&str>) {
     let id = identity();
+    let resource_id = details
+        .get("tool")
+        .and_then(Value::as_str)
+        .and_then(|value| clean_id(value.to_owned()));
+    let outcome = details
+        .get("action")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| match event_type {
+            "baseline_registered" => "registered".to_string(),
+            "tools_list_changed" => "observed".to_string(),
+            "analysis_error" => "degraded".to_string(),
+            _ if severity == Severity::Critical => "detected".to_string(),
+            _ => "reported".to_string(),
+        });
     let event = ShieldEvent {
         event_id: new_event_id(),
         schema_version: SCHEMA_VERSION,
@@ -204,6 +226,10 @@ pub fn emit_traced(event_type: &str, severity: Severity, details: Value, trace_i
         agent_id: id.agent_id.clone(),
         session_id: id.session_id.clone(),
         trace_id: trace_id.map(str::to_owned),
+        resource_type: resource_id.as_ref().map(|_| "tool"),
+        resource_id,
+        outcome,
+        policy_version: POLICY_VERSION,
     };
     let json = match serde_json::to_string(&event) {
         Ok(j) => j,
@@ -279,6 +305,10 @@ mod tests {
             agent_id,
             session_id,
             trace_id,
+            resource_type: Some("tool"),
+            resource_id: Some("read_file".to_string()),
+            outcome: "rewritten".to_string(),
+            policy_version: POLICY_VERSION,
         }
     }
 
@@ -296,6 +326,10 @@ mod tests {
         assert_eq!(value["timestamp_ms"], 1_770_000_000_000_u64);
         assert_eq!(value["source"], "module");
         assert_eq!(value["details"]["tool"], "read_file");
+        assert_eq!(value["resource_type"], "tool");
+        assert_eq!(value["resource_id"], "read_file");
+        assert_eq!(value["outcome"], "rewritten");
+        assert_eq!(value["policy_version"], "mcp-shield/1");
     }
 
     #[test]
