@@ -1,5 +1,5 @@
 fastapi>=0.110
-uvicorn[standard]>=0.29
+uvicorn[standard]>=0.52.0
 pydantic>=2.6
 # Only needed when MONOLITH_MODEL_BACKEND=ollama (the default 'mock' backend
 # needs nothing beyond the standard library).
