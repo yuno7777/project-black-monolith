@@ -9,11 +9,22 @@ if (!databaseUrl) {
 }
 
 const migrationsDir = process.env.DATABASE_MIGRATIONS_DIR ?? "/app/supabase/migrations";
+const MIGRATION_LOCK_ID = "7227014497148412001";
 const { Client } = pg;
 const client = new Client({ connectionString: databaseUrl });
 
 await client.connect();
+let migrationLockHeld = false;
 try {
+  const lock = await client.query(
+    "select pg_try_advisory_lock($1::bigint) as acquired",
+    [MIGRATION_LOCK_ID],
+  );
+  if (!lock.rows[0]?.acquired) {
+    throw new Error("Another Project Black Monolith migrator is already running.");
+  }
+  migrationLockHeld = true;
+
   await client.query("create schema if not exists monolith");
   await client.query(`
     create table if not exists monolith.schema_migrations (
@@ -73,5 +84,11 @@ try {
     }
   }
 } finally {
-  await client.end();
+  try {
+    if (migrationLockHeld) {
+      await client.query("select pg_advisory_unlock($1::bigint)", [MIGRATION_LOCK_ID]);
+    }
+  } finally {
+    await client.end();
+  }
 }
