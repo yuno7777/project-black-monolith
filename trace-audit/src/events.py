@@ -24,7 +24,7 @@ try:
     )
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python-common"))
-    from monolith_events.events import (  # type: ignore[no-redef]
+    from monolith_events.events import (
         AGENT_HEADER,
         CORRELATION_HEADER,
         MAX_ID_LENGTH,

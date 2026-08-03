@@ -87,7 +87,7 @@ class RetrieverProxy:
             clean: list[dict[str, Any]] = []
             withheld: list[dict[str, Any]] = []
 
-            for doc_id, document, distance in zip(ids, docs, dists):
+            for doc_id, document, distance in zip(ids, docs, dists, strict=True):
                 if self.quarantine.is_quarantined(doc_id):
                     withheld.append({"id": doc_id, "reason": "already_quarantined"})
                     continue

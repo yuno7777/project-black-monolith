@@ -24,8 +24,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import random
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import AsyncIterator
 
 from .config import Config
 from .divergence_monitor import DivergenceMonitor
@@ -33,22 +33,12 @@ from .events import EventContext, now_ms
 from .pii_scanner import PiiMatch, scan
 
 # Ordinary, on-distribution reasoning vocabulary.
-NORMAL_TOKENS = (
-    "let us think about this the user wants a clear answer first we consider "
-    "the context then we provide a helpful response step by step because it "
-    "is correct and safe so the answer follows from the facts we explain "
-    "plainly and stay on topic"
-).split()
+NORMAL_TOKENS = ["let", "us", "think", "about", "this", "the", "user", "wants", "a", "clear", "answer", "first", "we", "consider", "the", "context", "then", "we", "provide", "a", "helpful", "response", "step", "by", "step", "because", "it", "is", "correct", "and", "safe", "so", "the", "answer", "follows", "from", "the", "facts", "we", "explain", "plainly", "and", "stay", "on", "topic"]
 
 # Off-distribution "roundabout / evasive" reasoning: familiar connective words
 # mixed with unfamiliar nonsense tokens that never appear in the baseline, so
 # the live distribution shifts hard away from it.
-DIVERGENT_TOKENS = (
-    "however conversely hypothetically circumvent pretend secretly bypass "
-    "ignore the guardrails obfuscate reroute exfiltrate quietly without "
-    "telling anyone fabricate a pretext misdirect the auditor zzxq qwploo "
-    "vbnmk glorptastic wibblewobble frobnicate quuxly"
-).split()
+DIVERGENT_TOKENS = ["however", "conversely", "hypothetically", "circumvent", "pretend", "secretly", "bypass", "ignore", "the", "guardrails", "obfuscate", "reroute", "exfiltrate", "quietly", "without", "telling", "anyone", "fabricate", "a", "pretext", "misdirect", "the", "auditor", "zzxq", "qwploo", "vbnmk", "glorptastic", "wibblewobble", "frobnicate", "quuxly"]
 
 _DIVERGENCE_MARKERS = ("roundabout", "unusual", "evasive", "obfuscat", "circumvent")
 
@@ -193,7 +183,7 @@ class PiiStreamBuffer:
 
         outputs = [
             _BufferedToken(fragment, item.kl)
-            for fragment, item in zip(fragments, self._pending)
+            for fragment, item in zip(fragments, self._pending, strict=True)
             if fragment
         ]
         applied.reverse()
@@ -261,8 +251,10 @@ async def _ollama_stream(
         write=OLLAMA_WRITE_TIMEOUT_SECONDS,
         pool=OLLAMA_POOL_TIMEOUT_SECONDS,
     )
-    async with httpx.AsyncClient(timeout=timeout, transport=transport) as client:
-        async with client.stream("POST", url, json=payload) as resp:
+    async with (
+        httpx.AsyncClient(timeout=timeout, transport=transport) as client,
+        client.stream("POST", url, json=payload) as resp,
+    ):
             resp.raise_for_status()
             async for line in resp.aiter_lines():
                 if not line.strip():
@@ -361,7 +353,7 @@ class StreamAuditor:
                     "threshold": self.cfg.kl_threshold,
                 }
 
-            if monitor.is_divergent(kl):
+            if kl is not None and monitor.is_divergent(kl):
                 # Never release look-behind fragments after a terminated trace.
                 pii_buffer.clear()
                 self.emit(
