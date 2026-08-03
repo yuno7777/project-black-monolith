@@ -15,13 +15,11 @@
 //!    detections still reach the dashboard live.
 //! 3. `drain(.., force = true)` runs once more before exit, ignoring backoff,
 //!    to give this run's events a last chance to land.
-//! 4. Anything still undelivered stays on the spool (a Docker volume) and is
-//!    retried by the **next** invocation of the proxy.
+//! 4. Anything still undelivered stays on the spool and is retried by the
+//!    next proxy invocation or the resident `--drain-outbox` process.
 //!
-//! The honest limitation of (4): if the dashboard is down and the proxy is
-//! never run again, those events are never delivered — they are preserved on
-//! disk, not lost, but nothing redelivers them on its own. A short-lived
-//! process cannot promise more than that without a separate resident agent.
+//! Production runs keep that resident worker on the shared spool so retry
+//! progress is independent of any individual agent session.
 //!
 //! # Storage
 //!
@@ -33,6 +31,7 @@
 //! rather than being silently dropped.
 
 use crate::events::now_ms;
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
@@ -118,6 +117,7 @@ pub(crate) fn parse_dashboard_url(value: &str) -> Option<reqwest::Url> {
 
 pub(crate) struct Outbox {
     path: PathBuf,
+    lock_path: PathBuf,
     dead_path: PathBuf,
     target: reqwest::Url,
     client: reqwest::Client,
@@ -173,6 +173,7 @@ impl Outbox {
         };
         Some(Outbox {
             dead_path: path.with_extension("dead"),
+            lock_path: path.with_extension("lock"),
             path,
             target,
             client,
@@ -192,6 +193,7 @@ impl Outbox {
             last_error: None,
         };
         let _guard = self.file_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _process_guard = self.acquire_process_lock()?;
         append_record(&self.path, &record)
     }
 
@@ -284,6 +286,7 @@ impl Outbox {
 
     fn load_pending(&self) -> std::io::Result<Vec<SpoolRecord>> {
         let _guard = self.file_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _process_guard = self.acquire_process_lock()?;
         read_records(&self.path)
     }
 
@@ -299,6 +302,7 @@ impl Outbox {
         dead: &[SpoolRecord],
     ) -> std::io::Result<()> {
         let _guard = self.file_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _process_guard = self.acquire_process_lock()?;
         let dead_ids: HashSet<&str> = dead.iter().map(|r| r.event_id.as_str()).collect();
 
         let mut keep: Vec<SpoolRecord> = read_records(&self.path)?
@@ -323,6 +327,20 @@ impl Outbox {
             }
         }
         write_records_atomically(&self.path, &keep)
+    }
+
+    /// Serialize spool mutations across proxy processes and the resident
+    /// drainer. The in-memory mutex only protects tasks in one process; this
+    /// advisory lock protects the shared volume itself.
+    fn acquire_process_lock(&self) -> std::io::Result<std::fs::File> {
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&self.lock_path)?;
+        file.lock_exclusive()?;
+        Ok(file)
     }
 }
 

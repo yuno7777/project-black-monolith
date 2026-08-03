@@ -10,6 +10,7 @@
 //!
 //! Usage:
 //!   mcp-shield <server-command> [server-args...]
+//!   mcp-shield --drain-outbox
 //!
 //! Example:
 //!   mcp-shield python fixtures/fake_mcp_server.py
@@ -52,6 +53,21 @@ async fn main() -> Result<()> {
             "usage: mcp-shield <server-command> [server-args...]\n\
              example: mcp-shield python fixtures/fake_mcp_server.py"
         );
+    }
+
+    if server_cmd == ["--drain-outbox"] {
+        tracing::info!(
+            module = events::MODULE,
+            "starting resident event outbox drainer"
+        );
+        let flusher = outbox::spawn_flusher().ok_or_else(|| {
+            anyhow::anyhow!(
+                "outbox delivery is not configured; set MONOLITH_DASHBOARD_URL, \
+                 MONOLITH_EVENT_TOKEN, and MONOLITH_EVENT_OUTBOX_PATH"
+            )
+        })?;
+        flusher.await?;
+        return Ok(());
     }
 
     let config = proxy::ShieldConfig::from_env();
