@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-black-monolith.local/contracts/event-envelope.v2.schema.json",
+  "title": "Project Black Monolith security event envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_id",
+    "schema_version",
+    "timestamp_ms",
+    "module",
+    "event_type",
+    "severity",
+    "details",
+    "source",
+    "tenant_id"
+  ],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "schema_version": {
+      "const": 2
+    },
+    "timestamp_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 32503680000000
+    },
+    "module": {
+      "enum": ["mcp-shield", "vector-anchor", "trace-audit"]
+    },
+    "event_type": {
+      "$ref": "#/$defs/printableText"
+    },
+    "severity": {
+      "enum": ["info", "warning", "critical"]
+    },
+    "details": {
+      "type": "object"
+    },
+    "source": {
+      "$ref": "#/$defs/printableText"
+    },
+    "tenant_id": {
+      "$ref": "#/$defs/identity"
+    },
+    "agent_id": {
+      "$ref": "#/$defs/identity"
+    },
+    "session_id": {
+      "$ref": "#/$defs/identity"
+    },
+    "trace_id": {
+      "$ref": "#/$defs/identity"
+    },
+    "correlation_id": {
+      "$ref": "#/$defs/identity"
+    },
+    "resource_type": {
+      "$ref": "#/$defs/printableText"
+    },
+    "resource_id": {
+      "$ref": "#/$defs/printableText"
+    },
+    "outcome": {
+      "$ref": "#/$defs/printableText"
+    },
+    "policy_version": {
+      "$ref": "#/$defs/printableText"
+    }
+  },
+  "$defs": {
+    "identity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "printableText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    }
+  }
+}
