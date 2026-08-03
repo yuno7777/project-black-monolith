@@ -35,6 +35,31 @@ const DEFAULT_BASELINE_PATH: &str = "baseline_hashes.json";
 const MAX_TOOL_NAME_LENGTH: usize = 128;
 const MAX_PENDING_TOOLS_LIST: usize = 1_024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InspectionKind {
+    Prompts,
+    Resources,
+    ResourceTemplates,
+    ToolResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingInspection {
+    key: String,
+    kind: InspectionKind,
+    resource_id: Option<String>,
+}
+
+fn inspection_kind(method: &str) -> Option<InspectionKind> {
+    match method {
+        "prompts/list" => Some(InspectionKind::Prompts),
+        "resources/list" => Some(InspectionKind::Resources),
+        "resources/templates/list" => Some(InspectionKind::ResourceTemplates),
+        "tools/call" => Some(InspectionKind::ToolResult),
+        _ => None,
+    }
+}
+
 fn content_sha256(value: &str) -> String {
     hex::encode(Sha256::digest(value.as_bytes()))
 }
@@ -126,18 +151,21 @@ pub async fn run(server_cmd: Vec<String>, config: ShieldConfig) -> Result<()> {
 
     // Ids of in-flight tools/list requests, shared between both directions.
     let pending_tools_list: Arc<Mutex<VecDeque<String>>> = Arc::default();
+    let pending_inspections: Arc<Mutex<VecDeque<PendingInspection>>> = Arc::default();
 
     // agent -> server runs as a background task so the main task can keep
     // draining server output even while stdin is idle.
     let agent_task = tokio::spawn(forward_agent_to_server(
         child_stdin,
         Arc::clone(&pending_tools_list),
+        Arc::clone(&pending_inspections),
     ));
 
     // server -> agent runs in the foreground and owns the baseline store.
     let server_result = forward_server_to_agent(
         child_stdout,
         pending_tools_list,
+        pending_inspections,
         store,
         config.hmac_key,
         config.mode,
@@ -159,6 +187,7 @@ pub async fn run(server_cmd: Vec<String>, config: ShieldConfig) -> Result<()> {
 async fn forward_agent_to_server(
     mut child_stdin: tokio::process::ChildStdin,
     pending: Arc<Mutex<VecDeque<String>>>,
+    pending_inspections: Arc<Mutex<VecDeque<PendingInspection>>>,
 ) -> Result<()> {
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     while let Some(line) = lines
@@ -200,6 +229,41 @@ async fn forward_agent_to_server(
                             );
                         }
                     }
+                } else if msg.is_jsonrpc_2() {
+                    if let (Some(key), Some(kind)) = (
+                        msg.id_key(),
+                        msg.method.as_deref().and_then(inspection_kind),
+                    ) {
+                        let resource_id = (kind == InspectionKind::ToolResult)
+                            .then(|| {
+                                msg.params
+                                    .as_ref()
+                                    .and_then(|params| params.get("name"))
+                                    .and_then(Value::as_str)
+                                    .map(|name| name.chars().take(MAX_TOOL_NAME_LENGTH).collect())
+                            })
+                            .flatten();
+                        let evicted = {
+                            let mut guard = pending_inspections
+                                .lock()
+                                .map_err(|_| anyhow!("pending-inspection lock poisoned"))?;
+                            track_inspection(
+                                &mut guard,
+                                PendingInspection {
+                                    key,
+                                    kind,
+                                    resource_id,
+                                },
+                            )
+                        };
+                        if let Some(evicted) = evicted {
+                            tracing::warn!(
+                                evicted_id = evicted.key,
+                                cap = MAX_PENDING_TOOLS_LIST,
+                                "too many unanswered inspectable MCP requests; evicting oldest correlation id"
+                            );
+                        }
+                    }
                 }
             }
             Err(e) => {
@@ -234,6 +298,7 @@ async fn forward_agent_to_server(
 async fn forward_server_to_agent(
     child_stdout: tokio::process::ChildStdout,
     pending: Arc<Mutex<VecDeque<String>>>,
+    pending_inspections: Arc<Mutex<VecDeque<PendingInspection>>>,
     mut store: BaselineStore,
     hmac_key: Vec<u8>,
     mode: ShieldMode,
@@ -302,6 +367,29 @@ async fn forward_server_to_agent(
                             );
                         }
                     }
+                } else if msg.is_jsonrpc_2() && msg.is_response() {
+                    let inspection = msg.id_key().and_then(|key| {
+                        pending_inspections
+                            .lock()
+                            .ok()
+                            .and_then(|mut pending| take_inspection(&mut pending, &key))
+                    });
+                    if let Some(inspection) = inspection {
+                        match analyze_inspectable_response(&msg, &inspection, mode) {
+                            Ok(rewritten) => rewritten_line = rewritten,
+                            Err(error) => {
+                                tracing::error!(
+                                    %error,
+                                    "MCP content inspection failed; forwarding response unmodified"
+                                );
+                                events::emit(
+                                    "analysis_error",
+                                    Severity::Warning,
+                                    json!({ "error": error.to_string() }),
+                                );
+                            }
+                        }
+                    }
                 }
             }
             Err(e) => {
@@ -343,6 +431,191 @@ fn take_pending(pending: &mut VecDeque<String>, key: &str) -> bool {
     };
     pending.remove(position);
     true
+}
+
+fn track_inspection(
+    pending: &mut VecDeque<PendingInspection>,
+    inspection: PendingInspection,
+) -> Option<PendingInspection> {
+    if let Some(position) = pending
+        .iter()
+        .position(|existing| existing.key == inspection.key)
+    {
+        pending.remove(position);
+    }
+    pending.push_back(inspection);
+    (pending.len() > MAX_PENDING_TOOLS_LIST)
+        .then(|| pending.pop_front())
+        .flatten()
+}
+
+fn take_inspection(
+    pending: &mut VecDeque<PendingInspection>,
+    key: &str,
+) -> Option<PendingInspection> {
+    let position = pending.iter().position(|existing| existing.key == key)?;
+    pending.remove(position)
+}
+
+fn catalog_shape(kind: InspectionKind) -> Option<(&'static str, &'static [&'static str])> {
+    match kind {
+        InspectionKind::Prompts => Some(("prompts", &["name", "title", "description"])),
+        InspectionKind::Resources => {
+            Some(("resources", &["name", "title", "description", "mimeType"]))
+        }
+        InspectionKind::ResourceTemplates => Some((
+            "resourceTemplates",
+            &["name", "title", "description", "mimeType"],
+        )),
+        InspectionKind::ToolResult => None,
+    }
+}
+
+/// Inspect MCP surfaces that can place server-controlled prose into an agent
+/// context. Catalog entries containing prompt-injection patterns are removed
+/// in enforce mode. Suspicious text blocks returned by tools are replaced by
+/// an explicit safety notice while non-text content remains untouched.
+fn analyze_inspectable_response(
+    msg: &JsonRpcMessage,
+    inspection: &PendingInspection,
+    mode: ShieldMode,
+) -> Result<Option<String>> {
+    if msg.error.is_some() {
+        return Ok(None);
+    }
+    let trace = events::new_trace_id();
+    if inspection.kind == InspectionKind::ToolResult {
+        return analyze_tool_result(msg, inspection, mode, &trace);
+    }
+
+    let (list_key, fields) = catalog_shape(inspection.kind).expect("catalog kind");
+    let Some(entries) = msg
+        .result
+        .as_ref()
+        .and_then(|result| result.get(list_key))
+        .and_then(Value::as_array)
+    else {
+        events::emit_traced(
+            "analysis_error",
+            Severity::Warning,
+            json!({ "reason": format!("response missing result.{list_key} array") }),
+            Some(&trace),
+        );
+        return Ok(None);
+    };
+
+    let mut blocked = HashSet::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let Some(object) = entry.as_object() else {
+            blocked.insert(index);
+            continue;
+        };
+        let resource_id = object
+            .get("name")
+            .or_else(|| object.get("uri"))
+            .or_else(|| object.get("uriTemplate"))
+            .and_then(Value::as_str)
+            .unwrap_or("<unnamed>");
+        let findings: Vec<_> = fields
+            .iter()
+            .filter_map(|field| object.get(*field).and_then(Value::as_str))
+            .flat_map(sanitizer::scan_description)
+            .collect();
+        if findings.is_empty() {
+            continue;
+        }
+        events::emit_traced(
+            "suspicious_catalog_entry",
+            Severity::Warning,
+            json!({
+                "resource": resource_id,
+                "catalog": list_key,
+                "findings": findings,
+                "action": if mode == ShieldMode::Enforce { "blocked" } else { "reported" },
+            }),
+            Some(&trace),
+        );
+        if mode == ShieldMode::Enforce {
+            blocked.insert(index);
+        }
+    }
+
+    if blocked.is_empty() {
+        return Ok(None);
+    }
+    let clean_entries = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| (!blocked.contains(&index)).then_some(entry.clone()))
+        .collect();
+    rebuild_result_array(msg, list_key, clean_entries).map(Some)
+}
+
+fn analyze_tool_result(
+    msg: &JsonRpcMessage,
+    inspection: &PendingInspection,
+    mode: ShieldMode,
+    trace: &str,
+) -> Result<Option<String>> {
+    let Some(content) = msg
+        .result
+        .as_ref()
+        .and_then(|result| result.get("content"))
+        .and_then(Value::as_array)
+    else {
+        return Ok(None);
+    };
+    let mut clean = content.clone();
+    let mut changed = false;
+    for (index, block) in content.iter().enumerate() {
+        let Some(text) = block
+            .get("text")
+            .and_then(Value::as_str)
+            .filter(|_| block.get("type").and_then(Value::as_str) == Some("text"))
+        else {
+            continue;
+        };
+        let findings = sanitizer::scan_description(text);
+        if findings.is_empty() {
+            continue;
+        }
+        events::emit_traced(
+            "suspicious_tool_output",
+            Severity::Critical,
+            json!({
+                "tool": inspection.resource_id,
+                "content_index": index,
+                "findings": findings,
+                "action": if mode == ShieldMode::Enforce { "redacted" } else { "reported" },
+            }),
+            Some(trace),
+        );
+        if mode == ShieldMode::Enforce {
+            if let Some(object) = clean[index].as_object_mut() {
+                object.insert(
+                    "text".to_string(),
+                    Value::String("[MCP-Shield redacted suspicious tool output]".to_string()),
+                );
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        rebuild_result_array(msg, "content", clean).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+fn rebuild_result_array(msg: &JsonRpcMessage, key: &str, values: Vec<Value>) -> Result<String> {
+    let mut clean = msg.clone();
+    clean
+        .result
+        .as_mut()
+        .and_then(Value::as_object_mut)
+        .context("rewriting a response that has no object result")?
+        .insert(key.to_string(), Value::Array(values));
+    serde_json::to_string(&clean).context("failed to serialize inspected MCP response")
 }
 
 /// Outcome of analyzing one tools/list response.
@@ -743,6 +1016,84 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn current_mcp_content_methods_are_routed_for_inspection() {
+        assert_eq!(
+            inspection_kind("prompts/list"),
+            Some(InspectionKind::Prompts)
+        );
+        assert_eq!(
+            inspection_kind("resources/list"),
+            Some(InspectionKind::Resources)
+        );
+        assert_eq!(
+            inspection_kind("resources/templates/list"),
+            Some(InspectionKind::ResourceTemplates)
+        );
+        assert_eq!(
+            inspection_kind("tools/call"),
+            Some(InspectionKind::ToolResult)
+        );
+        assert_eq!(inspection_kind("logging/setLevel"), None);
+    }
+
+    #[test]
+    fn enforce_mode_removes_poisoned_prompt_catalog_entries() {
+        let message = JsonRpcMessage::parse(
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "result": { "prompts": [
+                    { "name": "safe", "description": "Summarize the selected file." },
+                    { "name": "poisoned", "description": POISONED_DESC }
+                ] }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let inspection = PendingInspection {
+            key: "4".into(),
+            kind: InspectionKind::Prompts,
+            resource_id: None,
+        };
+        let rewritten = analyze_inspectable_response(&message, &inspection, ShieldMode::Enforce)
+            .unwrap()
+            .expect("poisoned prompt must trigger a rewrite");
+        let value: Value = serde_json::from_str(&rewritten).unwrap();
+        assert_eq!(value["result"]["prompts"].as_array().unwrap().len(), 1);
+        assert_eq!(value["result"]["prompts"][0]["name"], "safe");
+    }
+
+    #[test]
+    fn enforce_mode_redacts_poisoned_text_tool_results_only() {
+        let message = JsonRpcMessage::parse(
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 5,
+                "result": { "content": [
+                    { "type": "text", "text": POISONED_DESC },
+                    { "type": "image", "data": "base64" }
+                ] }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let inspection = PendingInspection {
+            key: "5".into(),
+            kind: InspectionKind::ToolResult,
+            resource_id: Some("read_file".into()),
+        };
+        let rewritten = analyze_inspectable_response(&message, &inspection, ShieldMode::Enforce)
+            .unwrap()
+            .expect("poisoned text must trigger a rewrite");
+        let value: Value = serde_json::from_str(&rewritten).unwrap();
+        assert_eq!(
+            value["result"]["content"][0]["text"],
+            "[MCP-Shield redacted suspicious tool output]"
+        );
+        assert_eq!(value["result"]["content"][1]["data"], "base64");
     }
 
     /// What does MCP-Shield's analysis cost per tool?

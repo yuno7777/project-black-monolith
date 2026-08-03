@@ -198,10 +198,21 @@ pub fn emit(event_type: &str, severity: Severity, details: Value) {
 /// seen twice, not two unrelated ones.
 pub fn emit_traced(event_type: &str, severity: Severity, details: Value, trace_id: Option<&str>) {
     let id = identity();
-    let resource_id = details
-        .get("tool")
-        .and_then(Value::as_str)
-        .and_then(|value| clean_id(value.to_owned()));
+    let (resource_type, resource_id) = [
+        ("tool", "tool"),
+        ("resource", "resource"),
+        ("prompt", "prompt"),
+    ]
+    .into_iter()
+    .find_map(|(resource_type, key)| {
+        details
+            .get(key)
+            .and_then(Value::as_str)
+            .and_then(|value| clean_id(value.to_owned()))
+            .map(|resource_id| (resource_type, resource_id))
+    })
+    .map(|(resource_type, resource_id)| (Some(resource_type), Some(resource_id)))
+    .unwrap_or((None, None));
     let outcome = details
         .get("action")
         .and_then(Value::as_str)
@@ -226,7 +237,7 @@ pub fn emit_traced(event_type: &str, severity: Severity, details: Value, trace_i
         agent_id: id.agent_id.clone(),
         session_id: id.session_id.clone(),
         trace_id: trace_id.map(str::to_owned),
-        resource_type: resource_id.as_ref().map(|_| "tool"),
+        resource_type,
         resource_id,
         outcome,
         policy_version: POLICY_VERSION,
