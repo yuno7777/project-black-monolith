@@ -418,9 +418,11 @@ test("Compose separates migration authority from the dashboard runtime", () => {
 
   assert.match(compose, /dashboard-migrator:[\s\S]*DATABASE_URL:\s+postgresql:\/\/postgres:/);
   assert.match(compose, /dashboard:[\s\S]*DATABASE_URL:\s+postgresql:\/\/monolith_runtime:/);
+  assert.match(compose, /database-bootstrap:[\s\S]*PGHOST:\s+database/);
   assert.match(compose, /condition:\s+service_completed_successfully/);
   assert.doesNotMatch(dockerfile, /migrate\.mjs\s*&&\s*node server\.js/);
   assert.match(bootstrap, /create role monolith_runtime login password %L/i);
+  assert.match(bootstrap, /alter role monolith_runtime with login password %L/i);
   assert.match(bootstrap, /nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls/i);
   assert.match(bootstrap, /grant monolith_app to monolith_runtime/i);
 });

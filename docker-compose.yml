@@ -53,6 +53,20 @@ services:
     command: ["node", "scripts/migrate.mjs"]
     restart: "no"
     depends_on:
+      database-bootstrap:
+        condition: service_completed_successfully
+
+  database-bootstrap:
+    image: supabase/postgres:17.6.1.136
+    environment:
+      PGHOST: database
+      PGPASSWORD: ${MONOLITH_POSTGRES_PASSWORD:?set MONOLITH_POSTGRES_PASSWORD in .env}
+      MONOLITH_DATABASE_RUNTIME_PASSWORD: ${MONOLITH_DATABASE_RUNTIME_PASSWORD:?set MONOLITH_DATABASE_RUNTIME_PASSWORD in .env}
+    volumes:
+      - ./supabase/bootstrap/001-runtime-role.sh:/bootstrap/001-runtime-role.sh:ro
+    command: ["bash", "/bootstrap/001-runtime-role.sh"]
+    restart: "no"
+    depends_on:
       database:
         condition: service_healthy
 
