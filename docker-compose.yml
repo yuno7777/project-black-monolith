@@ -103,6 +103,9 @@ services:
       # records, so it comes from the credential rather than from the request.
       OPERATOR_TOKENS_JSON: >-
         {"${MONOLITH_OPERATOR_NAME:-operator}":{"token":"${MONOLITH_OPERATOR_TOKEN:?set MONOLITH_OPERATOR_TOKEN in .env — run scripts/generate_secrets.sh}","role":"admin","tenant_id":"${MONOLITH_TENANT_ID:-default}"}}
+      MONOLITH_MODULE_ADMIN_TOKEN: ${MONOLITH_ADMIN_TOKEN:?set MONOLITH_ADMIN_TOKEN in .env}
+      VECTOR_ANCHOR_INTERNAL_URL: http://vector-anchor:8001
+      TRACE_AUDIT_INTERNAL_URL: http://trace-audit:8002
     depends_on:
       dashboard-migrator:
         condition: service_completed_successfully
