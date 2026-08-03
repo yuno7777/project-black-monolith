@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "monolith-events"
+version = "0.1.0"
+description = "Shared Project Black Monolith event envelope and durable delivery"
+requires-python = ">=3.12"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["monolith_events*"]
