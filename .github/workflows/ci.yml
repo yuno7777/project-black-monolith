@@ -29,11 +29,6 @@ jobs:
   mcp-shield:
     name: MCP-Shield (Rust build + test)
     runs-on: ubuntu-latest
-    # rustsec/audit-check reports findings as a check run, so it needs
-    # checks:write. Scoped to this job so the workflow default stays read-only.
-    permissions:
-      contents: read
-      checks: write
     defaults:
       run:
         working-directory: mcp-shield
@@ -60,10 +55,14 @@ jobs:
       - name: Test
         run: cargo test --locked --verbose
       - name: Rust dependency vulnerability gate
-        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          working-directory: mcp-shield
+        # cargo-audit directly, not rustsec/audit-check: that action bundles an
+        # older cargo-audit that cannot parse a version-4 Cargo.lock and panics
+        # (cargo exit 101) before it ever reads an advisory. Calling the CLI also
+        # drops a third-party action, its GITHUB_TOKEN, the checks:write it
+        # needed for its check run, and a Node 20 deprecation warning.
+        run: |
+          cargo install cargo-audit --locked --version ^0.22
+          cargo audit
       - name: Verify the durable outbox (spool / redeliver / dead-letter)
         run: bash fixtures/verify_outbox.sh
 
