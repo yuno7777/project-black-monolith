@@ -119,9 +119,18 @@ export default function IncidentPanel({
             <span className="mono-id">{incident.event_id}</span>
           </div>
         </div>
-        <button className="ghost-btn" onClick={onClose} aria-label="Close incident">
-          Close
-        </button>
+        <div className="panel-head-actions">
+          <a
+            className="ghost-btn"
+            href={`/api/incidents/${incident.event_id}/export`}
+            download
+          >
+            Export evidence
+          </a>
+          <button className="ghost-btn" onClick={onClose} aria-label="Close incident">
+            Close
+          </button>
+        </div>
       </div>
 
       <div className="panel-body">

@@ -524,6 +524,7 @@ html, body {
 .panel-muted { color: var(--ink-faint); font-size: 12.5px; }
 
 .panel-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.panel-head-actions { display: flex; align-items: center; gap: 7px; }
 .act-group { display: inline-flex; align-items: stretch; gap: 6px; }
 .act {
   display: inline-flex; align-items: center; gap: 6px; padding: 8px 13px; border-radius: 999px;
