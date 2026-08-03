@@ -22,12 +22,16 @@ ledger() {
 pending() { # $1 = service
   docker compose exec -T "$1" python -c "
 import sqlite3
+connection = sqlite3.connect(
+    'file:/var/lib/monolith/outbox.db?mode=ro',
+    uri=True,
+    timeout=5,
+)
 try:
-    c = sqlite3.connect('/var/lib/monolith/outbox.db')
-    print(c.execute(\"select count(*) from event_outbox where status='pending'\").fetchone()[0])
-except Exception:
-    print(0)
-" 2>/dev/null | tr -d '\r'
+    print(connection.execute(\"select count(*) from event_outbox where status='pending'\").fetchone()[0])
+finally:
+    connection.close()
+" | tr -d '\r'
 }
 
 BEFORE=$(ledger)
@@ -45,8 +49,8 @@ echo "=============================================="
 echo "2. GENERATE DETECTIONS WHILE IT IS DOWN"
 echo "=============================================="
 for q in "how do I prune tomato plants" "what is a red giant star" "how long to boil pasta" "emergency fund budget"; do
-  curl -s -X POST http://localhost:8001/retrieve -H 'Content-Type: application/json' \
-    -d "{\"query\":\"$q\",\"n_results\":3}" >/dev/null && echo "  queried: $q"
+  curl -fsS -X POST http://localhost:8001/retrieve -H 'Content-Type: application/json' \
+    -d "{\"query\":\"$q\",\"k\":3}" >/dev/null && echo "  queried: $q"
 done
 sleep 3
 VA_PENDING=$(pending vector-anchor)
