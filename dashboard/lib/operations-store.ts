@@ -1,5 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { withTenantDb } from "@/lib/db";
+import { KNOWN_MODULES } from "@/lib/types";
 
 export type ModuleLedgerHealth = {
   module: string;
@@ -17,6 +18,28 @@ export type LedgerHealth = {
   modules: ModuleLedgerHealth[];
 };
 
+type ModuleHealthRow = {
+  module: string;
+  events_24h: string;
+  critical_24h: string;
+  latest_ms: string | null;
+  policy_versions: string[] | null;
+};
+
+export function normalizeModuleLedgerHealth(rows: ModuleHealthRow[]): ModuleLedgerHealth[] {
+  const byModule = new Map(rows.map((row) => [row.module, row]));
+  return KNOWN_MODULES.map((module) => {
+    const row = byModule.get(module);
+    return {
+      module,
+      events_24h: Number(row?.events_24h ?? 0),
+      critical_24h: Number(row?.critical_24h ?? 0),
+      latest_received_ms: row?.latest_ms ? Number(row.latest_ms) : null,
+      policy_versions: row?.policy_versions ?? [],
+    };
+  });
+}
+
 export async function readLedgerHealth(tenantId: string): Promise<LedgerHealth> {
   const started = performance.now();
   return withTenantDb(tenantId, async (client) => {
@@ -31,13 +54,7 @@ export async function readLedgerHealth(tenantId: string): Promise<LedgerHealth> 
                (extract(epoch from max(received_at)) * 1000)::bigint::text as newest_ms
           from monolith.security_events
       `),
-      client.query<{
-        module: string;
-        events_24h: string;
-        critical_24h: string;
-        latest_ms: string | null;
-        policy_versions: string[] | null;
-      }>(`
+      client.query<ModuleHealthRow>(`
         select module,
                count(*) filter (where received_at >= now() - interval '24 hours')::text as events_24h,
                count(*) filter (
@@ -56,13 +73,7 @@ export async function readLedgerHealth(tenantId: string): Promise<LedgerHealth> 
       total_events: Number(row?.total ?? 0),
       oldest_received_ms: row?.oldest_ms ? Number(row.oldest_ms) : null,
       newest_received_ms: row?.newest_ms ? Number(row.newest_ms) : null,
-      modules: modules.rows.map((module) => ({
-        module: module.module,
-        events_24h: Number(module.events_24h),
-        critical_24h: Number(module.critical_24h),
-        latest_received_ms: module.latest_ms ? Number(module.latest_ms) : null,
-        policy_versions: module.policy_versions ?? [],
-      })),
+      modules: normalizeModuleLedgerHealth(modules.rows),
     };
   });
 }
