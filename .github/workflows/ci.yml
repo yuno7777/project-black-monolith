@@ -29,6 +29,11 @@ jobs:
   mcp-shield:
     name: MCP-Shield (Rust build + test)
     runs-on: ubuntu-latest
+    # rustsec/audit-check reports findings as a check run, so it needs
+    # checks:write. Scoped to this job so the workflow default stays read-only.
+    permissions:
+      contents: read
+      checks: write
     defaults:
       run:
         working-directory: mcp-shield

@@ -28,8 +28,13 @@ select format(
 where not exists (select 1 from pg_roles where rolname = 'monolith_runtime')
 \gexec
 
+-- Reconcile the password on an existing volume. Deliberately does NOT restate
+-- nosuperuser/noreplication/nobypassrls: altering those attributes requires a
+-- superuser even to turn them off, and this runs as `postgres`, which in the
+-- supabase image has CREATEROLE but not SUPERUSER. CREATE ROLE above already
+-- set them, so restating here only bought an unconditional failure.
 select format(
-  'alter role monolith_runtime with login password %L nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls',
+  'alter role monolith_runtime with login password %L',
   :'runtime_password'
 )
 \gexec
