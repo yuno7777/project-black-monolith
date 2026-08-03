@@ -1,10 +1,4 @@
-"""Quarantine store for documents flagged as corpus poison.
-
-Once a document is quarantined it is withheld from all future retrieval
-results; the retriever serves the next-best clean document in its place. The
-quarantine is in-memory (single-process research/demo system); restart clears
-it and detection re-learns from the live stream.
-"""
+"""Quarantine store for documents flagged as corpus poison."""
 
 from __future__ import annotations
 
@@ -44,3 +38,49 @@ class Quarantine:
 
     def __len__(self) -> int:
         return len(self._docs)
+
+    def snapshot(self) -> list[dict]:
+        return [
+            {
+                "doc_id": doc.doc_id,
+                "reason": doc.reason,
+                "score": doc.score,
+                "preview": doc.preview,
+                "quarantined_at_ms": doc.quarantined_at_ms,
+            }
+            for doc in self._docs.values()
+        ]
+
+    @classmethod
+    def from_snapshot(cls, data: list[dict]) -> "Quarantine":
+        if not isinstance(data, list) or len(data) > 100_000:
+            raise ValueError("invalid quarantine state")
+        quarantine = cls()
+        for raw in data:
+            if not isinstance(raw, dict):
+                raise ValueError("invalid quarantine entry")
+            doc = QuarantinedDoc(
+                doc_id=raw.get("doc_id"),
+                reason=raw.get("reason"),
+                score=raw.get("score"),
+                preview=raw.get("preview"),
+                quarantined_at_ms=raw.get("quarantined_at_ms"),
+            )
+            if (
+                not isinstance(doc.doc_id, str)
+                or not 1 <= len(doc.doc_id) <= 128
+                or not isinstance(doc.reason, str)
+                or not 1 <= len(doc.reason) <= 128
+                or isinstance(doc.score, bool)
+                or not isinstance(doc.score, int)
+                or doc.score < 0
+                or not isinstance(doc.preview, str)
+                or len(doc.preview) > 160
+                or isinstance(doc.quarantined_at_ms, bool)
+                or not isinstance(doc.quarantined_at_ms, int)
+                or doc.quarantined_at_ms < 0
+            ):
+                raise ValueError("invalid quarantine entry fields")
+            if not quarantine.add(doc):
+                raise ValueError("duplicate quarantine entry")
+        return quarantine
