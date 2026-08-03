@@ -13,6 +13,19 @@ permissions:
   contents: read
 
 jobs:
+  contracts:
+    name: Shared contracts (JSON Schema + OpenAPI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install pinned contract validators
+        run: pip install -r contracts/requirements.txt
+      - name: Validate schemas, fixtures, and correlation headers
+        run: python contracts/check_contracts.py
+
   mcp-shield:
     name: MCP-Shield (Rust build + test)
     runs-on: ubuntu-latest
@@ -102,7 +115,7 @@ jobs:
     runs-on: ubuntu-latest
     # The unit suites are cheap and catch most breakage; only pay for the
     # 5-image stack build once they are green.
-    needs: [mcp-shield, vector-anchor, trace-audit, dashboard]
+    needs: [contracts, mcp-shield, vector-anchor, trace-audit, dashboard]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
