@@ -6,7 +6,7 @@
 #
 # The values are development credentials for a single-machine stack: the
 # Postgres superuser/runtime passwords, three per-module ingest tokens, and the
-# VectorAnchor admin and operator bootstrap tokens. .env is gitignored — never commit it, and
+# MCP baseline key, VectorAnchor admin, and operator bootstrap tokens. .env is gitignored — never commit it, and
 # regenerate before using this anywhere but a local machine.
 #
 # Regenerating invalidates the tokens the running containers hold, so
@@ -38,6 +38,7 @@ MONOLITH_DATABASE_RUNTIME_PASSWORD=$(gen)
 MONOLITH_EVENT_TOKEN_MCP_SHIELD=$(gen)
 MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR=$(gen)
 MONOLITH_EVENT_TOKEN_TRACE_AUDIT=$(gen)
+MCP_SHIELD_KEY=$(gen)
 MONOLITH_TENANT_ID=default
 MONOLITH_ADMIN_TOKEN=$(gen)
 # The human operator's credential for the investigation queue. Separate from the
@@ -47,4 +48,4 @@ MONOLITH_OPERATOR_NAME=operator
 MONOLITH_OPERATOR_TOKEN=$(gen)
 EOF
 
-echo "wrote .env with 7 random secrets (values not printed)"
+echo "wrote .env with 8 random secrets (values not printed)"
