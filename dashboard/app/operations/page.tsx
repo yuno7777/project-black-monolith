@@ -15,6 +15,7 @@ type Operations = {
     total_events: number;
     oldest_received_ms: number | null;
     newest_received_ms: number | null;
+    alerts: { pending: number; dead: number; delivered_24h: number; oldest_pending_ms: number | null };
     modules: Array<{
       module: string;
       events_24h: number;
@@ -23,6 +24,7 @@ type Operations = {
       policy_versions: string[];
     }>;
   };
+  alerting: { enabled: boolean; error?: string };
   runtimes: Array<{
     module: string;
     configured: boolean;
@@ -72,14 +74,16 @@ export default function OperationsPage() {
     () => new Map(data?.runtimes.map((runtime) => [runtime.module, runtime]) ?? []),
     [data],
   );
-  const deadLetters = data?.runtimes.reduce(
+  const runtimeDeadLetters = data?.runtimes.reduce(
     (sum, runtime) => sum + Number(runtime.delivery?.dead ?? 0),
     0,
   ) ?? 0;
-  const pending = data?.runtimes.reduce(
+  const runtimePending = data?.runtimes.reduce(
     (sum, runtime) => sum + Number(runtime.delivery?.pending ?? 0),
     0,
   ) ?? 0;
+  const deadLetters = runtimeDeadLetters + (data?.ledger.alerts.dead ?? 0);
+  const pending = runtimePending + (data?.ledger.alerts.pending ?? 0);
 
   return (
     <div className="frame">
@@ -102,6 +106,7 @@ export default function OperationsPage() {
 
           <div className="content-scroll operations-scroll">
             {error ? <div className="ops-error">{error}</div> : null}
+            {data?.alerting.error ? <div className="ops-error">Alerting: {data.alerting.error}</div> : null}
             <section className="ops-hero">
               <div>
                 <span className="ops-eyebrow">Control plane</span>
@@ -116,8 +121,8 @@ export default function OperationsPage() {
             <div className="ops-kpis">
               <div className="card ops-kpi"><IconActivity /><span>Ledger events</span><strong className="num">{data?.ledger.total_events ?? "—"}</strong></div>
               <div className="card ops-kpi"><IconBolt /><span>Database response</span><strong className="num">{data ? `${data.ledger.database_latency_ms} ms` : "—"}</strong></div>
-              <div className="card ops-kpi"><IconActivity /><span>Queued delivery</span><strong className="num">{data ? pending : "—"}</strong></div>
-              <div className="card ops-kpi"><IconAlert /><span>Dead letters</span><strong className="num">{data ? deadLetters : "—"}</strong></div>
+              <div className="card ops-kpi"><IconActivity /><span>Queued delivery + alerts</span><strong className="num">{data ? pending : "—"}</strong></div>
+              <div className="card ops-kpi"><IconAlert /><span>All dead letters</span><strong className="num">{data ? deadLetters : "—"}</strong></div>
             </div>
 
             <section className="card ops-table-card">

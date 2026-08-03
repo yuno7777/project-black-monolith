@@ -16,6 +16,12 @@ export type LedgerHealth = {
   oldest_received_ms: number | null;
   newest_received_ms: number | null;
   modules: ModuleLedgerHealth[];
+  alerts: {
+    pending: number;
+    dead: number;
+    delivered_24h: number;
+    oldest_pending_ms: number | null;
+  };
 };
 
 type ModuleHealthRow = {
@@ -43,7 +49,7 @@ export function normalizeModuleLedgerHealth(rows: ModuleHealthRow[]): ModuleLedg
 export async function readLedgerHealth(tenantId: string): Promise<LedgerHealth> {
   const started = performance.now();
   return withTenantDb(tenantId, async (client) => {
-    const [summary, modules] = await Promise.all([
+    const [summary, modules, alerts] = await Promise.all([
       client.query<{
         total: string;
         oldest_ms: string | null;
@@ -66,14 +72,38 @@ export async function readLedgerHealth(tenantId: string): Promise<LedgerHealth> 
          group by module
          order by module
       `),
+      client.query<{
+        pending: string;
+        dead: string;
+        delivered_24h: string;
+        oldest_pending_ms: string | null;
+      }>(`
+        select count(*) filter (where status = 'pending')::text as pending,
+               count(*) filter (where status = 'dead')::text as dead,
+               count(*) filter (
+                 where status = 'delivered' and delivered_at >= now() - interval '24 hours'
+               )::text as delivered_24h,
+               (extract(epoch from min(created_at) filter (where status = 'pending')) * 1000)
+                 ::bigint::text as oldest_pending_ms
+          from monolith.alert_outbox
+      `),
     ]);
     const row = summary.rows[0];
+    const alertRow = alerts.rows[0];
     return {
       database_latency_ms: Math.round((performance.now() - started) * 10) / 10,
       total_events: Number(row?.total ?? 0),
       oldest_received_ms: row?.oldest_ms ? Number(row.oldest_ms) : null,
       newest_received_ms: row?.newest_ms ? Number(row.newest_ms) : null,
       modules: normalizeModuleLedgerHealth(modules.rows),
+      alerts: {
+        pending: Number(alertRow?.pending ?? 0),
+        dead: Number(alertRow?.dead ?? 0),
+        delivered_24h: Number(alertRow?.delivered_24h ?? 0),
+        oldest_pending_ms: alertRow?.oldest_pending_ms
+          ? Number(alertRow.oldest_pending_ms)
+          : null,
+      },
     };
   });
 }
