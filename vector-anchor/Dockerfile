@@ -6,8 +6,8 @@ WORKDIR /app/vector-anchor
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
-COPY vector-anchor/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+COPY vector-anchor/requirements.lock ./
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 COPY python-common /app/python-common
 COPY vector-anchor/src ./src
 COPY vector-anchor/fixtures ./fixtures

@@ -7,8 +7,8 @@ WORKDIR /app/trace-audit
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
-COPY trace-audit/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+COPY trace-audit/requirements.lock ./
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 COPY python-common /app/python-common
 COPY trace-audit/src ./src
 COPY trace-audit/fixtures ./fixtures
