@@ -3,8 +3,8 @@
 
 FROM node:22-slim AS build
 WORKDIR /app
-COPY dashboard/package.json dashboard/package-lock.json* ./
-RUN npm install
+COPY dashboard/package.json dashboard/package-lock.json ./
+RUN npm ci
 COPY dashboard .
 RUN npm run build
 
