@@ -1,0 +1,142 @@
+openapi: 3.1.0
+info:
+  title: Project Black Monolith service contracts
+  version: 1.0.0
+  description: Cross-module request, response, event, and correlation contracts.
+servers:
+  - url: http://127.0.0.1
+paths:
+  /retrieve:
+    post:
+      operationId: retrieveDocuments
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+        - $ref: "#/components/parameters/AgentId"
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/TraceId"
+        - $ref: "#/components/parameters/CorrelationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/vector-anchor-api.v1.schema.json#/$defs/retrieveRequest"
+      responses:
+        "200":
+          description: Clean retrieval results plus withheld candidates.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/vector-anchor-api.v1.schema.json#/$defs/retrieveResponse"
+  /admin/add-documents:
+    post:
+      operationId: addDocuments
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/vector-anchor-api.v1.schema.json#/$defs/addDocumentsRequest"
+      responses:
+        "200":
+          description: Documents were added or replaced.
+  /generate:
+    post:
+      operationId: auditGeneration
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+        - $ref: "#/components/parameters/AgentId"
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/TraceId"
+        - $ref: "#/components/parameters/CorrelationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/trace-audit-api.v1.schema.json#/$defs/generateRequest"
+      responses:
+        "200":
+          description: Server-sent stream of audited model output events.
+          content:
+            text/event-stream:
+              schema:
+                $ref: "./schemas/trace-audit-api.v1.schema.json#/$defs/streamEvent"
+  /api/ingest:
+    post:
+      operationId: ingestSecurityEvents
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: "./schemas/event-envelope.v2.schema.json"
+                - type: array
+                  minItems: 1
+                  maxItems: 100
+                  items:
+                    $ref: "./schemas/event-envelope.v2.schema.json"
+      responses:
+        "202":
+          description: Events accepted for the tenant-scoped ledger.
+  /api/benchmarks:
+    post:
+      operationId: uploadBenchmarkRun
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/benchmark-run.v1.schema.json"
+      responses:
+        "201":
+          description: Benchmark run persisted.
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    CorrelationIdentity:
+      type: string
+      minLength: 1
+      maxLength: 128
+      pattern: "^[^\\u0000-\\u001f\\u007f]+$"
+  parameters:
+    TenantId:
+      name: x-monolith-tenant-id
+      in: header
+      required: false
+      schema:
+        $ref: "#/components/schemas/CorrelationIdentity"
+    AgentId:
+      name: x-monolith-agent-id
+      in: header
+      required: false
+      schema:
+        $ref: "#/components/schemas/CorrelationIdentity"
+    SessionId:
+      name: x-monolith-session-id
+      in: header
+      required: false
+      schema:
+        $ref: "#/components/schemas/CorrelationIdentity"
+    TraceId:
+      name: x-monolith-trace-id
+      in: header
+      required: false
+      schema:
+        $ref: "#/components/schemas/CorrelationIdentity"
+    CorrelationId:
+      name: x-monolith-correlation-id
+      in: header
+      required: false
+      schema:
+        $ref: "#/components/schemas/CorrelationIdentity"
