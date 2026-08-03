@@ -14,6 +14,10 @@ const MAX_ATTEMPTS = 10;
 
 if (!targetValue && !secret) {
   console.log("[alerts] webhook delivery is disabled");
+  await new Promise((resolve) => {
+    process.once("SIGINT", resolve);
+    process.once("SIGTERM", resolve);
+  });
   process.exit(0);
 }
 if (!databaseUrl) throw new Error("DATABASE_URL is required for alert delivery");
