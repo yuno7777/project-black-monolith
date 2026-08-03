@@ -225,6 +225,21 @@ export async function listRecentEvents(
   });
 }
 
+export async function findEventById(
+  tenantId: string,
+  eventId: string,
+): Promise<MonolithEvent | null> {
+  if (!UUID_PATTERN.test(eventId)) return null;
+  return withTenantDb(tenantId, async (db) => {
+    const result = await db.query<EventRow>(
+      `select ${returningColumns} from monolith.security_events
+       where tenant_id = $1 and event_id = $2::uuid limit 1`,
+      [tenantId, eventId],
+    );
+    return result.rows[0] ? fromRow(result.rows[0]) : null;
+  });
+}
+
 export async function checkDatabase() {
   await getDb().query("select 1");
 }

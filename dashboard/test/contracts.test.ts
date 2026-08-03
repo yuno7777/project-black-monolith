@@ -12,6 +12,7 @@ import { authenticateIngest } from "../lib/ingest-auth";
 import { authenticateOperatorToken, operatorCookie } from "../lib/operator-auth";
 import { requireOperator } from "../lib/route-auth";
 import { JsonBodyError, readJsonBody } from "../lib/request-body";
+import { parseEventNotification } from "../lib/live-event-listener";
 
 function detector(overrides: Record<string, unknown> = {}) {
   return {
@@ -398,6 +399,21 @@ test("event streams pass Last-Event-ID to history replay", async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
   await reader.cancel();
   assert.equal(observedCursor, cursor);
+});
+
+test("database event notifications reject malformed routing data", () => {
+  assert.deepEqual(
+    parseEventNotification(
+      '{"event_id":"00000000-0000-4000-8000-000000000001","tenant_id":" tenant-a "}',
+    ),
+    {
+      event_id: "00000000-0000-4000-8000-000000000001",
+      tenant_id: "tenant-a",
+    },
+  );
+  assert.equal(parseEventNotification(undefined), null);
+  assert.equal(parseEventNotification("not-json"), null);
+  assert.equal(parseEventNotification('{"event_id":"bad","tenant_id":"tenant-a"}'), null);
 });
 
 test("trust-model migration keeps the runtime role least-privileged", () => {
