@@ -1960,6 +1960,12 @@ uvicorn==0.52.1 \
     # via
     #   -r requirements.txt
     #   chromadb
+uvloop==0.22.1 ; sys_platform != "win32" \
+    --hash=sha256:6c84bae345b9147082b17371e3dd5d42775bddce91f885499017f4607fdaf39f \
+    --hash=sha256:7b5b1ac819a3f946d3b2ee07f09149578ae76066d70b44df3fa990add49a82e4
+    # via
+    #   -r requirements.txt
+    #   uvicorn
 watchfiles==1.2.0 \
     --hash=sha256:01859b11fd9fbca670f4d5da00fbac282cfea9bd67a2125d8b2833a3b5617ea9 \
     --hash=sha256:01ea8d66f0693b9b60a6541c8d10263091ca9a9060d242f3c1f3143f9aad2c98 \
