@@ -106,6 +106,8 @@ services:
       MONOLITH_MODULE_ADMIN_TOKEN: ${MONOLITH_ADMIN_TOKEN:?set MONOLITH_ADMIN_TOKEN in .env}
       VECTOR_ANCHOR_INTERNAL_URL: http://vector-anchor:8001
       TRACE_AUDIT_INTERNAL_URL: http://trace-audit:8002
+      MONOLITH_ALERT_WEBHOOK_URL: ${MONOLITH_ALERT_WEBHOOK_URL:-}
+      MONOLITH_ALERT_WEBHOOK_SECRET: ${MONOLITH_ALERT_WEBHOOK_SECRET:-}
     depends_on:
       dashboard-migrator:
         condition: service_completed_successfully
@@ -115,6 +117,26 @@ services:
       timeout: 3s
       retries: 20
       start_period: 20s
+
+  alert-dispatcher:
+    <<: *service-hardening
+    mem_limit: 256m
+    pids_limit: 100
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://monolith_runtime:${MONOLITH_DATABASE_RUNTIME_PASSWORD:?set MONOLITH_DATABASE_RUNTIME_PASSWORD in .env}@database:5432/postgres
+      DATABASE_APP_ROLE: monolith_app
+      MONOLITH_TENANT_ID: ${MONOLITH_TENANT_ID:-default}
+      MONOLITH_ALERT_TENANTS: ${MONOLITH_TENANT_ID:-default}
+      MONOLITH_ALERT_WEBHOOK_URL: ${MONOLITH_ALERT_WEBHOOK_URL:-}
+      MONOLITH_ALERT_WEBHOOK_SECRET: ${MONOLITH_ALERT_WEBHOOK_SECRET:-}
+    command: ["node", "scripts/dispatch-alerts.mjs"]
+    restart: unless-stopped
+    depends_on:
+      dashboard-migrator:
+        condition: service_completed_successfully
 
   vector-anchor:
     <<: *service-hardening

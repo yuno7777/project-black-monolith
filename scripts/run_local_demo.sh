@@ -91,6 +91,13 @@ PIDS+=($!)
 wait_health "http://localhost:${DASH_PORT}/api/ingest" "dashboard" || exit 1
 echo "  dashboard up: $(curl -s http://localhost:${DASH_PORT}/api/ingest)"
 
+if [[ -n "${MONOLITH_ALERT_WEBHOOK_URL:-}" || -n "${MONOLITH_ALERT_WEBHOOK_SECRET:-}" ]]; then
+  echo "== starting critical-alert dispatcher =="
+  ( cd dashboard
+    node scripts/dispatch-alerts.mjs >"$TMP/alerts.log" 2>&1 ) &
+  PIDS+=($!)
+fi
+
 # --- 2. VectorAnchor ---------------------------------------------------
 echo "== starting VectorAnchor on :${VA_PORT} =="
 ( cd vector-anchor

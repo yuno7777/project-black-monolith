@@ -1,4 +1,4 @@
-# Unified dashboard (Next.js 15) — real-time threat feed.
+# Unified dashboard (Next.js 16) — operations and investigation console.
 # Uses Next.js standalone output for a small runtime image.
 
 FROM node:22-slim AS build
