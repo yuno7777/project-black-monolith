@@ -95,11 +95,15 @@ services:
     build:
       context: .
       dockerfile: dashboard/Dockerfile
+      args:
+        MONOLITH_DISABLE_AUTH: ${MONOLITH_DISABLE_AUTH:-false}
     ports:
       - "127.0.0.1:3000:3000"
     environment:
       DATABASE_URL: postgresql://monolith_runtime:${MONOLITH_DATABASE_RUNTIME_PASSWORD:?set MONOLITH_DATABASE_RUNTIME_PASSWORD in .env}@database:5432/postgres
       DATABASE_APP_ROLE: monolith_app
+      # Demo escape hatch: "true" turns operator sign-in OFF entirely.
+      MONOLITH_DISABLE_AUTH: ${MONOLITH_DISABLE_AUTH:-false}
       EVENT_INGEST_TOKENS_JSON: >-
         {"${MONOLITH_TENANT_ID:-default}":{"mcp-shield":"${MONOLITH_EVENT_TOKEN_MCP_SHIELD:?set MONOLITH_EVENT_TOKEN_MCP_SHIELD in .env}","vector-anchor":"${MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR:?set MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR in .env}","trace-audit":"${MONOLITH_EVENT_TOKEN_TRACE_AUDIT:?set MONOLITH_EVENT_TOKEN_TRACE_AUDIT in .env}"}}
       # Human operators for the investigation queue. Separate from the module
