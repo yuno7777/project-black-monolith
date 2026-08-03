@@ -88,9 +88,56 @@ export interface IncidentQuery {
   q?: string;
   since_ms?: number;
   limit?: number;
+  cursor?: string;
 }
 
-export async function listIncidents(query: IncidentQuery): Promise<Incident[]> {
+interface IncidentCursor {
+  severity_rank: number;
+  received_ms: number;
+  event_id: string;
+}
+
+export interface IncidentPage {
+  incidents: Incident[];
+  next_cursor?: string;
+}
+
+const INCIDENT_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function decodeIncidentCursor(cursor: string): IncidentCursor {
+  try {
+    const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as Record<string, unknown>;
+    if (
+      !Number.isInteger(value.severity_rank)
+      || Number(value.severity_rank) < 0
+      || Number(value.severity_rank) > 2
+      || !Number.isSafeInteger(value.received_ms)
+      || Number(value.received_ms) < 1
+      || typeof value.event_id !== "string"
+      || !INCIDENT_UUID_PATTERN.test(value.event_id)
+    ) {
+      throw new Error("invalid fields");
+    }
+    return {
+      severity_rank: Number(value.severity_rank),
+      received_ms: Number(value.received_ms),
+      event_id: value.event_id,
+    };
+  } catch {
+    throw new IncidentInputError("cursor is invalid or expired");
+  }
+}
+
+function encodeIncidentCursor(incident: Incident): string {
+  const severityRank = incident.severity === "critical" ? 0 : incident.severity === "warning" ? 1 : 2;
+  return Buffer.from(JSON.stringify({
+    severity_rank: severityRank,
+    received_ms: incident.received_ms,
+    event_id: incident.event_id,
+  })).toString("base64url");
+}
+
+export async function listIncidents(query: IncidentQuery): Promise<IncidentPage> {
   const where: string[] = [];
   const params: unknown[] = [];
   const add = (value: unknown) => `$${params.push(value)}`;
@@ -130,6 +177,7 @@ export async function listIncidents(query: IncidentQuery): Promise<Incident[]> {
     // and the correlation ids are here because pasting a session id into the
     // search box is the most obvious way to ask "what else did this agent do?".
     const needle = add(`%${query.q}%`);
+    const searchQuery = add(query.q);
     where.push(`(
       e.event_type ilike ${needle}
       or e.module ilike ${needle}
@@ -139,11 +187,28 @@ export async function listIncidents(query: IncidentQuery): Promise<Incident[]> {
       or coalesce(e.agent_id, '') ilike ${needle}
       or coalesce(e.trace_id, '') ilike ${needle}
       or coalesce(e.correlation_id, '') ilike ${needle}
-      or e.details::text ilike ${needle}
+      or to_tsvector('simple', coalesce(e.details::text, ''))
+         @@ plainto_tsquery('simple', ${searchQuery})
     )`);
   }
 
   const limit = Math.max(1, Math.min(query.limit ?? 200, 1_000));
+  const cursor = query.cursor ? decodeIncidentCursor(query.cursor) : null;
+  const severityRank = "case e.severity when 'critical' then 0 when 'warning' then 1 else 2 end";
+  if (cursor) {
+    const rank = add(cursor.severity_rank);
+    const received = add(cursor.received_ms);
+    const eventId = add(cursor.event_id);
+    where.push(`(
+      ${severityRank} > ${rank}
+      or (
+        ${severityRank} = ${rank}
+        and (e.received_at, e.event_id) < (
+          to_timestamp(${received}::double precision / 1000), ${eventId}::uuid
+        )
+      )
+    )`);
+  }
 
   return withTenantDb(query.tenant_id, async (db) => {
     const result = await db.query<IncidentRow>(
@@ -161,12 +226,20 @@ export async function listIncidents(query: IncidentQuery): Promise<Incident[]> {
        order by
          -- Worst-first, then newest-first: the queue should open on the thing
          -- that matters most, not merely the thing that happened last.
-         case e.severity when 'critical' then 0 when 'warning' then 1 else 2 end,
-         e.received_at desc
-       limit ${add(limit)}`,
+         ${severityRank},
+         e.received_at desc,
+         e.event_id desc
+       limit ${add(limit + 1)}`,
       params,
     );
-    return result.rows.map(toIncident);
+    const hasMore = result.rows.length > limit;
+    const incidents = result.rows.slice(0, limit).map(toIncident);
+    return {
+      incidents,
+      next_cursor: hasMore && incidents.length
+        ? encodeIncidentCursor(incidents[incidents.length - 1])
+        : undefined,
+    };
   });
 }
 

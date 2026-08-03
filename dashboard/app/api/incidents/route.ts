@@ -88,17 +88,24 @@ export async function GET(req: Request) {
     query.limit = Math.trunc(parsed);
   }
 
+  const cursor = params.get("cursor");
+  if (cursor) query.cursor = cursor.slice(0, 512);
+
   try {
-    const [incidents, counts, crossLayer] = await Promise.all([
+    const [page, counts, crossLayer] = await Promise.all([
       listIncidents(query),
       incidentCounts(identity.tenant_id),
       crossLayerSessionCount(identity.tenant_id),
     ]);
     return Response.json({
-      incidents,
+      incidents: page.incidents,
+      next_cursor: page.next_cursor,
       counts: { ...counts, cross_layer_sessions: crossLayer },
     });
   } catch (error) {
+    if (error instanceof IncidentInputError) {
+      return Response.json({ error: error.message }, { status: 422 });
+    }
     console.error("failed to list incidents", error);
     return Response.json({ error: "the ledger is temporarily unavailable" }, { status: 503 });
   }
