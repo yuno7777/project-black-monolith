@@ -1,0 +1,23 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /dashboard
+    schedule: { interval: weekly }
+    groups:
+      dashboard:
+        patterns: ["*"]
+  - package-ecosystem: cargo
+    directory: /mcp-shield
+    schedule: { interval: weekly }
+  - package-ecosystem: pip
+    directory: /vector-anchor
+    schedule: { interval: weekly }
+  - package-ecosystem: pip
+    directory: /trace-audit
+    schedule: { interval: weekly }
+  - package-ecosystem: pip
+    directory: /
+    schedule: { interval: weekly }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
