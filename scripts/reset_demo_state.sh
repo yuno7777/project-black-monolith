@@ -30,8 +30,8 @@ say "  cleared baseline_hashes.json, chroma_store/, baseline_distribution.json"
 # --- 2. Running services under Docker Compose --------------------------
 if command -v docker >/dev/null 2>&1 && [ -n "$(docker compose ps -q 2>/dev/null)" ]; then
     say "docker compose stack is up — resetting live state…"
-    # MCP-Shield writes its baseline to /tmp inside the container.
-    docker compose exec -T mcp-shield sh -c 'rm -f /tmp/baseline_hashes.json' 2>/dev/null \
+    # MCP-Shield keeps its authenticated baseline beside the durable outbox.
+    docker compose exec -T mcp-shield sh -c 'rm -f /var/lib/monolith/baseline_hashes.json' 2>/dev/null \
         && say "  mcp-shield: baseline reset"
     # VectorAnchor: clear the in-memory tracker + quarantine (corpus is kept).
     docker compose exec -T vector-anchor sh -c \

@@ -70,16 +70,16 @@ sleep "$PAUSE"
 
 # ═══════════════════════════════════════════════════════════════════════
 hr; say "ATTACK 1/3 — MCP-Shield: tool-schema rug pull (tool layer)"; hr
-# Reset the service-configured baseline (MCP_SHIELD_BASELINE=/tmp/baseline_hashes.json)
+# Reset the service-configured baseline in the persistent module state volume
 # so phase 1 registers cleanly on every run. The reset + demo run inside one
-# quoted `sh -c` so the /tmp path is never passed as a bare shell argument
+# quoted `sh -c` so the absolute path is never passed as a bare shell argument
 # (which some Windows shells would path-mangle).
 # MONOLITH_SESSION_ID is passed at exec time, not baked into the image: the
 # proxy is spawned per agent session, so the session is only known now. The
 # value has no leading slash, so it is safe to pass with -e even under MSYS
-# (unlike the /tmp path above, which is why that stays inside the quoted sh -c).
+# (unlike the baseline path above, which is why that stays inside the quoted sh -c).
 $DC exec -T -e MONOLITH_SESSION_ID="$SESSION_ID" mcp-shield \
-    sh -c 'rm -f /tmp/baseline_hashes.json && bash fixtures/run_demo.sh' 2>&1 \
+    sh -c 'rm -f /var/lib/monolith/baseline_hashes.json && bash fixtures/run_demo.sh' 2>&1 \
     | grep -E "PHASE|SCHEMA MISMATCH|SUSPICIOUS|\[OK\]|\[FAIL\]|DEMO" || true
 sleep "$PAUSE"
 

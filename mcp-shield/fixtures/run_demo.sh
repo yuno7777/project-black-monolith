@@ -46,7 +46,7 @@ else
 fi
 
 # Fresh baseline so the demo is reproducible run-to-run.
-BASELINE="baseline_hashes.json"
+BASELINE="${MCP_SHIELD_BASELINE:-baseline_hashes.json}"
 rm -f "$BASELINE"
 
 OUTDIR="$(mktemp -d)"
