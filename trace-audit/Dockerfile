@@ -14,7 +14,7 @@ COPY fixtures ./fixtures
 RUN useradd --system --uid 10001 --create-home monolith \
     && mkdir -p /var/lib/monolith \
     && chown -R monolith:monolith /app /var/lib/monolith
-ENV MONOLITH_BASELINE_PATH=/app/baseline_distribution.json \
+ENV MONOLITH_BASELINE_PATH=/var/lib/monolith/baseline_distribution.json \
     MONOLITH_MODEL_BACKEND=mock
 EXPOSE 8002
 # Capture the baseline distribution at startup, then serve.

@@ -38,6 +38,10 @@ if command -v docker >/dev/null 2>&1 && [ -n "$(docker compose ps -q 2>/dev/null
         'curl -fs -X POST http://localhost:8001/admin/reset-detection -H "Authorization: Bearer $MONOLITH_ADMIN_TOKEN"' \
         >/dev/null 2>&1 \
         && say "  vector-anchor: quarantine + tracker reset"
+    docker compose exec -T trace-audit sh -c \
+        'rm -f /var/lib/monolith/baseline_distribution.json' 2>/dev/null \
+        && docker compose restart trace-audit >/dev/null 2>&1 \
+        && say "  trace-audit: baseline recaptured"
     # Dashboard event history is an in-memory ring buffer — a restart clears it.
     docker compose restart dashboard >/dev/null 2>&1 \
         && say "  dashboard: event history cleared (restarted)"
