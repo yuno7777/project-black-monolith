@@ -49,8 +49,8 @@ export function normalizeEvent(raw: unknown): MonolithEvent {
     throw new Error("each event must be a JSON object");
   }
   const value = raw as Record<string, unknown>;
-  const module = optionalText(value.module);
-  if (!module || !knownModules.has(module)) {
+  const moduleName = optionalText(value.module);
+  if (!moduleName || !knownModules.has(moduleName)) {
     throw new Error("event.module must identify a known module");
   }
   const eventType = optionalText(value.event_type);
@@ -93,7 +93,7 @@ export function normalizeEvent(raw: unknown): MonolithEvent {
     event_id: eventId,
     schema_version: value.schema_version === 2 ? 2 : 1,
     timestamp_ms: timestamp,
-    module,
+    module: moduleName,
     event_type: eventType,
     severity,
     details: value.details ?? {},
