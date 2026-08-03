@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-black-monolith.local/contracts/vector-anchor-api.v1.schema.json",
+  "title": "VectorAnchor API contracts",
+  "$defs": {
+    "retrieveRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["query"],
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384,
+          "pattern": "\\S"
+        },
+        "k": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
+      }
+    },
+    "retrievalResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "document", "distance"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "document": { "type": ["string", "null"] },
+        "distance": { "type": "number" }
+      }
+    },
+    "withheldResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "reason"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "reason": { "enum": ["already_quarantined", "quarantined_now"] }
+      }
+    },
+    "retrieveResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["query", "results", "withheld", "quarantine_size"],
+      "properties": {
+        "query": { "type": "string", "minLength": 1, "maxLength": 16384 },
+        "results": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/retrievalResult" }
+        },
+        "withheld": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/withheldResult" }
+        },
+        "quarantine_size": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "text"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "\\S" },
+        "text": { "type": "string", "minLength": 1, "pattern": "\\S" }
+      }
+    },
+    "addDocumentsRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["documents"],
+      "properties": {
+        "documents": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/document" }
+        }
+      }
+    }
+  }
+}
