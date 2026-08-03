@@ -10,6 +10,7 @@
 //!
 //! Usage:
 //!   mcp-shield <server-command> [server-args...]
+//!   mcp-shield --remote-url <https://server.example/mcp>
 //!   mcp-shield --drain-outbox
 //!
 //! Example:
@@ -20,12 +21,13 @@
 
 mod events;
 mod fingerprint;
+mod http_transport;
 mod jsonrpc;
 mod outbox;
 mod proxy;
 mod sanitizer;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use std::io::IsTerminal;
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
@@ -47,12 +49,34 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let server_cmd: Vec<String> = std::env::args().skip(1).collect();
+    let mut server_cmd: Vec<String> = std::env::args().skip(1).collect();
     if server_cmd.is_empty() {
         bail!(
             "usage: mcp-shield <server-command> [server-args...]\n\
+             or: mcp-shield --remote-url <https://server.example/mcp>\n\
              example: mcp-shield python fixtures/fake_mcp_server.py"
         );
+    }
+
+    // Internal child mode used by `--remote-url`. It deliberately runs before
+    // the outbox flusher: the outer proxy owns inspection and event delivery.
+    if server_cmd.first().map(String::as_str) == Some("__streamable-http-bridge") {
+        if server_cmd.len() != 2 {
+            bail!("internal Streamable HTTP bridge expects exactly one URL");
+        }
+        return http_transport::run(&server_cmd[1]).await;
+    }
+
+    if server_cmd.first().map(String::as_str) == Some("--remote-url") {
+        if server_cmd.len() != 2 {
+            bail!("--remote-url expects exactly one http or https URL");
+        }
+        let executable = std::env::current_exe().context("locate mcp-shield executable")?;
+        server_cmd = vec![
+            executable.to_string_lossy().into_owned(),
+            "__streamable-http-bridge".to_owned(),
+            server_cmd[1].clone(),
+        ];
     }
 
     if server_cmd == ["--drain-outbox"] {
