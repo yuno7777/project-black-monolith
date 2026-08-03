@@ -12,7 +12,8 @@ from src.config import load_config
         ("MONOLITH_EMBEDDING_DIM", "0", "between 1 and 4096"),
         ("MONOLITH_TOP_K", "0", "between 1 and 100"),
         ("MONOLITH_CANDIDATE_BUFFER", "-1", "between 0 and 1000"),
-        ("MONOLITH_WINDOW_SIZE", "0", "between 1 and 10000"),
+        ("MONOLITH_RETENTION_HORIZON", "0", "between 1 and 1000000"),
+        ("MONOLITH_MAX_QUERIES_PER_DOC", "0", "between 1 and 4096"),
         ("MONOLITH_TOPIC_SIMILARITY", "1.1", "between -1 and 1"),
         ("MONOLITH_TENANT_ID", " ", "between 1 and 128"),
     ],
@@ -33,9 +34,9 @@ def test_related_thresholds_must_be_internally_consistent(monkeypatch):
         load_config()
 
     monkeypatch.setenv("MONOLITH_TOP_RANK_THRESHOLD", "2")
-    monkeypatch.setenv("MONOLITH_WINDOW_SIZE", "3")
+    monkeypatch.setenv("MONOLITH_MAX_QUERIES_PER_DOC", "3")
     monkeypatch.setenv("MONOLITH_MIN_DISTINCT_TOPICS", "4")
-    with pytest.raises(ValueError, match="window size"):
+    with pytest.raises(ValueError, match="max queries per document"):
         load_config()
 
 

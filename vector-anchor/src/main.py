@@ -8,6 +8,7 @@ drive it through POST /retrieve.
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from secrets import compare_digest
 
@@ -101,16 +102,33 @@ def build_proxy() -> RetrieverProxy:
         cfg.detector_state_path,
         min_distinct_topics=cfg.min_distinct_topics,
         topic_similarity=cfg.topic_similarity,
-        window_size=cfg.window_size,
+        retention_horizon=cfg.retention_horizon,
+        max_queries_per_doc=cfg.max_queries_per_doc,
     )
-    restored = state_store.load()
+    try:
+        restored = state_store.load()
+    except ValueError as error:
+        # State written under different retention policy or an older schema.
+        # Refusing to reinterpret it is deliberate — scores under mixed rules
+        # would be unreproducible — but crash-looping the service is not a
+        # safe alternative either, so set the old file aside (never delete
+        # evidence) and continue from empty detector state.
+        quarantined = state_store.quarantine_unreadable()
+        logging.error(
+            "detector state could not be loaded (%s); moved to %s and started "
+            "with empty detection state",
+            error,
+            quarantined,
+        )
+        restored = None
     if restored:
         tracker, quarantine = restored
     else:
         tracker = FrequencyTracker(
             min_distinct_topics=cfg.min_distinct_topics,
             topic_similarity=cfg.topic_similarity,
-            window_size=cfg.window_size,
+            retention_horizon=cfg.retention_horizon,
+            max_queries_per_doc=cfg.max_queries_per_doc,
         )
         quarantine = Quarantine()
     return RetrieverProxy(
@@ -225,7 +243,8 @@ def stats(request: Request) -> dict:
             "top_k": proxy.cfg.top_k,
             "min_distinct_topics": proxy.cfg.min_distinct_topics,
             "topic_similarity": proxy.cfg.topic_similarity,
-            "window_size": proxy.cfg.window_size,
+            "retention_horizon": proxy.cfg.retention_horizon,
+            "max_queries_per_doc": proxy.cfg.max_queries_per_doc,
         },
     }
 

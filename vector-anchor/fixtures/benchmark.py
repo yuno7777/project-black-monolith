@@ -24,7 +24,8 @@ sys.path.insert(0, ".")
 
 from src.frequency_tracker import FrequencyTracker  # noqa: E402
 
-WINDOW = 50
+HORIZON = 500
+MAX_QUERIES_PER_DOC = 8
 MIN_DISTINCT_TOPICS = 4
 TOPIC_SIMILARITY = 0.20
 DIM = 256  # matches MONOLITH_EMBEDDING_DIM
@@ -46,12 +47,15 @@ def measure() -> dict[str, float]:
     tracker = FrequencyTracker(
         min_distinct_topics=MIN_DISTINCT_TOPICS,
         topic_similarity=TOPIC_SIMILARITY,
-        window_size=WINDOW,
+        retention_horizon=HORIZON,
+        max_queries_per_doc=MAX_QUERIES_PER_DOC,
     )
     doc_ids = [f"doc-{i}" for i in range(CORPUS)]
 
-    # Warm to the steady state: a full window, every document with history.
-    for _ in range(WINDOW):
+    # Warm to the steady state. Cost is driven by how many hits each
+    # document retains, so warm past the horizon rather than to it: this
+    # measures the detector once every document is carrying real history.
+    for _ in range(HORIZON):
         tracker.record_query(rng.sample(doc_ids, 2), embedding(rng))
 
     samples: list[float] = []
@@ -80,7 +84,10 @@ def measure() -> dict[str, float]:
 def main() -> None:
     m = measure()
     print(f"VectorAnchor — detector overhead per retrieval (N={ITERATIONS})")
-    print(f"  window={WINDOW}  corpus={CORPUS}  embedding_dim={DIM}")
+    print(
+        f"  horizon={HORIZON}  cap={MAX_QUERIES_PER_DOC}  "
+        f"corpus={CORPUS}  embedding_dim={DIM}"
+    )
     print()
     print(f"  mean    {m['mean']:8.1f} us")
     print(f"  median  {m['median']:8.1f} us")

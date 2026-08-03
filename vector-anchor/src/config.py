@@ -42,8 +42,12 @@ class Config:
     # Two queries count as the "same topic" when their cosine similarity is
     # at or above this value; below it they are treated as unrelated.
     topic_similarity: float
-    # Rolling window size, in number of most-recent queries retained.
-    window_size: int
+    # How many queries back a hit still counts toward a document's topic
+    # score. This is the detection horizon and what prices the slow drip.
+    retention_horizon: int
+    # Most hits retained for any one document. Bounds memory and the
+    # quadratic clustering cost independently of the horizon.
+    max_queries_per_doc: int
 
     # --- dashboard integration ------------------------------------------
     dashboard_url: str | None
@@ -90,11 +94,13 @@ def _validate_config(cfg: Config) -> Config:
         raise ValueError(
             "MONOLITH_TOP_RANK_THRESHOLD must fit within the retrieval candidate set"
         )
-    if not 1 <= cfg.window_size <= 10_000:
-        raise ValueError("MONOLITH_WINDOW_SIZE must be between 1 and 10000")
-    if not 1 <= cfg.min_distinct_topics <= cfg.window_size:
+    if not 1 <= cfg.retention_horizon <= 1_000_000:
+        raise ValueError("MONOLITH_RETENTION_HORIZON must be between 1 and 1000000")
+    if not 1 <= cfg.max_queries_per_doc <= 4096:
+        raise ValueError("MONOLITH_MAX_QUERIES_PER_DOC must be between 1 and 4096")
+    if not 1 <= cfg.min_distinct_topics <= cfg.max_queries_per_doc:
         raise ValueError(
-            "MONOLITH_MIN_DISTINCT_TOPICS must be between 1 and the window size"
+            "MONOLITH_MIN_DISTINCT_TOPICS must be between 1 and max queries per document"
         )
     if not -1.0 <= cfg.topic_similarity <= 1.0:
         raise ValueError("MONOLITH_TOPIC_SIMILARITY must be between -1 and 1")
@@ -138,7 +144,8 @@ def load_config() -> Config:
         top_rank_threshold=int(os.environ.get("MONOLITH_TOP_RANK_THRESHOLD", "2")),
         min_distinct_topics=int(os.environ.get("MONOLITH_MIN_DISTINCT_TOPICS", "4")),
         topic_similarity=float(os.environ.get("MONOLITH_TOPIC_SIMILARITY", "0.20")),
-        window_size=int(os.environ.get("MONOLITH_WINDOW_SIZE", "50")),
+        retention_horizon=int(os.environ.get("MONOLITH_RETENTION_HORIZON", "500")),
+        max_queries_per_doc=int(os.environ.get("MONOLITH_MAX_QUERIES_PER_DOC", "8")),
         dashboard_url=os.environ.get("MONOLITH_DASHBOARD_URL") or None,
         event_token=os.environ.get("MONOLITH_EVENT_TOKEN") or None,
         event_outbox_path=os.environ.get("MONOLITH_EVENT_OUTBOX_PATH", "./event_outbox.db"),

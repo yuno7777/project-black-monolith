@@ -19,17 +19,33 @@ class DetectorStateStore:
         *,
         min_distinct_topics: int,
         topic_similarity: float,
-        window_size: int,
+        retention_horizon: int,
+        max_queries_per_doc: int,
     ) -> None:
         self.path = Path(path)
         self.min_distinct_topics = min_distinct_topics
         self.topic_similarity = topic_similarity
-        self.window_size = window_size
+        self.retention_horizon = retention_horizon
+        self.max_queries_per_doc = max_queries_per_doc
         self.policy = {
             "min_distinct_topics": min_distinct_topics,
             "topic_similarity": topic_similarity,
-            "window_size": window_size,
+            "retention_horizon": retention_horizon,
+            "max_queries_per_doc": max_queries_per_doc,
         }
+
+    def quarantine_unreadable(self) -> str:
+        """Move state that cannot be loaded aside instead of deleting it.
+
+        Called when the persisted policy or schema no longer matches. The file
+        is evidence of what the detector had seen, so it is preserved for
+        inspection rather than overwritten by the next save.
+        """
+        target = self.path.with_suffix(self.path.suffix + ".unreadable")
+        if target.exists():
+            target.unlink()
+        os.replace(self.path, target)
+        return str(target)
 
     def load(self) -> tuple[FrequencyTracker, Quarantine] | None:
         if not self.path.exists():
@@ -52,7 +68,8 @@ class DetectorStateStore:
             tracker_data,
             min_distinct_topics=self.min_distinct_topics,
             topic_similarity=self.topic_similarity,
-            window_size=self.window_size,
+            retention_horizon=self.retention_horizon,
+            max_queries_per_doc=self.max_queries_per_doc,
         )
         quarantine = Quarantine.from_snapshot(quarantine_data)
         return tracker, quarantine
