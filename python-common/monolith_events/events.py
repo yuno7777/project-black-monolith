@@ -69,6 +69,7 @@ class EventOutbox:
         max_pending: int = 10_000,
         max_dead: int = 2_000,
         dead_retention_ms: int = 7 * 24 * 60 * 60 * 1000,
+        start_worker: bool = True,
     ) -> None:
         if min(max_attempts, max_pending, max_dead, dead_retention_ms) < 1:
             raise ValueError("outbox limits must be positive")
@@ -101,8 +102,14 @@ class EventOutbox:
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._worker_error: str | None = None
-        self._worker = threading.Thread(target=self._run, name="event-outbox", daemon=True)
-        self._worker.start()
+        self._worker: threading.Thread | None = None
+        if start_worker:
+            self._worker = threading.Thread(
+                target=self._run,
+                name="event-outbox",
+                daemon=True,
+            )
+            self._worker.start()
 
     def _migrate_legacy_table(self) -> None:
         columns = {
@@ -241,16 +248,17 @@ class EventOutbox:
         return {
             "pending": int(counts.get("pending", 0)),
             "dead": int(counts.get("dead", 0)),
-            "worker_alive": self._worker.is_alive(),
+            "worker_alive": bool(self._worker and self._worker.is_alive()),
             "worker_error": self._worker_error,
         }
 
     def close(self, timeout: float = 5.0) -> None:
         self._stop.set()
         self._wake.set()
-        self._worker.join(timeout=timeout)
-        if self._worker.is_alive():
-            raise TimeoutError("event outbox worker did not stop")
+        if self._worker:
+            self._worker.join(timeout=timeout)
+            if self._worker.is_alive():
+                raise TimeoutError("event outbox worker did not stop")
         with self._lock:
             self._connection.close()
 
