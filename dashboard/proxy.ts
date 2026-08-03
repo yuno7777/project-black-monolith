@@ -4,10 +4,10 @@ const OPERATOR_SESSION_COOKIE = "monolith-session";
 
 /**
  * Page guard only. API routes validate the opaque session against Postgres;
- * middleware checks presence so unauthenticated browsers reach the login page
+ * the proxy checks presence so unauthenticated browsers reach the login page
  * instead of rendering a console that can only receive 401 responses.
  */
-export function middleware(req: NextRequest) {
+export function proxy(req: NextRequest) {
   if (req.cookies.has(OPERATOR_SESSION_COOKIE)) return NextResponse.next();
   const login = new URL("/login", req.url);
   login.searchParams.set("next", `${req.nextUrl.pathname}${req.nextUrl.search}`);
@@ -15,5 +15,5 @@ export function middleware(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/", "/investigate/:path*", "/benchmarks/:path*"],
+  matcher: ["/", "/investigate/:path*", "/benchmarks/:path*", "/operations/:path*"],
 };

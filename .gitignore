@@ -28,6 +28,7 @@ baseline_distribution.json
 node_modules/
 .next/
 next-env.d.ts
+tsconfig.tsbuildinfo
 npm-debug.log*
 
 # ── Local-only agent guidance ────────────────────────────────────────

@@ -84,14 +84,14 @@ export function normalizeRun(raw: unknown, tenantId: string): BenchmarkRun {
   const detectors = list.map((d): BenchmarkDetector => {
     if (!d || typeof d !== "object") throw new BenchmarkInputError("each detector must be an object");
     const r = d as Record<string, unknown>;
-    const module = typeof r.module === "string" ? r.module : "";
-    if (!KNOWN_MODULES.has(module)) throw new BenchmarkInputError("unknown module in a detector report");
+    const moduleName = typeof r.module === "string" ? r.module : "";
+    if (!KNOWN_MODULES.has(moduleName)) throw new BenchmarkInputError("unknown module in a detector report");
     const detector = typeof r.detector === "string" ? r.detector.trim() : "";
     if (!detector) throw new BenchmarkInputError("detector name is required");
     if (detector.length > 64) {
       throw new BenchmarkInputError("detector name must be at most 64 characters");
     }
-    const detectorKey = `${module}/${detector}`;
+    const detectorKey = `${moduleName}/${detector}`;
     if (detectorKeys.has(detectorKey)) {
       throw new BenchmarkInputError(`duplicate detector report '${detectorKey}'`);
     }
@@ -146,7 +146,7 @@ export function normalizeRun(raw: unknown, tenantId: string): BenchmarkRun {
       : {};
 
     return {
-      module,
+      module: moduleName,
       detector,
       paradigm,
       benchmark_version: version,

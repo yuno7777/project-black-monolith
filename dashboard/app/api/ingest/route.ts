@@ -26,8 +26,8 @@ export async function POST(req: Request) {
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "invalid event" }, { status: 422 });
   }
-  const module = events[0].module;
-  if (events.some((event) => event.module !== module)) {
+  const moduleName = events[0].module;
+  if (events.some((event) => event.module !== moduleName)) {
     return Response.json({ error: "a batch may contain events from one module only" }, { status: 422 });
   }
   const tenant = events[0].tenant_id;
@@ -35,7 +35,7 @@ export async function POST(req: Request) {
     return Response.json({ error: "a batch may contain events from one tenant only" }, { status: 422 });
   }
   try {
-    if (!authenticateIngest(req, tenant, module)) {
+    if (!authenticateIngest(req, tenant, moduleName)) {
       return Response.json({ error: "invalid module credential" }, { status: 401 });
     }
   } catch (error) {

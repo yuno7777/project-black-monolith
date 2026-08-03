@@ -54,12 +54,12 @@ export async function GET(req: Request) {
     query.severity = severity as Severity;
   }
 
-  const module = params.get("module");
-  if (module && module !== "all") {
-    if (!isKnownModule(module)) {
+  const moduleName = params.get("module");
+  if (moduleName && moduleName !== "all") {
+    if (!isKnownModule(moduleName)) {
       return Response.json({ error: "unknown module filter" }, { status: 422 });
     }
-    query.module = module;
+    query.module = moduleName;
   }
 
   const session = params.get("session");
