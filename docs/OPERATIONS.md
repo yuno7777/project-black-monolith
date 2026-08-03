@@ -16,6 +16,7 @@ seconds.
 | Queued delivery | `/stats` on VectorAnchor and TraceAudit | Events preserved locally but not yet accepted by ingest |
 | Dead letters | `/stats` on VectorAnchor and TraceAudit | Permanently rejected deliveries requiring investigation |
 | Runtime | Authenticated `/stats` probe | Reachability from the dashboard, not proof that detection is correct |
+| Alert queue | `alert_outbox` | Critical webhooks pending, delivered, or permanently rejected |
 
 MCP-Shield is short-lived and uses a durable JSONL spool plus a resident
 `--drain-outbox` process. Its policy and evidence freshness appear in the
@@ -48,6 +49,31 @@ The export is an investigation handoff, not a cryptographic archive. Preserve
 the file with your case system's normal hashing/signing procedure if external
 chain-of-custody guarantees are required.
 
+## Critical webhook alerts
+
+Set both values to enable the feature; leaving both unset disables it:
+
+```text
+MONOLITH_ALERT_WEBHOOK_URL=https://alerts.example.test/monolith
+MONOLITH_ALERT_WEBHOOK_SECRET=<32-512 character HMAC secret>
+```
+
+Critical events and their alert jobs commit in one database transaction. The
+dispatcher POSTs `project-black-monolith/critical-alert@1` JSON with:
+
+```text
+X-Monolith-Event-Id: <stable idempotency key>
+X-Monolith-Timestamp: <Unix milliseconds>
+X-Monolith-Signature: sha256=<hex HMAC>
+```
+
+The signature input is `<timestamp>.<raw request body>`. Receivers should reject
+stale timestamps, compare the HMAC in constant time, and deduplicate by event
+ID. Redirects are not followed. Network errors, 408, 429, and 5xx retry with
+bounded exponential backoff; other non-2xx responses and ten exhausted attempts
+become dead letters. Production destinations require HTTPS; HTTP is accepted
+only for loopback test receivers.
+
 ## Retention and cleanup
 
 Evidence is append-only to the dashboard runtime. A database owner may schedule
@@ -55,6 +81,7 @@ bounded retention explicitly:
 
 ```sql
 select monolith.prune_security_events(interval '90 days');
+select monolith.prune_alert_deliveries(interval '30 days');
 ```
 
 The function accepts one day through ten years and is revoked from the runtime
@@ -73,4 +100,3 @@ context.
    trail before coordinating outside the dashboard.
 5. Re-run the deterministic evaluation profile after any detector or policy
    change; use the real profile only when its external backends are available.
-
