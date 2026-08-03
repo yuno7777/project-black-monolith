@@ -59,17 +59,20 @@ class RetrieverProxy:
         start = now_ms()
         k = k or self.cfg.top_k
         n = k + self.cfg.candidate_buffer
+        # Embed once and pass the exact same vector to Chroma and the detector.
+        # Using query_texts here would make Chroma invoke the embedding
+        # function a second time and could even give the two decisions
+        # different vectors for a non-deterministic remote embedder.
+        query_embedding = self.embed_fn([query])[0]
 
         res = self.collection.query(
-            query_texts=[query],
+            query_embeddings=[query_embedding],
             n_results=n,
             include=["documents", "distances", "metadatas"],
         )
         ids = res["ids"][0]
         docs = res["documents"][0]
         dists = res["distances"][0]
-
-        query_embedding = self.embed_fn([query])[0]
 
         with self._state_lock:
             # Record the top-ranked documents for this query so cross-query

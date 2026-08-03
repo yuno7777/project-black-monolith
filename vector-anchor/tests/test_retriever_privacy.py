@@ -11,7 +11,9 @@ class Collection:
     def __init__(self, document: str):
         self.document = document
 
-    def query(self, **_kwargs):
+    def query(self, **kwargs):
+        assert kwargs["query_embeddings"] == [[1.0]]
+        assert "query_texts" not in kwargs
         return {
             "ids": [["doc-1"]],
             "documents": [[self.document]],
