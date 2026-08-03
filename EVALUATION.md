@@ -17,6 +17,32 @@ re-calibration — stated per module below.
 
 ---
 
+## Reproducible run profiles
+
+`evaluation/profiles.json` separates two claims that must not be conflated:
+
+- `deterministic` uses VectorAnchor's hash embedder and TraceAudit's seeded mock
+  model. It is offline, reproducible, and suitable for regression gating.
+- `real` uses Chroma's default semantic embedding and an Ollama model. It may
+  download model assets, depends on the installed external backend, and must be
+  recalibrated against its resulting distribution.
+
+Run either through the provenance wrapper:
+
+```bash
+python evaluation/run_profile.py deterministic
+python evaluation/run_profile.py real
+```
+
+Each ignored `evaluation/results/<profile>-<timestamp>/` directory contains the
+Git revision, exact command and environment override, Python version, source
+SHA-256 values, duration, exit code, and copied detector reports. A failed step
+still writes its partial manifest. No real-backend score is reported unless
+that profile actually completes; on a machine without Ollama its status is
+**NOT MEASURED**, not inferred from the deterministic fixture.
+
+---
+
 ## 1. TraceAudit (reasoning layer) — KL-divergence threshold
 
 **Calibration method.** The baseline token distribution is captured from 10
@@ -485,7 +511,9 @@ bash scripts/verify_benchmarks.sh        # 12 benchmark-ledger checks
 # Detection-accuracy benchmark: score every detector + upload to the dashboard.
 bash scripts/run_benchmarks.sh           # computes offline, POSTs the run
 
-# Full end-to-end integration WITHOUT Docker (dashboard + all 3 modules + attacks)
+# Full end-to-end integration WITHOUT Docker. A local PostgreSQL 17 server and
+# psql are required; the runner bootstraps roles, applies migrations, then starts
+# the dashboard + all three modules and attacks.
 ./scripts/run_local_demo.sh            # holds services up; open http://localhost:3000
 DEMO_HOLD=0 ./scripts/run_local_demo.sh  # run once and tear down (cold-start check)
 ```
