@@ -59,6 +59,24 @@ jobs:
       - name: Verify the durable outbox (spool / redeliver / dead-letter)
         run: bash fixtures/verify_outbox.sh
 
+  python-common:
+    name: Shared Python delivery (lint + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Install locked quality tools
+        run: python -m pip install --require-hashes -r requirements-quality.lock
+      - name: Lint, type-check, and test
+        env:
+          PYTHONPATH: python-common
+        run: |
+          python -m ruff check python-common/monolith_events
+          python -m mypy python-common/monolith_events
+          python -m pytest python-common/tests -q
+
   vector-anchor:
     name: VectorAnchor (Python tests)
     runs-on: ubuntu-latest
@@ -134,7 +152,7 @@ jobs:
     runs-on: ubuntu-latest
     # The unit suites are cheap and catch most breakage; only pay for the
     # 5-image stack build once they are green.
-    needs: [contracts, mcp-shield, vector-anchor, trace-audit, dashboard]
+    needs: [contracts, mcp-shield, python-common, vector-anchor, trace-audit, dashboard]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
