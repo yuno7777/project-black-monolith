@@ -52,11 +52,13 @@ of **16 held-out benign prompts** — drawn from those same four styles, none in
 the baseline set — is then measured against that baseline, giving the benign
 KL distribution. Reproduce: `python fixtures/calibrate.py`.
 
-**Measured benign peak-KL distribution (N = 16):**
+**Measured benign peak-KL distribution (N = 36):**
 
 | mean | std | min | max | mean + 2σ | divergent fixture |
 | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0.343 | 0.064 | 0.247 | 0.481 | 0.470 | **3.289** |
+| 0.351 | 0.065 | 0.247 | 0.481 | 0.481 | **3.289** |
+
+The held-out set grew from 16 prompts across four styles to **36 across eight**, adding code generation, technical explanation, summarization and comparison. **False-positive result: 0 / 36.**
 
 **Derived threshold = 1.0.** The textbook `mean + 2σ = 0.470` sits essentially
 *at* the benign maximum (0.481), leaving no margin — a strict 2σ cut would
@@ -65,8 +67,18 @@ populations: **1.0 is ~2.1× the worst benign peak (0.481) and ~0.30× the
 divergent fixture (3.289)**. Encoded as `DEFAULT_KL_THRESHOLD` in
 `src/divergence_monitor.py` with the derivation in-comment.
 
-**False-positive result: 0 / 16** benign prompts triggered termination; the
-divergent fixture (3.289) crosses 1.0 decisively.
+The divergent fixture (3.289) crosses 1.0 decisively.
+
+> **What that larger N does and does not buy — read before quoting it.** The
+> default mock backend seeds its RNG from the prompt but draws every token from
+> one fixed pool (`_mock_stream` in `src/stream_proxy.py`), so its output style
+> does **not** vary with the prompt's style. The 20 added prompts therefore
+> widen the *seed* sample — a better estimate of run-to-run variance, which is
+> why the max is unchanged at 0.481 — but they do not test whether a genuinely
+> code-shaped token distribution shifts the benign range. **The
+> code-generation blind spot below remains NOT MEASURED**, and closing it
+> requires the `real` profile against Ollama. A clean count here is evidence
+> about seeds, not about code.
 
 **Bug found & fixed during calibration.** The mock backend seeded its RNG with
 Python's built-in `hash()`, which is salted per process (`PYTHONHASHSEED`), so
@@ -86,11 +98,11 @@ and needs recalibration (re-run `fixtures/calibrate.py`, update
 
 ## 2. VectorAnchor (memory layer) — frequency-anomaly threshold
 
-**Calibration method.** The 24-document clean corpus is seeded and **18
-diverse clean queries** across six topics (no poison present) are run through
-the frequency-anomaly detector; the highest distinct-topic score reached by
-any legitimate document is recorded, then compared against the poison
-fixture's score. Reproduce: `python fixtures/calibrate.py`.
+**Calibration method.** The **60-document** clean corpus is seeded and **36
+diverse clean queries** across twelve topics (no poison present) are run
+through the frequency-anomaly detector; the highest distinct-topic score
+reached by any legitimate document is recorded, then compared against the
+poison fixture's score. Reproduce: `python fixtures/calibrate.py`.
 
 **Measured separation:**
 
@@ -120,7 +132,43 @@ margin**.
 > that work. `garden-3` scores 3. The margin is one topic, not two. The
 > false-positive count is unaffected.
 
-**False-positive result: 0 / 24** clean documents flagged.
+**False-positive result: 0 / 60** clean documents flagged.
+
+### 2b. Corpus breadth is itself a defence — and it broke one of our own attacks
+
+Growing the clean corpus from 24 documents across six topics to **60 across
+twelve** was meant to be a routine sample-size improvement. It changed a
+result instead.
+
+**`poison-bait-b` stopped working.** Against 24 documents it held a top-2
+retrieval slot in all four of its target domains and scored 4 topics. Against
+60 it ranked **10th** for its own security trigger — beaten by focused clean
+documents — reached only 3 topics, and was no longer flagged. Detection fell
+from 75% to 50%.
+
+**That is not a detector regression, and scoring it as one would be wrong.**
+The detector's job is to flag documents that achieve broad cross-topic
+presence. A bait that no longer reaches the user has not been missed; it has
+failed. A positive sample in a detection benchmark has to be a working attack.
+
+**Why it failed is the interesting part.** A universal bait has a fixed vector
+budget: every domain it covers dilutes the others. Strengthening bait-b's
+security vocabulary won its security trigger back and *lost* its cycling one —
+tested directly, at four different weightings. Against a larger corpus, each
+domain has more focused competitors, so the budget no longer stretches.
+
+**Measured.** Of all **210** four-domain combinations available in the
+twelve-topic corpus, only **5 still permit a bait to hold a top-2 slot in all
+four domains** — about 2%. Corpus breadth raises the bar for constructing a
+universal bait by roughly 40x, without any detector involvement at all.
+
+**What was changed.** `poison-bait-b` was rewritten with balanced per-domain
+vocabulary so it lands all four domains again and remains a valid positive —
+what a real attacker facing a larger corpus would do. Detection returns to
+**3/4 (75%)**, now with **0 false positives across 60 documents** instead of
+24. The original text is described in-fixture so the finding is not lost.
+
+---
 
 ### 2a. Retention: closing the slow drip
 
