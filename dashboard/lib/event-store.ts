@@ -196,14 +196,30 @@ export async function persistEvents(events: MonolithEvent[]) {
   });
 }
 
-export async function listRecentEvents(tenantId: string, limit = 500): Promise<MonolithEvent[]> {
+export async function listRecentEvents(
+  tenantId: string,
+  limit = 500,
+  afterEventId?: string,
+): Promise<MonolithEvent[]> {
   const safeLimit = Math.max(1, Math.min(limit, 1_000));
+  const cursor = afterEventId && UUID_PATTERN.test(afterEventId) ? afterEventId : null;
   return withTenantDb(tenantId, async (db) => {
     const result = await db.query<EventRow>(
-      `select ${returningColumns} from monolith.security_events
-       where tenant_id = $1
-       order by received_at desc limit $2`,
-      [tenantId, safeLimit],
+      `with cursor as (
+         select received_at, event_id from monolith.security_events
+         where tenant_id = $1 and event_id = $3::uuid
+       )
+       select ${returningColumns} from monolith.security_events e
+       where e.tenant_id = $1
+         and (
+           $3::uuid is null
+           or not exists (select 1 from cursor)
+           or (e.received_at, e.event_id) > (
+             select received_at, event_id from cursor
+           )
+         )
+       order by e.received_at desc, e.event_id desc limit $2`,
+      [tenantId, safeLimit, cursor],
     );
     return result.rows.map(fromRow);
   });

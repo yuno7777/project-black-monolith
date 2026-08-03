@@ -10,7 +10,8 @@ export function createEventStream(
   req: Request,
   tenantId: string,
   broker: EventBrokerLike = getBroker(),
-  loadHistory: (tenantId: string) => Promise<MonolithEvent[]> = listRecentEvents,
+  loadHistory: (tenantId: string, afterEventId?: string) => Promise<MonolithEvent[]> =
+    (id, cursor) => listRecentEvents(id, 500, cursor),
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   let cleanup: (closeController?: boolean) => void = () => {};
@@ -49,8 +50,17 @@ export function createEventStream(
           cleanup();
         }
       };
-      const send = (event: MonolithEvent) =>
-        safeEnqueue(`data: ${JSON.stringify(event)}\n\n`);
+      const sentIds = new Set<string>();
+      const sentOrder: string[] = [];
+      const send = (event: MonolithEvent) => {
+        if (sentIds.has(event.event_id)) return;
+        sentIds.add(event.event_id);
+        sentOrder.push(event.event_id);
+        if (sentOrder.length > 2_048) {
+          sentIds.delete(sentOrder.shift()!);
+        }
+        safeEnqueue(`id: ${event.event_id}\ndata: ${JSON.stringify(event)}\n\n`);
+      };
 
       let replaying = true;
       let bufferedLive: MonolithEvent[] = [];
@@ -73,11 +83,10 @@ export function createEventStream(
       // by event_id, so an event committed during the query cannot be missed.
       // Hold live events until replay completes so the stream remains ordered
       // oldest-to-newest instead of interleaving new rows ahead of history.
-      const replayedIds = new Set<string>();
+      const lastEventId = req.headers.get("last-event-id")?.trim();
       try {
-        const history = await loadHistory(tenantId);
+        const history = await loadHistory(tenantId, lastEventId || undefined);
         for (const event of history.reverse()) {
-          replayedIds.add(event.event_id);
           send(event);
         }
       } catch {
@@ -85,7 +94,7 @@ export function createEventStream(
       } finally {
         replaying = false;
         for (const event of bufferedLive) {
-          if (!replayedIds.has(event.event_id)) send(event);
+          send(event);
         }
         bufferedLive = [];
       }

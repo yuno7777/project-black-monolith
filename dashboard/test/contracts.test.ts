@@ -371,9 +371,33 @@ test("event streams replay history before buffered live events without duplicate
   await reader.cancel();
 
   assert.match(chunks[0], new RegExp(oldEvent.event_id));
+  assert.match(chunks[0], new RegExp(`id: ${oldEvent.event_id}`));
   assert.match(chunks[1], new RegExp(caughtUpEvent.event_id));
   assert.match(chunks[2], new RegExp(liveEvent.event_id));
-  assert.equal(chunks.join("").match(new RegExp(caughtUpEvent.event_id, "g"))?.length, 1);
+  assert.equal(
+    chunks.join("").match(new RegExp(`"event_id":"${caughtUpEvent.event_id}"`, "g"))?.length,
+    1,
+  );
+});
+
+test("event streams pass Last-Event-ID to history replay", async () => {
+  const cursor = "00000000-0000-4000-8000-000000000010";
+  let observedCursor: string | undefined;
+  const stream = createEventStream(
+    new Request("http://localhost/api/events", {
+      headers: { "Last-Event-ID": cursor },
+    }),
+    "tenant-a",
+    { subscribe: () => () => {} },
+    async (_tenant, afterEventId) => {
+      observedCursor = afterEventId;
+      return [];
+    },
+  );
+  const reader = stream.getReader();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await reader.cancel();
+  assert.equal(observedCursor, cursor);
 });
 
 test("trust-model migration keeps the runtime role least-privileged", () => {
