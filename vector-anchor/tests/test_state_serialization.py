@@ -1,6 +1,7 @@
 import pytest
 
 from src.embedding import HashingEmbeddingFunction
+from src.detector_state import DetectorStateStore
 from src.frequency_tracker import FrequencyTracker
 from src.quarantine import Quarantine, QuarantinedDoc
 
@@ -62,3 +63,56 @@ def test_quarantine_snapshot_round_trip_and_duplicate_rejection():
     assert restored.is_quarantined("doc-1")
     with pytest.raises(ValueError, match="duplicate"):
         Quarantine.from_snapshot(snapshot + snapshot)
+
+
+def test_detector_state_store_persists_tracker_and_quarantine_atomically(tmp_path):
+    store = DetectorStateStore(
+        str(tmp_path / "detector.json"),
+        min_distinct_topics=2,
+        topic_similarity=0.2,
+        window_size=5,
+    )
+    tracker = FrequencyTracker(
+        min_distinct_topics=2,
+        topic_similarity=0.2,
+        window_size=5,
+    )
+    tracker.record_query(["doc"], [1.0, 0.0])
+    quarantine = Quarantine()
+    quarantine.add(
+        QuarantinedDoc("doc", "frequency_anomaly", 2, "preview", 100)
+    )
+
+    store.save(tracker, quarantine)
+    restored_tracker, restored_quarantine = store.load()
+
+    assert restored_tracker.snapshot() == tracker.snapshot()
+    assert restored_quarantine.is_quarantined("doc")
+    assert not (tmp_path / "detector.json.tmp").exists()
+
+
+def test_detector_state_policy_changes_require_an_explicit_reset(tmp_path):
+    path = str(tmp_path / "detector.json")
+    original = DetectorStateStore(
+        path,
+        min_distinct_topics=2,
+        topic_similarity=0.2,
+        window_size=5,
+    )
+    original.save(
+        FrequencyTracker(
+            min_distinct_topics=2,
+            topic_similarity=0.2,
+            window_size=5,
+        ),
+        Quarantine(),
+    )
+    changed = DetectorStateStore(
+        path,
+        min_distinct_topics=3,
+        topic_similarity=0.2,
+        window_size=5,
+    )
+
+    with pytest.raises(ValueError, match="different policy"):
+        changed.load()

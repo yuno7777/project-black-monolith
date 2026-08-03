@@ -49,6 +49,7 @@ class Config:
     dashboard_url: str | None
     event_token: str | None
     event_outbox_path: str
+    detector_state_path: str
     admin_token: str | None
 
     # --- correlation ----------------------------------------------------
@@ -101,6 +102,8 @@ def _validate_config(cfg: Config) -> Config:
         raise ValueError("MONOLITH_COLLECTION must not be blank")
     if not cfg.chroma_path.strip():
         raise ValueError("MONOLITH_CHROMA_PATH must not be blank")
+    if not cfg.detector_state_path.strip():
+        raise ValueError("MONOLITH_DETECTOR_STATE_PATH must not be blank")
     if bool(cfg.dashboard_url) != bool(cfg.event_token):
         raise ValueError(
             "MONOLITH_DASHBOARD_URL and MONOLITH_EVENT_TOKEN must be configured together"
@@ -139,6 +142,9 @@ def load_config() -> Config:
         dashboard_url=os.environ.get("MONOLITH_DASHBOARD_URL") or None,
         event_token=os.environ.get("MONOLITH_EVENT_TOKEN") or None,
         event_outbox_path=os.environ.get("MONOLITH_EVENT_OUTBOX_PATH", "./event_outbox.db"),
+        detector_state_path=os.environ.get(
+            "MONOLITH_DETECTOR_STATE_PATH", "./detector_state.json"
+        ),
         admin_token=os.environ.get("MONOLITH_ADMIN_TOKEN") or None,
         tenant_id=os.environ.get("MONOLITH_TENANT_ID", "default"),
         agent_id=os.environ.get("MONOLITH_AGENT_ID") or None,
