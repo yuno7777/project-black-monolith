@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .config import MODULE_NAME, load_config
 from .events import context_from_headers, make_emitter
+from .detector_state import DetectorStateStore
 from .frequency_tracker import FrequencyTracker
 from .quarantine import Quarantine
 from .retriever_proxy import RetrieverProxy
@@ -97,12 +98,22 @@ def build_proxy() -> RetrieverProxy:
     )
     embed_fn = build_embedding_function(cfg)
     collection = get_or_create_collection(cfg, embedding_function=embed_fn)
-    tracker = FrequencyTracker(
+    state_store = DetectorStateStore(
+        cfg.detector_state_path,
         min_distinct_topics=cfg.min_distinct_topics,
         topic_similarity=cfg.topic_similarity,
         window_size=cfg.window_size,
     )
-    quarantine = Quarantine()
+    restored = state_store.load()
+    if restored:
+        tracker, quarantine = restored
+    else:
+        tracker = FrequencyTracker(
+            min_distinct_topics=cfg.min_distinct_topics,
+            topic_similarity=cfg.topic_similarity,
+            window_size=cfg.window_size,
+        )
+        quarantine = Quarantine()
     return RetrieverProxy(
         collection=collection,
         embed_fn=embed_fn,
@@ -110,6 +121,7 @@ def build_proxy() -> RetrieverProxy:
         quarantine=quarantine,
         cfg=cfg,
         emit=emit,
+        state_store=state_store,
     )
 
 

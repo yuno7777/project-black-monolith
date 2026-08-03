@@ -126,6 +126,7 @@ services:
       MONOLITH_DASHBOARD_URL: "http://dashboard:3000/api/ingest"
       MONOLITH_EVENT_TOKEN: ${MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR:?set MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR in .env}
       MONOLITH_EVENT_OUTBOX_PATH: /var/lib/monolith/outbox.db
+      MONOLITH_DETECTOR_STATE_PATH: /var/lib/monolith/detector_state.json
       MONOLITH_ADMIN_TOKEN: ${MONOLITH_ADMIN_TOKEN:?set MONOLITH_ADMIN_TOKEN in .env}
       MONOLITH_TENANT_ID: ${MONOLITH_TENANT_ID:-default}
       # Which agent these detections belong to. The session id is NOT set

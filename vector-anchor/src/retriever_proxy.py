@@ -14,6 +14,7 @@ import threading
 from typing import Any
 
 from .config import Config
+from .detector_state import DetectorStateStore
 from .events import EventContext, now_ms
 from .frequency_tracker import FrequencyTracker
 from .quarantine import Quarantine, QuarantinedDoc
@@ -35,6 +36,7 @@ class RetrieverProxy:
         quarantine: Quarantine,
         cfg: Config,
         emit,
+        state_store: DetectorStateStore | None = None,
     ):
         self.collection = collection
         self.embed_fn = embed_fn
@@ -42,6 +44,7 @@ class RetrieverProxy:
         self.quarantine = quarantine
         self.cfg = cfg
         self.emit = emit
+        self.state_store = state_store
         # FastAPI runs synchronous endpoints in a thread pool. Tracker and
         # quarantine updates form one detector decision and must not interleave
         # with another retrieval or an administrative reset.
@@ -134,6 +137,7 @@ class RetrieverProxy:
 
             served = clean[:k]
             quarantine_size = len(self.quarantine)
+            self._persist_state()
 
         query_sha256 = _content_fingerprint(query)
         self.emit(
@@ -179,6 +183,7 @@ class RetrieverProxy:
                 window_size=self.cfg.window_size,
             )
             self.quarantine = Quarantine()
+            self._persist_state()
 
     def upsert_documents(self, documents: list[tuple[str, str]]) -> int:
         """Replace corpus documents and invalidate detector state atomically.
@@ -196,4 +201,9 @@ class RetrieverProxy:
             )
             self.tracker.forget_documents(ids)
             self.quarantine.remove_many(ids)
+            self._persist_state()
             return self.collection.count()
+
+    def _persist_state(self) -> None:
+        if self.state_store:
+            self.state_store.save(self.tracker, self.quarantine)
