@@ -1,7 +1,6 @@
 // POST /api/ingest — the endpoint each Monolith module POSTs its events to.
 // Accepts a single event object or an array of them.
 
-import { getBroker } from "@/lib/event-ingest";
 import { normalizeEvent, persistEvents, checkDatabase } from "@/lib/event-store";
 import { authenticateIngest } from "@/lib/ingest-auth";
 import { jsonBodyError, readJsonBody } from "@/lib/request-body";
@@ -46,10 +45,6 @@ export async function POST(req: Request) {
 
   try {
     const persisted = await persistEvents(events);
-    const broker = getBroker();
-    for (const result of persisted) {
-      if (result.inserted) broker.ingest(result.event);
-    }
     return Response.json({
       accepted: persisted.filter((result) => result.inserted).length,
       duplicates: persisted.filter((result) => !result.inserted).length,
