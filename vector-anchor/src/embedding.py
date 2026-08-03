@@ -26,11 +26,7 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+")
 # unrelated queries (e.g. two questions that merely share "how should I"),
 # which would wrongly merge distinct topics in the frequency tracker.
 _STOPWORDS = frozenset(
-    """
-    a an and are as at be by for from how i in into is it its my of on or over
-    should so than that the their them then there these this to until up was
-    what when where which who will with you your do does did much many long
-    """.split()
+    ["a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "how", "i", "in", "into", "is", "it", "its", "my", "of", "on", "or", "over", "should", "so", "than", "that", "the", "their", "them", "then", "there", "these", "this", "to", "until", "up", "was", "what", "when", "where", "which", "who", "will", "with", "you", "your", "do", "does", "did", "much", "many", "long"]
 )
 
 
@@ -82,7 +78,7 @@ def cosine(a: list[float], b: list[float]) -> float:
         raise ValueError("embedding vectors must be non-empty and have equal dimensions")
     if not all(math.isfinite(value) for value in (*a, *b)):
         raise ValueError("embedding vectors must contain only finite values")
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
     na = sum(x * x for x in a) ** 0.5
     nb = sum(y * y for y in b) ** 0.5
     if na == 0.0 or nb == 0.0:

@@ -22,7 +22,6 @@ from .config import MODULE_NAME, load_config
 from .events import context_from_headers, make_emitter
 from .stream_proxy import StreamAuditor
 
-
 MAX_PROMPT_BYTES = 64 * 1024
 MAX_BASELINE_TOKEN_COUNT = 2_147_483_647
 MAX_BASELINE_TOTAL = 100_000_000_000_000

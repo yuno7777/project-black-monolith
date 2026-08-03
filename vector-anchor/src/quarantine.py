@@ -52,35 +52,40 @@ class Quarantine:
         ]
 
     @classmethod
-    def from_snapshot(cls, data: list[dict]) -> "Quarantine":
+    def from_snapshot(cls, data: list[dict]) -> Quarantine:
         if not isinstance(data, list) or len(data) > 100_000:
             raise ValueError("invalid quarantine state")
         quarantine = cls()
         for raw in data:
             if not isinstance(raw, dict):
                 raise ValueError("invalid quarantine entry")
-            doc = QuarantinedDoc(
-                doc_id=raw.get("doc_id"),
-                reason=raw.get("reason"),
-                score=raw.get("score"),
-                preview=raw.get("preview"),
-                quarantined_at_ms=raw.get("quarantined_at_ms"),
-            )
+            doc_id = raw.get("doc_id")
+            reason = raw.get("reason")
+            score = raw.get("score")
+            preview = raw.get("preview")
+            quarantined_at_ms = raw.get("quarantined_at_ms")
             if (
-                not isinstance(doc.doc_id, str)
-                or not 1 <= len(doc.doc_id) <= 128
-                or not isinstance(doc.reason, str)
-                or not 1 <= len(doc.reason) <= 128
-                or isinstance(doc.score, bool)
-                or not isinstance(doc.score, int)
-                or doc.score < 0
-                or not isinstance(doc.preview, str)
-                or len(doc.preview) > 160
-                or isinstance(doc.quarantined_at_ms, bool)
-                or not isinstance(doc.quarantined_at_ms, int)
-                or doc.quarantined_at_ms < 0
+                not isinstance(doc_id, str)
+                or not 1 <= len(doc_id) <= 128
+                or not isinstance(reason, str)
+                or not 1 <= len(reason) <= 128
+                or isinstance(score, bool)
+                or not isinstance(score, int)
+                or score < 0
+                or not isinstance(preview, str)
+                or len(preview) > 160
+                or isinstance(quarantined_at_ms, bool)
+                or not isinstance(quarantined_at_ms, int)
+                or quarantined_at_ms < 0
             ):
                 raise ValueError("invalid quarantine entry fields")
+            doc = QuarantinedDoc(
+                doc_id=doc_id,
+                reason=reason,
+                score=score,
+                preview=preview,
+                quarantined_at_ms=quarantined_at_ms,
+            )
             if not quarantine.add(doc):
                 raise ValueError("duplicate quarantine entry")
         return quarantine

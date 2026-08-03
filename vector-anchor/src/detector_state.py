@@ -9,7 +9,6 @@ from pathlib import Path
 from .frequency_tracker import FrequencyTracker
 from .quarantine import Quarantine
 
-
 MAX_STATE_BYTES = 32 * 1024 * 1024
 
 
@@ -23,6 +22,9 @@ class DetectorStateStore:
         window_size: int,
     ) -> None:
         self.path = Path(path)
+        self.min_distinct_topics = min_distinct_topics
+        self.topic_similarity = topic_similarity
+        self.window_size = window_size
         self.policy = {
             "min_distinct_topics": min_distinct_topics,
             "topic_similarity": topic_similarity,
@@ -42,17 +44,17 @@ class DetectorStateStore:
             raise ValueError(
                 "persisted detector state uses different policy thresholds; reset it explicitly"
             )
-        if not isinstance(data.get("tracker"), dict) or not isinstance(
-            data.get("quarantine"), list
-        ):
+        tracker_data = data.get("tracker")
+        quarantine_data = data.get("quarantine")
+        if not isinstance(tracker_data, dict) or not isinstance(quarantine_data, list):
             raise ValueError("detector state payload is incomplete")
         tracker = FrequencyTracker.from_snapshot(
-            data.get("tracker"),
-            min_distinct_topics=self.policy["min_distinct_topics"],
-            topic_similarity=self.policy["topic_similarity"],
-            window_size=self.policy["window_size"],
+            tracker_data,
+            min_distinct_topics=self.min_distinct_topics,
+            topic_similarity=self.topic_similarity,
+            window_size=self.window_size,
         )
-        quarantine = Quarantine.from_snapshot(data.get("quarantine"))
+        quarantine = Quarantine.from_snapshot(quarantine_data)
         return tracker, quarantine
 
     def save(self, tracker: FrequencyTracker, quarantine: Quarantine) -> None:

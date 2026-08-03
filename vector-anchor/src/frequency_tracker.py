@@ -17,9 +17,9 @@ dependency, so the detection logic is unit-testable in isolation.
 
 from __future__ import annotations
 
+import math
 from collections import deque
 from dataclasses import dataclass, field
-import math
 
 from .embedding import cosine
 
@@ -156,7 +156,7 @@ class FrequencyTracker:
         min_distinct_topics: int,
         topic_similarity: float,
         window_size: int,
-    ) -> "FrequencyTracker":
+    ) -> FrequencyTracker:
         if data.get("version") != 1:
             raise ValueError("unsupported frequency tracker state version")
         raw_window = data.get("window")

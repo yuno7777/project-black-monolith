@@ -15,13 +15,12 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .config import MODULE_NAME, load_config
-from .events import context_from_headers, make_emitter
 from .detector_state import DetectorStateStore
+from .events import context_from_headers, make_emitter
 from .frequency_tracker import FrequencyTracker
 from .quarantine import Quarantine
 from .retriever_proxy import RetrieverProxy
 from .store import build_embedding_function, get_or_create_collection
-
 
 MAX_QUERY_LENGTH = 16_384
 MAX_DOCUMENT_TEXT_BYTES = 64 * 1024

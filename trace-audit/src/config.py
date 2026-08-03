@@ -9,8 +9,8 @@ patterns before anything is logged or persisted.
 
 from __future__ import annotations
 
-import os
 import math
+import os
 from dataclasses import dataclass
 
 from .divergence_monitor import DEFAULT_KL_THRESHOLD

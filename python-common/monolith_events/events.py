@@ -11,10 +11,10 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Mapping
-
+from typing import Any, Literal
 
 Severity = Literal["info", "warning", "critical"]
 MAX_ID_LENGTH = 128
