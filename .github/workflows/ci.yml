@@ -181,7 +181,24 @@ jobs:
         run: ./run_full_demo.sh
       - name: Dump container logs on failure
         if: failure()
-        run: docker compose logs --no-color --tail=120
+        shell: bash
+        run: |
+          diagnostics="$({ docker compose ps -a; docker compose logs --no-color --tail=120; } 2>&1 | tail -n 100)"
+          printf '%s\n' "$diagnostics"
+
+          # Raw public logs require a signed-in GitHub session. Mirror a bounded,
+          # secret-scrubbed tail into the check annotation so unattended failures
+          # remain diagnosable through the public checks API.
+          while IFS='=' read -r key value; do
+            if [[ -n "$key" && -n "$value" ]]; then
+              diagnostics="${diagnostics//"$value"/<redacted>}"
+            fi
+          done < .env
+          diagnostics="${diagnostics: -8000}"
+          diagnostics="${diagnostics//'%'/'%25'}"
+          diagnostics="${diagnostics//$'\r'/'%0D'}"
+          diagnostics="${diagnostics//$'\n'/'%0A'}"
+          echo "::error title=Compose startup diagnostics::$diagnostics"
       - name: Tear the stack down
         if: always()
         run: docker compose down -v
