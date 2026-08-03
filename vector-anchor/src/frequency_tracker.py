@@ -53,6 +53,9 @@ class FrequencyTracker:
         # Rolling window of query ids; evicting the oldest also removes its
         # contribution from every document record.
         self._window: deque[int] = deque()
+        # Reverse index keeps eviction proportional to the documents returned
+        # by the evicted query instead of scanning the entire corpus.
+        self._query_docs: dict[int, set[str]] = {}
         self._next_query_id = 0
 
     def record_query(
@@ -69,6 +72,7 @@ class FrequencyTracker:
         qid = self._next_query_id
         self._next_query_id += 1
         self._window.append(qid)
+        self._query_docs[qid] = set(ranked_doc_ids)
         for doc_id in ranked_doc_ids:
             rec = self._docs.setdefault(doc_id, _DocRecord())
             rec.queries[qid] = query_embedding
@@ -78,7 +82,10 @@ class FrequencyTracker:
         while len(self._window) > self.window_size:
             old_qid = self._window.popleft()
             empty_docs: list[str] = []
-            for doc_id, rec in self._docs.items():
+            for doc_id in self._query_docs.pop(old_qid, set()):
+                rec = self._docs.get(doc_id)
+                if rec is None:
+                    continue
                 rec.queries.pop(old_qid, None)
                 if not rec.queries:
                     empty_docs.append(doc_id)
@@ -122,4 +129,10 @@ class FrequencyTracker:
     def forget_documents(self, doc_ids: list[str]) -> None:
         """Discard history for documents whose corpus content was replaced."""
         for doc_id in doc_ids:
-            self._docs.pop(doc_id, None)
+            record = self._docs.pop(doc_id, None)
+            if record is None:
+                continue
+            for query_id in record.queries:
+                documents = self._query_docs.get(query_id)
+                if documents is not None:
+                    documents.discard(doc_id)
