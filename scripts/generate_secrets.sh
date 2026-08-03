@@ -5,8 +5,8 @@
 #   bash scripts/generate_secrets.sh --force  # regenerate, discarding the old one
 #
 # The values are development credentials for a single-machine stack: the
-# Postgres password, three per-module ingest tokens, VectorAnchor admin token,
-# and operator bootstrap token. .env is gitignored — never commit it, and
+# Postgres superuser/runtime passwords, three per-module ingest tokens, and the
+# VectorAnchor admin and operator bootstrap tokens. .env is gitignored — never commit it, and
 # regenerate before using this anywhere but a local machine.
 #
 # Regenerating invalidates the tokens the running containers hold, so
@@ -34,6 +34,7 @@ cat > .env <<EOF
 # Local development secrets — generated $(date +%Y-%m-%d). Gitignored; never commit.
 # Regenerate any time with: bash scripts/generate_secrets.sh --force
 MONOLITH_POSTGRES_PASSWORD=$(gen)
+MONOLITH_DATABASE_RUNTIME_PASSWORD=$(gen)
 MONOLITH_EVENT_TOKEN_MCP_SHIELD=$(gen)
 MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR=$(gen)
 MONOLITH_EVENT_TOKEN_TRACE_AUDIT=$(gen)
@@ -46,4 +47,4 @@ MONOLITH_OPERATOR_NAME=operator
 MONOLITH_OPERATOR_TOKEN=$(gen)
 EOF
 
-echo "wrote .env with 6 random secrets (values not printed)"
+echo "wrote .env with 7 random secrets (values not printed)"
