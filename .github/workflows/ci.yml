@@ -36,7 +36,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
-          toolchain: stable
+          toolchain: "1.86"
           components: rustfmt, clippy
       # The outbox verification spawns fixtures/fake_mcp_server.py as the
       # proxied server and fixtures/fake_ingest.js as the stand-in dashboard.

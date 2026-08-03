@@ -2,7 +2,7 @@
 # Multi-stage: compile a release binary, then a slim runtime that also has
 # python3 (to run the fixture MCP server) so the rug-pull demo runs in-container.
 
-FROM rust:1.85-slim AS build
+FROM rust:1.86-slim AS build
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
