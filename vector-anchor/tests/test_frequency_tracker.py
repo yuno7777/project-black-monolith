@@ -23,7 +23,10 @@ def emb(text: str):
 
 def make_tracker():
     return FrequencyTracker(
-        min_distinct_topics=4, topic_similarity=0.30, window_size=50
+        min_distinct_topics=4,
+        topic_similarity=0.30,
+        retention_horizon=500,
+        max_queries_per_doc=64,
     )
 
 
@@ -67,10 +70,16 @@ def test_similar_queries_count_as_one_topic():
     assert t.distinct_topic_count("doc") == 1
 
 
-def test_rolling_window_evicts_old_queries():
-    """Old queries fall out of the window and stop contributing to the
-    topic count."""
-    t = FrequencyTracker(min_distinct_topics=4, topic_similarity=0.30, window_size=3)
+def test_hits_older_than_the_horizon_stop_counting():
+    """A hit beyond the retention horizon no longer contributes to the topic
+    count. The horizon is now the detection reach — see test_evasion.py for
+    what that costs an attacker who drips slower than it."""
+    t = FrequencyTracker(
+        min_distinct_topics=4,
+        topic_similarity=0.30,
+        retention_horizon=3,
+        max_queries_per_doc=64,
+    )
     topics = [
         "prune tomato garden",
         "red giant star galaxy",
@@ -79,19 +88,29 @@ def test_rolling_window_evicts_old_queries():
     ]
     for q in topics:
         t.record_query(["doc"], emb(q))
-    # Window holds only the last 3 queries, so at most 3 distinct topics
-    # remain — never enough to flag.
+    # Only the last 3 queries are still within the horizon, so at most 3
+    # distinct topics remain — never enough to flag.
     assert t.distinct_topic_count("doc") <= 3
     assert not t.is_anomalous("doc")
 
 
-def test_rolling_window_removes_empty_document_records():
-    t = FrequencyTracker(min_distinct_topics=2, topic_similarity=0.30, window_size=1)
+def test_expired_document_records_are_swept():
+    """High-cardinality clean traffic must not leave one empty record per
+    document forever. Pruning is lazy (on touch) with a periodic sweep, so
+    drive enough queries to trigger one."""
+    from src.frequency_tracker import SWEEP_INTERVAL
+
+    t = FrequencyTracker(
+        min_distinct_topics=2,
+        topic_similarity=0.30,
+        retention_horizon=1,
+        max_queries_per_doc=64,
+    )
     t.record_query(["old-doc"], emb("garden soil"))
-    t.record_query(["current-doc"], emb("galaxy star"))
+    for i in range(SWEEP_INTERVAL):
+        t.record_query([f"filler-{i}"], emb(f"galaxy star cluster {i}"))
 
     assert "old-doc" not in t._docs
-    assert set(t._docs) == {"current-doc"}
 
 
 def test_replaced_documents_lose_old_frequency_history():
@@ -121,7 +140,8 @@ def test_topic_score_is_independent_of_query_arrival_order():
         tracker = FrequencyTracker(
             min_distinct_topics=2,
             topic_similarity=0.7,
-            window_size=10,
+            retention_horizon=500,
+            max_queries_per_doc=64,
         )
         for vector in order:
             tracker.record_query(["doc"], vector)

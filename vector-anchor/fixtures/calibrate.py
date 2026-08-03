@@ -55,7 +55,8 @@ def _tracker() -> FrequencyTracker:
     return FrequencyTracker(
         min_distinct_topics=CFG.min_distinct_topics,
         topic_similarity=CFG.topic_similarity,
-        window_size=CFG.window_size,
+        retention_horizon=CFG.retention_horizon,
+        max_queries_per_doc=CFG.max_queries_per_doc,
     )
 
 
@@ -86,7 +87,8 @@ def main() -> None:
     lines.append(f"| `top_rank_threshold` (a doc must rank in the top-N) | {CFG.top_rank_threshold} |")
     lines.append(f"| `topic_similarity` (cosine ≥ ⇒ same topic) | {CFG.topic_similarity} |")
     lines.append(f"| `min_distinct_topics` (flag threshold) | {CFG.min_distinct_topics} |")
-    lines.append(f"| `window_size` | {CFG.window_size} |")
+    lines.append(f"| `retention_horizon` | {CFG.retention_horizon} |")
+    lines.append(f"| `max_queries_per_doc` | {CFG.max_queries_per_doc} |")
     lines.append("")
     lines.append("## False-positive test\n")
     lines.append(f"{len(CLEAN_QUERIES)} diverse clean queries across six topics, "

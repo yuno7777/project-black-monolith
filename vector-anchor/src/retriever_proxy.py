@@ -180,7 +180,8 @@ class RetrieverProxy:
             self.tracker = FrequencyTracker(
                 min_distinct_topics=self.cfg.min_distinct_topics,
                 topic_similarity=self.cfg.topic_similarity,
-                window_size=self.cfg.window_size,
+                retention_horizon=self.cfg.retention_horizon,
+                max_queries_per_doc=self.cfg.max_queries_per_doc,
             )
             self.quarantine = Quarantine()
             self._persist_state()
