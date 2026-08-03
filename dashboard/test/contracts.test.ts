@@ -617,7 +617,8 @@ test("Compose separates migration authority from the dashboard runtime", () => {
   assert.match(compose, /condition:\s+service_completed_successfully/);
   assert.match(compose, /x-service-hardening:[\s\S]*read_only:\s+true/);
   assert.match(compose, /no-new-privileges:true/);
-  assert.equal(compose.match(/<<:\s+\*service-hardening/g)?.length, 6);
+  assert.equal(compose.match(/<<:\s+\*service-hardening/g)?.length, 7);
+  assert.match(compose, /alert-dispatcher:[\s\S]*scripts\/dispatch-alerts\.mjs/);
   assert.doesNotMatch(dockerfile, /migrate\.mjs\s*&&\s*node server\.js/);
   assert.match(bootstrap, /create role monolith_runtime login password %L/i);
   assert.match(bootstrap, /alter role monolith_runtime with login password %L/i);
