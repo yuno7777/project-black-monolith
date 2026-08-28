@@ -18,6 +18,7 @@ from typing import Any, Literal
 
 Severity = Literal["info", "warning", "critical"]
 MAX_ID_LENGTH = 128
+MAX_EVENT_PAYLOAD_BYTES = 256 * 1024
 AGENT_HEADER = "x-monolith-agent-id"
 TENANT_HEADER = "x-monolith-tenant-id"
 SESSION_HEADER = "x-monolith-session-id"
@@ -127,6 +128,16 @@ class EventOutbox:
                 )
 
     def enqueue(self, event_id: str, payload: bytes) -> None:
+        if (
+            not event_id
+            or len(event_id) > MAX_ID_LENGTH
+            or any(not character.isprintable() for character in event_id)
+        ):
+            raise ValueError(f"event_id must be 1-{MAX_ID_LENGTH} printable characters")
+        if not payload or len(payload) > MAX_EVENT_PAYLOAD_BYTES:
+            raise ValueError(
+                f"event payload must be 1-{MAX_EVENT_PAYLOAD_BYTES} bytes"
+            )
         timestamp = now_ms()
         with self._lock:
             self._connection.execute(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from monolith_events.events import EventContext, EventOutbox, make_emitter
 
 
@@ -62,6 +63,21 @@ def test_successful_delivery_removes_the_spooled_record(tmp_path):
 
     assert delivery.stats()["pending"] == 0
     assert delivery.stats()["dead"] == 0
+    delivery.close()
+
+
+def test_outbox_rejects_oversized_or_malformed_records(tmp_path):
+    delivery = outbox(tmp_path)
+    for event_id, payload in [
+        ("", b"{}"),
+        ("event\nforged", b"{}"),
+        ("x" * 129, b"{}"),
+        ("event-1", b""),
+        ("event-1", b"x" * (256 * 1024 + 1)),
+    ]:
+        with pytest.raises(ValueError):
+            delivery.enqueue(event_id, payload)
+    assert delivery.stats()["pending"] == 0
     delivery.close()
 
 
