@@ -150,12 +150,20 @@ def test_topic_score_is_independent_of_query_arrival_order():
     assert scores == [2, 2, 2]
 
 
-@pytest.mark.parametrize("vector", [[], [float("nan")], [float("inf")]])
+@pytest.mark.parametrize("vector", [[], [float("nan")], [float("inf")], [True]])
 def test_invalid_embeddings_cannot_enter_detector_state(vector):
     tracker = make_tracker()
-    with pytest.raises(ValueError, match="non-empty and finite"):
+    with pytest.raises(ValueError, match="non-empty, numeric, and finite"):
         tracker.record_query(["doc"], vector)
     assert tracker._docs == {}
+
+
+def test_embedding_dimensions_cannot_change_midstream():
+    tracker = make_tracker()
+    tracker.record_query(["doc"], [1.0, 0.0])
+    with pytest.raises(ValueError, match="dimensions must remain consistent"):
+        tracker.record_query(["doc"], [1.0])
+    assert tracker.evaluate("doc").total_queries == 1
 
 
 def test_recorded_embeddings_are_not_mutated_by_the_caller():
