@@ -42,8 +42,12 @@ class DetectorStateStore:
         inspection rather than overwritten by the next save.
         """
         target = self.path.with_suffix(self.path.suffix + ".unreadable")
-        if target.exists():
-            target.unlink()
+        suffix = 1
+        while target.exists():
+            target = self.path.with_suffix(
+                self.path.suffix + f".unreadable.{suffix}"
+            )
+            suffix += 1
         os.replace(self.path, target)
         return str(target)
 
