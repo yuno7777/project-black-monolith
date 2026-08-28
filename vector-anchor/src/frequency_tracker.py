@@ -81,6 +81,7 @@ class FrequencyTracker:
         self.max_queries_per_doc = max_queries_per_doc
         self._docs: dict[str, _DocRecord] = {}
         self._next_query_id = 0
+        self._embedding_dim: int | None = None
 
     # -- recording ---------------------------------------------------------
 
@@ -90,12 +91,19 @@ class FrequencyTracker:
         """Record that ``ranked_doc_ids`` (already limited to the top ranks)
         were returned for a query with ``query_embedding``."""
         if not query_embedding or not all(
-            math.isfinite(value) for value in query_embedding
+            not isinstance(value, bool)
+            and isinstance(value, (int, float))
+            and math.isfinite(value)
+            for value in query_embedding
         ):
-            raise ValueError("query embedding must be non-empty and finite")
+            raise ValueError("query embedding must be non-empty, numeric, and finite")
+        if self._embedding_dim is None:
+            self._embedding_dim = len(query_embedding)
+        elif len(query_embedding) != self._embedding_dim:
+            raise ValueError("query embedding dimensions must remain consistent")
         # Do not retain a caller-owned mutable list as detector state, and
         # normalize once here so every later comparison is a dot product.
-        query_embedding = normalize(query_embedding)
+        query_embedding = normalize([float(value) for value in query_embedding])
         qid = self._next_query_id
         self._next_query_id += 1
         for doc_id in ranked_doc_ids:
@@ -276,6 +284,10 @@ class FrequencyTracker:
                     )
                 ):
                     raise ValueError("invalid persisted query embedding")
+                if tracker._embedding_dim is None:
+                    tracker._embedding_dim = len(raw_embedding)
+                elif len(raw_embedding) != tracker._embedding_dim:
+                    raise ValueError("persisted query embedding dimensions are inconsistent")
                 queries[query_id] = normalize([float(value) for value in raw_embedding])
             if queries:
                 tracker._docs[raw_doc_id] = _DocRecord(queries=queries)

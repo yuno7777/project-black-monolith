@@ -52,6 +52,22 @@ def test_tracker_rejects_state_referring_to_queries_that_never_happened():
         )
 
 
+def test_tracker_rejects_mixed_persisted_embedding_dimensions():
+    state = {
+        "version": 2,
+        "next_query_id": 2,
+        "documents": {"doc": {"0": [1.0], "1": [1.0, 0.0]}},
+    }
+    with pytest.raises(ValueError, match="dimensions are inconsistent"):
+        FrequencyTracker.from_snapshot(
+            state,
+            min_distinct_topics=2,
+            topic_similarity=0.2,
+            retention_horizon=500,
+            max_queries_per_doc=64,
+        )
+
+
 def test_quarantine_snapshot_round_trip_and_duplicate_rejection():
     quarantine = Quarantine()
     quarantine.add(

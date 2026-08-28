@@ -95,7 +95,7 @@ def unit_dot(a: list[float], b: list[float]) -> float:
     below costs about 4x as much per call — three extra passes over the vectors
     to re-check finiteness and recompute two norms that do not change.
     """
-    return sum(x * y for x, y in zip(a, b))
+    return sum(x * y for x, y in zip(a, b, strict=True))
 
 
 def cosine(a: list[float], b: list[float]) -> float:
