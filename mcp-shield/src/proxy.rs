@@ -1004,8 +1004,14 @@ mod tests {
         let mut store = temp_store("malformed");
         let msg = JsonRpcMessage::parse(r#"{"jsonrpc":"2.0","id":2,"result":{"unexpected":true}}"#)
             .expect("test message must parse");
-        let outcome =
-            analyze_tools_list(&msg, &mut store, KEY, ShieldMode::Enforce, FirstContact::Trust).expect("analysis ok");
+        let outcome = analyze_tools_list(
+            &msg,
+            &mut store,
+            KEY,
+            ShieldMode::Enforce,
+            FirstContact::Trust,
+        )
+        .expect("analysis ok");
         assert!(
             matches!(outcome, AnalysisOutcome::Malformed),
             "a tools/list response without result.tools must be reported as \
@@ -1387,8 +1393,14 @@ mod tests {
         // remove the tool and leave the baseline empty.
         let mut store = temp_store("first-contact");
         let msg = tools_list_response(POISONED_DESC);
-        let outcome =
-            analyze_tools_list(&msg, &mut store, KEY, ShieldMode::Enforce, FirstContact::Trust).expect("analysis ok");
+        let outcome = analyze_tools_list(
+            &msg,
+            &mut store,
+            KEY,
+            ShieldMode::Enforce,
+            FirstContact::Trust,
+        )
+        .expect("analysis ok");
         let AnalysisOutcome::Analyzed {
             rewritten: Some(line),
         } = outcome
@@ -1528,7 +1540,10 @@ mod tests {
         let AnalysisOutcome::Analyzed { rewritten } = outcome else {
             panic!("expected the response to be analyzed");
         };
-        assert!(rewritten.is_none(), "trust mode forwards a clean first sighting");
+        assert!(
+            rewritten.is_none(),
+            "trust mode forwards a clean first sighting"
+        );
         assert!(store.contains("read_file"));
         assert!(!store.is_pending("read_file"));
     }
@@ -1577,8 +1592,14 @@ mod tests {
     fn clean_first_sighting_registers_without_rewrite() {
         let mut store = temp_store("clean");
         let msg = tools_list_response(CLEAN_DESC);
-        let outcome =
-            analyze_tools_list(&msg, &mut store, KEY, ShieldMode::Enforce, FirstContact::Trust).expect("analysis ok");
+        let outcome = analyze_tools_list(
+            &msg,
+            &mut store,
+            KEY,
+            ShieldMode::Enforce,
+            FirstContact::Trust,
+        )
+        .expect("analysis ok");
         assert!(matches!(
             outcome,
             AnalysisOutcome::Analyzed { rewritten: None }
