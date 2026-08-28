@@ -1,9 +1,24 @@
 //! Minimal JSON-RPC 2.0 message model for the MCP stdio transport.
 //!
-//! MCP-Shield is a *transparent* proxy: every line is forwarded byte-for-byte
-//! untouched. This module only parses a copy of each line so the proxy can
-//! log it, correlate requests with responses, and hand `tools/list` results
-//! to the fingerprinting / sanitizing layers.
+//! WHAT THIS FILE IS
+//! -----------------
+//! The message type the proxy uses to LOOK at the traffic. MCP-Shield is a
+//! *transparent* proxy: every line is forwarded byte-for-byte untouched. But
+//! to detect a rug pull it must understand what it is forwarding, so it
+//! parses a COPY of each line into this struct — enough to log it, correlate
+//! requests with responses (via the id), and hand `tools/list` results to the
+//! fingerprinting / sanitizing layers.
+//!
+//! WHY SO LOOSE
+//! ------------
+//! Real MCP traffic has requests, notifications, and responses, and JSON-RPC
+//! ids can be numbers OR strings. Every field is optional so one struct
+//! represents all of them. The proxy never re-serializes the original line —
+//! the original bytes go through unchanged — so even messages this model
+//! cannot fully understand still pass through fine (fail-open transparency).
+//!
+//! Called from: proxy.rs (both forwarding directions parse every line),
+//! http_transport.rs (validates + emits JSON-RPC over HTTP).
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -13,6 +28,9 @@ const MAX_CORRELATION_ID_BYTES: usize = 256;
 const MAX_LOG_FIELD_CHARS: usize = 128;
 
 fn safe_log_field(value: &str) -> String {
+    /// Bound and sanitize untrusted text before it goes into a log line:
+    /// at most 128 chars, and control characters (which could forge log
+    /// lines or terminal escapes) are replaced with U+FFFD.
     value
         .chars()
         .take(MAX_LOG_FIELD_CHARS)
@@ -27,6 +45,7 @@ fn safe_log_field(value: &str) -> String {
 }
 
 fn safe_log_id(value: &Value) -> String {
+    /// Same sanitization for a JSON-RPC id used in a log line.
     match value {
         Value::String(text) => Value::String(safe_log_field(text)).to_string(),
         Value::Number(number) => number.to_string(),
@@ -79,6 +98,10 @@ impl JsonRpcMessage {
 
     /// Canonical string form of the id, used as a HashMap/HashSet key when
     /// correlating requests to responses. `1` -> "1", `"abc"` -> "\"abc\"".
+    ///
+    /// Returns None for ids this proxy cannot safely correlate with (null,
+    /// objects, arrays, or strings longer than the cap). Called from proxy.rs
+    /// via msg.id_key() when tracking in-flight requests/responses.
     pub fn id_key(&self) -> Option<String> {
         match self.id.as_ref()? {
             Value::String(value) if value.len() <= MAX_CORRELATION_ID_BYTES => {
@@ -90,6 +113,8 @@ impl JsonRpcMessage {
     }
 
     /// Short human-readable summary used in pass-through log lines.
+    /// Note "request {method} (id={id})" for calls, "notification {method}"
+    /// for fire-and-forget messages, and "response"/"error-response" by id.
     pub fn describe(&self) -> String {
         match (&self.method, &self.id) {
             (Some(m), Some(id)) => {
@@ -112,6 +137,8 @@ impl JsonRpcMessage {
 mod tests {
     use super::*;
 
+    /// Only bounded, spec-shaped ids become correlation keys. `null`, nested
+    /// objects, arrays, and oversized strings must not be usable as keys.
     #[test]
     fn only_bounded_spec_correlation_ids_become_keys() {
         for raw in [
@@ -146,6 +173,8 @@ mod tests {
         assert_eq!(oversized.id_key(), None);
     }
 
+    /// Log descriptions must strip control characters and bound untrusted
+    /// fields so a hostile method/id cannot forge log lines or blow up logs.
     #[test]
     fn log_descriptions_strip_controls_and_bound_untrusted_fields() {
         let message = JsonRpcMessage {

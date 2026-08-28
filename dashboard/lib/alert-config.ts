@@ -1,3 +1,26 @@
+// Webhook configuration validation.
+//
+// WHAT THIS FILE IS
+// -----------------
+// A single function that decides whether the critical-alert webhook is
+// enabled, given MONOLITH_ALERT_WEBHOOK_URL and MONOLITH_ALERT_WEBHOOK_SECRET.
+// It is used in TWO places so the ingest path and the operations page agree:
+//   - event-store.ts insertWithClient() — only queues alert_outbox rows when
+//     this says enabled,
+//   - /api/operations route — surfaces the enabled/error state on the
+//     Operations page.
+//
+// THE RULES
+// ---------
+//   - Both URL and secret configured together, or neither (partial config =
+//     disabled with an error).
+//   - Secret must be 32-512 safe characters (no newlines/NUL).
+//   - URL must not embed credentials or a fragment.
+//   - HTTPS required; HTTP allowed only for loopback hosts (local testing).
+//   - The dispatcher (scripts/dispatch-alerts.mjs) enforces the same rules
+//     for its own startup, so a config that "looks enabled" here is also a
+//     config the dispatcher will accept.
+
 export type AlertConfigStatus = {
   enabled: boolean;
   error?: string;

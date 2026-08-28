@@ -3,13 +3,32 @@
 // POST /api/incidents — apply a triage transition (assign / acknowledge /
 //                       resolve) and append it to the audit trail.
 //
-// These are operator (human) endpoints, not module endpoints, so they use their
-// own credential — a module token identifies a module and would let any module
-// close its own findings.
+// WHAT THIS FILE IS
+// -----------------
+// The route wrapper around incident-store.ts. GET powers the /investigate
+// page; POST is what the IncidentPanel buttons call.
 //
-// Every operation requires an operator identity. Reads require viewer; writes
-// require analyst. The actor and tenant are derived from the credential rather
-// than read from the body: an identity a caller can name itself is not evidence.
+// THE PRINCIPAL SEPARATION (security)
+// -----------------------------------
+// These are operator (human) endpoints, NOT module endpoints, so they use the
+// OPERATOR credential — a module token identifies a module and would let any
+// module close its own findings. Reads require viewer; writes require analyst
+// (admin implies analyst, analyst implies viewer).
+//
+// THE "DERIVED, NEVER DECLARED" RULE
+// ----------------------------------
+// The actor and tenant are derived from the credential (requireOperator's
+// identity), never read from the request body: an identity a caller can name
+// itself is not evidence. See normalizeTransition in incident-store.ts.
+//
+// ERROR SEMANTICS
+// ---------------
+//   401/403        wrong/missing operator credential or role
+//   422            invalid filter (GET) or invalid transition (POST)
+//   404            POST: no such event in the ledger (tenant-scoped — an
+//                  event from another tenant is indistinguishable from an
+//                  unknown id)
+//   503            ledger/operator-auth unavailable (fail closed)
 
 import {
   applyTransition,
@@ -32,11 +51,16 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
+  // Called by: /investigate page (filters, search, pagination) and the
+  // overview page's triage-badge polling (status=triaged&limit=500).
   const identity = await requireOperator(req);
   if (identity instanceof Response) return identity;
   const params = new URL(req.url).searchParams;
+  // The tenant ALWAYS comes from the authenticated identity, never from a
+  // query parameter — an operator cannot browse another tenant.
   const query: IncidentQuery = { tenant_id: identity.tenant_id };
 
+  // Parse + bound every filter. Unknown values are 422s, not silent ignores.
   const status = params.get("status");
   if (status) {
     const pseudo = status === "open" || status === "all" || status === "triaged";
@@ -91,6 +115,8 @@ export async function GET(req: Request) {
   const cursor = params.get("cursor");
   if (cursor) query.cursor = cursor.slice(0, 512);
 
+  // Three queries in parallel: the page itself, the tab counts, and the
+  // cross-layer session counter (the "compromised agent" badge).
   try {
     const [page, counts, crossLayer] = await Promise.all([
       listIncidents(query),
@@ -112,6 +138,7 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  // Called by: IncidentPanel buttons (assign/acknowledge/resolve/reopen).
   // Authenticate before parsing: an unauthenticated caller learns nothing about
   // whether its payload would have been valid.
   const identity = await requireOperator(req, "analyst");
@@ -137,6 +164,7 @@ export async function POST(req: Request) {
   }
 
   try {
+    // State change + audit row happen in ONE transaction (incident-store.ts).
     const { triage } = await applyTransition(transition);
     return Response.json({ event_id: transition.event_id, triage });
   } catch (error) {

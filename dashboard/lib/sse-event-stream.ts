@@ -1,3 +1,45 @@
+// Server-Sent Events (SSE) stream construction — the "live feed" protocol.
+//
+// WHAT THIS FILE IS
+// -----------------
+// Builds the ReadableStream that backs GET /api/events. Each browser that
+// opens the feed gets one of these streams. The stream does two things in the
+// right order:
+//   1. REPLAY: sends the last 500 committed events from Postgres (or, when
+//      the browser reconnects with a Last-Event-ID header, only events AFTER
+//      that cursor).
+//   2. LIVE: then streams new events as they arrive, via the broker
+//      subscription.
+//
+// THE NO-GAP TRICK (know this for interviews)
+// -------------------------------------------
+// The order is: SUBSCRIBE to the broker FIRST, THEN replay the ledger.
+//   - Subscribe-before-replay: an event committed while the replay query runs
+//     is (a) possibly in the query result AND (b) buffered from the broker.
+//     The client dedupes by event_id, so nothing is missed and nothing
+//     duplicates.
+//   - Live events are BUFFERED until the replay finishes, so the stream stays
+//     ordered oldest-to-newest instead of interleaving new rows ahead of
+//     history.
+//
+// OTHER DETAILS
+// -------------
+//   - Every event is sent with an SSE `id:` line (the event_id), so a browser
+//     that drops and reconnects can resume with Last-Event-ID.
+//   - The send() function dedupes by event_id with a bounded 2048-entry set
+//     (a just-committed live event can arrive before older replay frames).
+//   - A keep-alive comment is emitted every 15s so proxies don't time the
+//     connection out.
+//   - The stream is tenant-scoped: the broker subscription is registered for
+//     the authenticated operator's tenant, and the replay query filters by
+//     tenant_id (with RLS as a second bound).
+//
+// WHO USES IT
+// -----------
+// /api/events route (app/api/events/route.ts) — authenticates, calls
+// ensureLiveEventListener(), then returns new Response(createEventStream(...)).
+// The browser side consumes it with an EventSource in app/page.tsx.
+
 import { getBroker } from "@/lib/event-ingest";
 import { listRecentEvents } from "@/lib/event-store";
 import type { MonolithEvent } from "@/lib/types";
@@ -24,6 +66,8 @@ export function createEventStream(
       let unsubscribe = () => {};
       const abort = () => cleanup();
 
+      // Cleanup: release the broker subscription, stop the keep-alive, drop
+      // the abort listener, and close the controller. Idempotent.
       cleanup = (closeController = true) => {
         if (cleaned) return;
         cleaned = true;
@@ -50,6 +94,8 @@ export function createEventStream(
           cleanup();
         }
       };
+      // Bounded dedupe: track which event_ids were already sent (the set is
+      // capped at 2048 entries, oldest dropped first, so memory is bounded).
       const sentIds = new Set<string>();
       const sentOrder: string[] = [];
       const send = (event: MonolithEvent) => {

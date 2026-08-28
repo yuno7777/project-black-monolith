@@ -1,5 +1,22 @@
 "use client";
 
+// The operator identity badge in every page's top bar.
+//
+// WHAT THIS FILE IS
+// -----------------
+// Fetches the current identity (GET /api/auth/session) and renders the actor
+// name + role. Clicking the badge signs out (DELETE /api/auth/session).
+//
+// THE REDIRECT-ON-401 BEHAVIOR
+// ----------------------------
+// A 401 from the session endpoint means "not signed in" — the browser is
+// sent to /login. That is what gates the whole dashboard: every page mounts
+// this badge, so an unauthenticated visitor is bounced to the login page.
+//
+// Note: the /api/auth/session GET route has its own handling of the demo
+// escape hatch (MONOLITH_DISABLE_AUTH), so this badge never causes a reload
+// loop in that mode.
+
 import { useEffect, useState } from "react";
 import { IconUser } from "./Icons";
 

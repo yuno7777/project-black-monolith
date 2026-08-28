@@ -1,3 +1,20 @@
+// Ledger health reads for the Operations page.
+//
+// WHAT THIS FILE IS
+// -----------------
+// Aggregates Postgres-side "how healthy is the system" numbers in a few
+// queries: total events, newest/oldest event, per-module 24h activity and
+// policy versions, and the alert outbox state (pending/dead/delivered counts,
+// age of the oldest pending alert).
+//
+// WHO CALLS WHAT
+// --------------
+// /api/operations route -> readLedgerHealth() -> Operations page
+// (app/operations/page.tsx). The route also fetches the MODULE runtimes'
+// /stats endpoints separately (dashboard -> vector-anchor:8001 /stats,
+// trace-audit:8002 /stats) using MONOLITH_MODULE_ADMIN_TOKEN; the two halves
+// are joined in the route, not here.
+
 import { performance } from "node:perf_hooks";
 import { withTenantDb } from "@/lib/db";
 import { KNOWN_MODULES } from "@/lib/types";

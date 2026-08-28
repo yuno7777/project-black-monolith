@@ -1,3 +1,18 @@
+// GET /api/incidents/<event_id>/export — download one incident as a versioned
+// JSON evidence bundle.
+//
+// WHAT IT PRODUCES
+// ----------------
+// A single JSON file ("monolith-evidence-<eventId>.json") containing the
+// immutable event, its triage state, its full append-only audit trail, and its
+// cross-layer session view. This is the "export the evidence" workflow: an
+// operator can hand the bundle to someone else without that person needing
+// dashboard access, and the bundle is self-contained.
+//
+// The format is versioned ("project-black-monolith/evidence-bundle@1") so a
+// future format change is detectable. All four parts are read in parallel,
+// tenant-scoped, viewer+ role required.
+
 import { getAuditTrail, getIncident, sessionForEvent } from "@/lib/incident-store";
 import { requireOperator } from "@/lib/route-auth";
 

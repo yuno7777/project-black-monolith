@@ -1,5 +1,30 @@
 "use client";
 
+// The Benchmarks page (route "/benchmarks").
+//
+// WHAT THIS PAGE IS
+// -----------------
+// Shows the detector scorecards: the latest benchmark run (one card per
+// detector with confusion matrix, metrics, latency), per-detector history
+// trend, and — the point of the whole page — the OBSERVED precision from
+// analysts' real verdicts next to the LAB numbers.
+//
+// WHERE THE DATA COMES FROM
+// -------------------------
+//   GET /api/benchmarks -> { run, history, observed }
+//     run      = latestRun()      [benchmark-store.ts] — the stored confusion
+//                matrices; metrics were RECOMPUTED server-side at ingest.
+//     history  = detectorHistory() — detection rate + F1 over recent runs.
+//     observed = observedAccuracy() [incident-store.ts] — precision derived
+//                from resolved incident verdicts (true_positive /
+//                false_positive), excluding benign/duplicate from the
+//                denominator.
+//
+// The honest-labelling detail: an "exact" paradigm detector (the MCP-Shield
+// fingerprint) gets a special banner saying 100% is BY CONSTRUCTION, not a
+// tuned detector — the UI refuses to dress an exact comparison up as learned
+// accuracy.
+
 import { useEffect, useMemo, useState } from "react";
 import { KNOWN_MODULES, MODULE_ACCENT, MODULE_LABELS, MODULE_LAYER } from "@/lib/types";
 import type { BenchmarkDetector, BenchmarkRun } from "@/lib/benchmark-store";

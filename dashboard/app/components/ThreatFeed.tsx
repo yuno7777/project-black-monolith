@@ -1,5 +1,27 @@
 "use client";
 
+// The scrolling list of detection events (used on the overview page and the
+// investigate queue).
+//
+// WHAT THIS FILE IS
+// -----------------
+// Renders each MonolithEvent as a row: module badge, severity, event type,
+// optional triage badge, time, and a preview line. Clicking a row expands an
+// EventDetail panel with the full details, plus a link through to the
+// investigation queue for that event.
+//
+// THE TRIAGE BADGE RULE
+// ---------------------
+// Only events someone has actually acted on get a status badge — the page
+// passes in a triageByEvent map. An unbadged row is simply untriaged (the
+// common case), which needs no decoration.
+//
+// THE HTML STRUCTURE NOTE
+// -----------------------
+// The row is a div wrapping a button rather than one big button: the expanded
+// panel holds a <Link> through to the queue, and a link nested inside a
+// button is invalid HTML (and unreachable by keyboard).
+
 import { useState } from "react";
 import Link from "next/link";
 import type { IncidentStatus, MonolithEvent } from "@/lib/types";

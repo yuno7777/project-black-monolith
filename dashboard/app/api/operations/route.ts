@@ -1,3 +1,20 @@
+// GET /api/operations — the Operations page's data source.
+//
+// WHAT IT AGGREGATES
+// ------------------
+// Two independent halves, fetched in parallel:
+//   1. ledger — Postgres-side health (operations-store.ts readLedgerHealth):
+//      event totals, per-module 24h activity + policy versions, alert outbox
+//      backlog/dead-letter counts.
+//   2. runtimes — live checks of the DEFENSE MODULES themselves: the
+//      dashboard fetches vector-anchor:8001/stats and trace-audit:8002/stats
+//      (using MONOLITH_MODULE_ADMIN_TOKEN) to show whether each layer is
+//      reachable and what its outbox delivery state is.
+// Plus alerting: the webhook config status (alert-config.ts).
+//
+// This is the "is the whole system healthy" endpoint — the page built around
+// it is the operations command center.
+
 import { readLedgerHealth } from "@/lib/operations-store";
 import { requireOperator } from "@/lib/route-auth";
 import { alertConfigStatus } from "@/lib/alert-config";

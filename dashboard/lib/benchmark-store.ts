@@ -1,8 +1,37 @@
+// The detection-benchmark ledger: validation, persistence, and reads for
+// monolith.benchmark_runs.
+//
+// WHAT THIS FILE IS
+// -----------------
+// Benchmark results are evaluation METADATA, deliberately separate from the
+// event ledger: a benchmark run must never enter monolith.security_events or
+// be counted as a detection. Each row is one (run, module, detector) scorecard
+// with its confusion matrix.
+//
+// THE "NEVER TRUST THE CLIENT'S METRICS" RULE (know this for interviews)
+// ----------------------------------------------------------------------
+// normalizeRun() validates the raw confusion matrix counts and then
+// RECOMPUTES detection_rate/fpr/precision/recall/f1 from those counts
+// server-side. A run that claims 100% detection with a 1-of-2 matrix is stored
+// as 0.50. This is what makes the benchmark ledger a ledger rather than a
+// collection of self-reported numbers — scripts/verify_benchmarks.sh pins it.
+//
+// THE "LAB ACCURACY VS OBSERVED ACCURACY" STORY
+// ---------------------------------------------
+// This file stores the LAB accuracy (scored against corpora we wrote). The
+// /api/benchmarks route also returns observedAccuracy() from incident-store.ts
+// (precision computed from real analysts' verdicts). The Benchmarks page shows
+// both side by side — agreement validates the corpus; divergence is a finding.
+//
+// WHO CALLS WHAT
+// --------------
+//   POST /api/benchmarks (operator, analyst+) -> normalizeRun + persistRun
+//   GET  /api/benchmarks -> latestRun + detectorHistory + observedAccuracy
+//   Uploader scripts: scripts/run_benchmarks.sh greps each module's
+//   BENCHMARK_JSON: output and POSTs it here.
+
 import { randomUUID } from "node:crypto";
 import { withTenantDb } from "@/lib/db";
-
-// Benchmark results are evaluation metadata, deliberately separate from the
-// event ledger. This module owns reading and writing monolith.benchmark_runs.
 
 const KNOWN_MODULES = new Set(["mcp-shield", "vector-anchor", "trace-audit"]);
 const PARADIGMS = new Set(["threshold", "exact", "regex"]);

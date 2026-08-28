@@ -1,5 +1,24 @@
 "use client";
 
+// The Operations page (route "/operations") — the command center.
+//
+// WHAT THIS PAGE IS
+// -----------------
+// A health summary of the whole delivery system, refreshed every 15s from
+// GET /api/operations (and manually via Refresh). It shows:
+//   - hero state: "Evidence pipeline nominal" vs "Delivery needs attention"
+//     (driven by dead-letter counts),
+//   - ledger health (event totals, per-module 24h activity, oldest/newest
+//     evidence, alert outbox backlog),
+//   - runtime reachability for the defense modules (dashboard -> module /stats),
+//   - alert webhook config status,
+//   - policy coverage (which policy_version strings are active per module).
+//
+// The interesting metric is DEAD LETTERS: events that could not be delivered
+// and were parked. A nonzero dead-letter count means evidence was produced
+// that never reached the ledger — the thing the whole outbox design exists to
+// make visible instead of silent.
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { MODULE_LABELS } from "@/lib/types";
 import { Rail } from "../components/Sidebar";

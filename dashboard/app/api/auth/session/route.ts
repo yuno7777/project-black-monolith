@@ -1,3 +1,35 @@
+// /api/auth/session — the operator login/logout/identity route.
+//
+// WHAT THIS FILE IS
+// -----------------
+// The three HTTP verbs of browser authentication:
+//   GET    — "who am I right now?" Returns the current identity (from the
+//            session cookie or a bearer header) without exposing credentials.
+//   POST   — LOGIN: exchange a long-lived operator bootstrap token (local or
+//            OIDC) for an opaque, revocable, expiring browser session. Sets
+//            the HttpOnly, SameSite=Strict session cookie.
+//   DELETE — LOGOUT: revoke the session in Postgres and expire the cookie.
+//
+// THE LOGIN FLOW, STEP BY STEP (know this for interviews)
+// -------------------------------------------------------
+//   1. requireSameOrigin — CSRF defense for the mutation.
+//   2. recordOperatorLoginAttempt — Postgres-backed rate limit (8 tries /
+//      15 min per key); over the limit -> 429 + Retry-After: 900.
+//   3. Read { token } from the body (8 KB cap).
+//   4. authenticateOperatorCredential(token) — local bootstrap token, else
+//      the OIDC/Supabase adapter (external-auth.ts).
+//   5. On success: clearOperatorLoginAttempts (don't leave the user locked
+//      out), createOperatorSession (256-bit random token; only its SHA-256
+//      digest stored in Postgres), Set-Cookie with the raw token.
+//   6. On failure: 401. On auth MISCONFIGURATION: 503 (fail closed).
+//
+// WHY THE BROWSER NEVER KEEPS THE BOOTSTRAP TOKEN
+// -----------------------------------------------
+// The login page posts the bootstrap token once; the server returns a
+// DIFFERENT random session token in an HttpOnly cookie. JS can't read the
+// cookie (HttpOnly), so XSS cannot exfiltrate it; SameSite=Strict blocks
+// cross-site use; expiry + revocation bound its lifetime.
+
 import {
   authenticateOperator,
   authenticateOperatorCredential,
@@ -23,7 +55,9 @@ function unavailable(error: unknown): Response | null {
   return Response.json({ error: "operator authentication is unavailable" }, { status: 503 });
 }
 
-/** Return the current browser/bearer identity without exposing credentials. */
+/** Return the current browser/bearer identity without exposing credentials.
+ * Called by: OperatorBadge component on every page to render the sign-in
+ * state. */
 export async function GET(req: Request) {
   // Honour the demo escape hatch here too. This route authenticated directly
   // instead of going through requireOperator, so with sign-in disabled it still
@@ -56,7 +90,8 @@ export async function GET(req: Request) {
   }
 }
 
-/** Exchange a long-lived operator token for an opaque, revocable browser session. */
+/** Exchange a long-lived operator token for an opaque, revocable browser session.
+ * Called by: the login form (app/login/page.tsx submit handler). */
 export async function POST(req: Request) {
   const originError = requireSameOrigin(req);
   if (originError) return originError;
@@ -104,7 +139,8 @@ export async function POST(req: Request) {
   }
 }
 
-/** Revoke the current browser session and expire the cookie. */
+/** Revoke the current browser session and expire the cookie.
+ * Called by: the OperatorBadge sign-out button. */
 export async function DELETE(req: Request) {
   const originError = requireSameOrigin(req);
   if (originError) return originError;

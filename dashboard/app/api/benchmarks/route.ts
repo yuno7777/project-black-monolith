@@ -1,9 +1,27 @@
 // GET  /api/benchmarks — the latest detection-benchmark run + per-detector history.
 // POST /api/benchmarks — record a run (operator-authenticated).
 //
+// WHAT THIS FILE IS
+// -----------------
+// The route wrapper for the benchmark ledger. GET serves the Benchmarks page;
+// POST is what scripts/run_benchmarks.sh (and the per-module benchmark
+// harnesses, which emit a BENCHMARK_JSON: line) call to record scorecards.
+//
 // A benchmark run is an operator/CI action, not a module detection and not human
 // triage, so it uses the operator credential — the same gate as /api/incidents.
 // Benchmark results are evaluation metadata and never enter the event ledger.
+//
+// THE GET BUNDLE
+// --------------
+// GET returns THREE things together, deliberately: latestRun (lab accuracy),
+// detectorHistory (trend), and observedAccuracy (precision from analysts'
+// real verdicts, computed by incident-store.ts). The page's whole argument is
+// the comparison between what the corpus says and what operations say —
+// fetching them separately would let one render without the other.
+//
+// POST never trusts the client's derived metrics: normalizeRun recomputes
+// every rate from the confusion matrix (see benchmark-store.ts), so a run
+// that claims 100% with a 1-of-2 matrix is stored as 0.50.
 
 import {
   BenchmarkInputError,
@@ -52,6 +70,7 @@ export async function POST(req: Request) {
 
   let run;
   try {
+    // tenant comes from the credential, never from the body.
     run = normalizeRun(body, identity.tenant_id);
   } catch (error) {
     if (error instanceof BenchmarkInputError) {

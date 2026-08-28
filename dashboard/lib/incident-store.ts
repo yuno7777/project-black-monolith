@@ -1,3 +1,57 @@
+// The investigation-queue data layer: triage reads, transitions, audit trail,
+// session correlation, and observed accuracy.
+//
+// WHAT THIS FILE IS
+// -----------------
+// Everything between the /api/incidents routes and the Postgres tables
+// (incident_triage, incident_audit, security_events). It is the largest
+// data-access module because it implements the WHOLE triage model:
+//
+//   READ side
+//     listIncidents(query)   the filtered, worst-first, cursor-paginated queue
+//     getIncident(id)        one incident (for the export/panel)
+//     getAuditTrail(id)      the append-only transition log for one incident
+//     sessionForEvent(id)    THE cross-layer correlation query
+//     crossLayerSessionCount()  "compromised agent" counter for the UI
+//     observedAccuracy()     precision from real analyst verdicts
+//     incidentCounts()       tab counts
+//   WRITE side
+//     normalizeTransition()  validate a triage request (actor from credential)
+//     applyTransition()      state change + audit row in ONE transaction
+//
+// THE IMMUTABILITY MODEL (why triage is a separate table)
+// -------------------------------------------------------
+// security_events is immutable evidence — triage NEVER updates it. Human
+// judgement lives in incident_triage (current state) and incident_audit (how
+// it got there, append-only). The database enforces this twice: the runtime
+// role has no UPDATE/DELETE grants on the ledgers, and a trigger raises even
+// for the table owner. So "who cleared this critical, when, and why" survives
+// forever.
+//
+// WHY UNTRIAGED EVENTS ARE SYNTHESIZED AS "new" ON READ
+// -----------------------------------------------------
+// A detection that nobody has looked at has NO triage row (rows are created
+// lazily on first transition). If the queue only showed rows, untriaged
+// events would be invisible — detections silently never reaching an analyst.
+// So the read path left-joins and coalesces: `coalesce(t.status, 'new')`.
+// This is deliberately a READ-only synthesis; back-filling a row on ingest
+// would put a write on the detection path for every event.
+//
+// THE ACTOR RULE (security)
+// -------------------------
+// normalizeTransition() receives `actor` FROM THE ROUTE (which got it from
+// the authenticated credential) and never reads an actor from the request
+// body. A caller cannot write someone else's name into the audit trail.
+// `assign_to_me` resolves to the authenticated operator server-side for the
+// same reason: the client has no trustworthy name for itself.
+//
+// THE TRANSACTION GUARANTEE
+// -------------------------
+// applyTransition() runs in one tenant-scoped transaction:
+// advisory lock -> existence check (tenant-scoped) -> upsert triage ->
+// insert audit row -> commit. A state change that is not accounted for in the
+// trail is impossible.
+
 import { withTenantDb } from "@/lib/db";
 import type {
   AuditEntry,

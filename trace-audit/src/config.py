@@ -1,10 +1,25 @@
 """TraceAudit configuration, sourced from environment variables.
 
-TraceAudit is the reasoning-layer defense of Project Black Monolith. It sits
-in front of a model's generation endpoint, watches the token stream in real
-time, and (a) terminates the stream if the reasoning trace diverges too far
-from an established baseline distribution, and (b) redacts credential/PII-like
-patterns before anything is logged or persisted.
+WHAT THIS FILE IS
+-----------------
+The TraceAudit twin of vector-anchor/src/config.py: reads every env var,
+validates it, and produces one frozen Config the rest of the module uses. The
+two files are intentionally parallel so the two Python modules can be reasoned
+about the same way.
+
+Data flow: environment -> load_config() -> Config -> StreamAuditor, the
+baseline loader, and the /stats route (all via main.py lifespan).
+
+The divergence settings deserve explanation because they ARE the detector —
+see divergence_monitor.py for the algorithm:
+  kl_threshold:          KL value that terminates the stream (1.0, calibrated).
+  window_size:           how many recent tokens the live distribution is
+                         computed from (20).
+  min_tokens_before_check: don't evaluate/terminate until this many tokens
+                         have streamed (12) — a short window is noisy.
+  smoothing:             Laplace smoothing so unseen tokens don't produce
+                         infinite KL terms (0.5).
+  max_tokens:            the OPERATOR-owned ceiling a request cannot exceed.
 """
 
 from __future__ import annotations
@@ -61,6 +76,8 @@ class Config:
 
 
 def _valid_bearer_token(value: str) -> bool:
+    """Same header-safe token rule as vector-anchor and the dashboard
+    (dashboard/lib/credentials.ts)."""
     return len(value) >= 16 and all(
         char.isascii() and (char.isalnum() or char in "-._~+/=")
         for char in value
@@ -68,6 +85,8 @@ def _valid_bearer_token(value: str) -> bool:
 
 
 def _validate_id(name: str, value: str | None, *, required: bool = False) -> None:
+    """Correlation ids must be 1-128 non-blank chars (mirrors the dashboard's
+    bounds in dashboard/lib/event-store.ts)."""
     if value is None and not required:
         return
     if value is None or not value.strip() or len(value.strip()) > MAX_ID_LENGTH:
@@ -75,6 +94,9 @@ def _validate_id(name: str, value: str | None, *, required: bool = False) -> Non
 
 
 def _validate_config(cfg: Config) -> Config:
+    """Fail-fast validation with the offending variable's name in the message.
+    Also enforces relationships: min_tokens_before_check must fit inside the
+    window, and the dashboard URL/token must be configured together."""
     if cfg.model_backend not in {"mock", "ollama"}:
         raise ValueError("MONOLITH_MODEL_BACKEND must be 'mock' or 'ollama'")
     if not cfg.ollama_base_url.startswith(("http://", "https://")):
@@ -112,6 +134,10 @@ def _validate_config(cfg: Config) -> Config:
 
 
 def load_config() -> Config:
+    """Read every env var (with defaults) and validate. Called from main.py
+    lifespan and the tests. The defaults come from the calibrated values in
+    divergence_monitor.py (DEFAULT_KL_THRESHOLD) and the demo-friendly sizes
+    used by fixtures/baseline_capture.py."""
     cfg = Config(
         model_backend=os.environ.get("MONOLITH_MODEL_BACKEND", "mock").strip().lower(),
         ollama_base_url=os.environ.get("MONOLITH_OLLAMA_URL", "http://localhost:11434"),

@@ -1,0 +1,23 @@
+# Command Code — Taste
+- Prefers no emojis anywhere in UI, docs, or READMEs; uses hand-drawn/custom SVG icons instead. Confidence: 0.95
+- Prefers a minimal, professional, dark aesthetic with a pitch-black (#000000) background; avoids white cards on dark and gradient "AI-slop" decoration. Confidence: 0.9
+- Prefers glassmorphism (translucent, blurred) surfaces for UI components. Confidence: 0.8
+- Avoids pink accents and heavy highlighting of severity/critical elements; keeps styling restrained and cohesive. Confidence: 0.75
+- Prefers Recharts for charting and SVG icons that follow the theme via CSS variables. Confidence: 0.7
+- Wants both dark and light modes with a toggle. Confidence: 0.7
+- Prefers many small, focused Conventional Commits (one per change; expects ~13–15 commits for a large task) over a single big commit. Confidence: 0.95
+- Prefers safe automation: stop and report rather than pushing when risky; never force-push or rewrite published history. Confidence: 0.7
+- Prefers running the project locally without Docker by default; uses Docker only when explicitly authorized. Confidence: 0.9
+- Prefers to be prompted to start Docker Desktop manually rather than having it auto-started. Confidence: 0.7
+- Prefers generated/auxiliary files (e.g. .env, PDFs, CLAUDE.md, baseline hashes) kept out of git via .gitignore. Confidence: 0.8
+- Values security-conscious, defensive-only work: never weaken security controls, fabricate benchmark results, or commit secrets; "attack" material stays as local test fixtures. Confidence: 0.8
+- Prefers simple, less-technical language for explanations, journal notes, and presentations. Confidence: 0.85
+- Wants READMEs/docs to be aesthetic, detailed, and professional (open-source-grade). Confidence: 0.8
+- Prefers explanations in a layered pattern: plain/simple language first, then the technical mechanics, then why it was designed that way. Confidence: 0.85
+- Treats the actual codebase as the source of truth over READMEs/docs and wants documentation-vs-implementation discrepancies flagged explicitly. Confidence: 0.9
+- Values honest, unflattering technical assessment: no artificially good scores, no pretending every architectural decision is perfect, flags vibe-coded/convenience shortcuts, and separates genuine engineering from library/framework functionality. Confidence: 0.85
+- Prefers natural, non-corporate language in explanations and model answers (not press-release or memorized-sounding); avoids buzzword-heavy phrasing. Confidence: 0.8
+- Distinguishes implemented vs planned vs implied vs missing when describing a codebase; avoids claiming features that aren't actually there. Confidence: 0.85
+- Uses a technical-interview-readiness lens: wants interview questions at difficulty tiers, model answers, and time-boxed (30s/1m/3m) explanations to defend their own projects. Confidence: 0.7
+- Never exposes private tokens or secret values in explanations or generated docs. Confidence: 0.8
+- Prefers critique of poor code to be tactful — explains what should change without being insulting. Confidence: 0.7

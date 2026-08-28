@@ -4,10 +4,21 @@
 #   bash scripts/generate_secrets.sh          # create .env (refuses to clobber)
 #   bash scripts/generate_secrets.sh --force  # regenerate, discarding the old one
 #
+# WHY THIS EXISTS
+# ---------------
+# The stack has NO default credentials by design (Compose refuses to start
+# without every secret). This script writes .env with 8 fresh random values
+# so a local/CI run can stand up without anyone typing passwords.
+#
 # The values are development credentials for a single-machine stack: the
 # Postgres superuser/runtime passwords, three per-module ingest tokens, and the
 # MCP baseline key, VectorAnchor admin, and operator bootstrap tokens. .env is gitignored — never commit it, and
 # regenerate before using this anywhere but a local machine.
+#
+# WHO READS .env
+# --------------
+#   docker-compose.yml (${VAR:?} substitutions), run_full_demo.sh and the
+#   verify_*.sh scripts (set -a; . ./.env; set +a), run_local_demo.sh, CI.
 #
 # Regenerating invalidates the tokens the running containers hold, so
 # `docker compose up -d` afterwards to re-inject them. Changing the Postgres

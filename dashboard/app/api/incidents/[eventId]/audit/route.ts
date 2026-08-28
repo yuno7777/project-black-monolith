@@ -1,5 +1,9 @@
 // GET /api/incidents/<event_id>/audit — the append-only transition trail for
 // one incident: who changed it, when, from what to what, and why.
+//
+// The audit table is physically append-only (no UPDATE/DELETE grant + a
+// trigger); this route only ever reads it. Called by the IncidentPanel
+// (audit history view) and included in the evidence export bundle.
 
 import { getAuditTrail } from "@/lib/incident-store";
 import { requireOperator } from "@/lib/route-auth";

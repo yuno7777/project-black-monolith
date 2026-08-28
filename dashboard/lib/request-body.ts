@@ -1,3 +1,25 @@
+// Hard-bounded JSON body reading for API routes.
+//
+// WHAT THIS FILE IS
+// -----------------
+// The dashboard's shared request-body parser. Every route that accepts a body
+// (/api/ingest, /api/auth/session, /api/incidents POST, /api/benchmarks POST)
+// uses readJsonBody(req, maxBytes) instead of await req.json(), because
+// req.json() trusts Content-Length and would happily slurp an unbounded
+// chunked body into memory.
+//
+// WHAT IT DOES
+// ------------
+//   1. If Content-Length is present, validate it is a pure digit string and
+//      <= maxBytes (a lying or oversized header -> 400/413 immediately).
+//   2. Otherwise stream the body through a reader, counting bytes as they
+//      arrive, and abort with 413 the moment the cap is exceeded.
+//   3. Decode strictly as UTF-8 (TextDecoder fatal: true — invalid UTF-8 is a
+//      400, not silent replacement) and JSON.parse.
+//
+// Errors are typed (JsonBodyError with a status) so routes can map them to
+// responses with jsonBodyError().
+
 export class JsonBodyError extends Error {
   constructor(
     message: string,
@@ -53,6 +75,8 @@ export async function readJsonBody(req: Request, maxBytes: number): Promise<unkn
 }
 
 export function jsonBodyError(error: unknown): Response | null {
+  // Map a JsonBodyError to an HTTP response (400/413); anything else returns
+  // null so the route's own error handling runs.
   return error instanceof JsonBodyError
     ? Response.json({ error: error.message }, { status: error.status })
     : null;

@@ -1,9 +1,25 @@
 """VectorAnchor configuration, sourced from environment variables.
 
-VectorAnchor is the memory-layer defense of Project Black Monolith. It wraps
-a vector-database retriever and quarantines corpus-poisoning documents that
-rank highly across many unrelated queries ("universal bait") before they can
-reach an agent's context window.
+WHAT THIS FILE IS
+-----------------
+The single place that reads VectorAnchor's environment variables, validates
+them, and produces one frozen `Config` object that the rest of the module
+imports. Every service setting — the ChromaDB location, the detector thresholds,
+the dashboard URL — flows through load_config() so the rest of the code never
+touches os.environ directly.
+
+WHY IT EXISTS
+-------------
+1. Fail fast at startup: a typo like MONOLITH_TOP_K="abc" crashes here with a
+   clear message instead of failing mysteriously at first use.
+2. One source of truth: retriever_proxy.py, store.py, main.py and the tests all
+   read the same validated Config.
+3. It documents every knob in one place — compare with trace-audit/src/config.py
+   which is the same pattern for the reasoning layer, and mcp-shield's
+   ShieldConfig::from_env in proxy.rs (the Rust equivalent).
+
+Data flow: environment -> load_config() -> Config -> passed to RetrieverProxy,
+DetectorStateStore, build_embedding_function etc. at startup in main.py.
 """
 
 from __future__ import annotations
@@ -17,6 +33,29 @@ MAX_ID_LENGTH = 128
 
 @dataclass(frozen=True)
 class Config:
+    """All runtime settings, validated. Immutable (frozen) so nothing can
+    silently change a threshold mid-run.
+
+    The detection parameters deserve an explanation because they ARE the
+    detector — see frequency_tracker.py for the algorithm these tune:
+
+      top_rank_threshold:  how far down the result list a document still counts
+                           as "ranking highly" for a query. Default 2.
+      min_distinct_topics: how many mutually dissimilar topics a document must
+                           rank across before it is quarantined. Default 4.
+      topic_similarity:    two queries are "the same topic" if their cosine
+                           similarity is >= this. Default 0.20.
+      retention_horizon:   how many queries back a hit still counts (the
+                           detection reach). Default 500.
+      max_queries_per_doc: the most hits kept per document (bounds memory and
+                           clustering cost). Default 8.
+
+    The horizon and the cap are deliberately SEPARATE knobs: widening the
+    horizon used to make detection cost quadratic, and separating them is what
+    lets the detector reach 10x further back for 1.5x the cost. The numbers are
+    calibrated in vector-anchor/fixtures/calibrate.py, not guessed.
+    """
+
     # --- vector store ---------------------------------------------------
     chroma_path: str
     collection_name: str
@@ -68,6 +107,12 @@ class Config:
 
 
 def _valid_bearer_token(value: str) -> bool:
+    """A token must be >= 16 chars of header-safe characters.
+
+    Header-safe means it cannot contain whitespace or characters that would
+    break the Authorization header. The dashboard enforces the same rule
+    (dashboard/lib/credentials.ts), so a token that passes here will pass there.
+    """
     return len(value) >= 16 and all(
         char.isascii() and (char.isalnum() or char in "-._~+/=")
         for char in value
@@ -75,6 +120,11 @@ def _valid_bearer_token(value: str) -> bool:
 
 
 def _validate_id(name: str, value: str | None, *, required: bool = False) -> None:
+    """Correlation ids (tenant/agent/session) must be 1-128 non-blank chars.
+
+    Mirrors the dashboard's own bounds (dashboard/lib/event-store.ts
+    identityText) so an id that passes here can never be rejected later.
+    """
     if value is None and not required:
         return
     if value is None or not value.strip() or len(value.strip()) > MAX_ID_LENGTH:
@@ -82,6 +132,8 @@ def _validate_id(name: str, value: str | None, *, required: bool = False) -> Non
 
 
 def _validate_config(cfg: Config) -> Config:
+    """Cross-field validation. Each check maps to a documented env var and
+    fails startup with the variable's name rather than a mystery error."""
     if cfg.embedding not in {"hash", "default"}:
         raise ValueError("MONOLITH_EMBEDDING must be 'hash' or 'default'")
     if not 1 <= cfg.embedding_dim <= 4096:
@@ -110,6 +162,9 @@ def _validate_config(cfg: Config) -> Config:
         raise ValueError("MONOLITH_CHROMA_PATH must not be blank")
     if not cfg.detector_state_path.strip():
         raise ValueError("MONOLITH_DETECTOR_STATE_PATH must not be blank")
+    # URL and token must come as a pair: sending events with no token would
+    # mean every POST 401s and dead-letters on arrival (burning disk for
+    # nothing), so the module refuses to start in that half-configured state.
     if bool(cfg.dashboard_url) != bool(cfg.event_token):
         raise ValueError(
             "MONOLITH_DASHBOARD_URL and MONOLITH_EVENT_TOKEN must be configured together"
@@ -127,6 +182,20 @@ def _validate_config(cfg: Config) -> Config:
 
 
 def load_config() -> Config:
+    """Read every env var (with sane defaults), then validate the result.
+
+    Called from:
+      - vector-anchor/src/main.py      (build_proxy() -> load_config())
+      - vector-anchor/fixtures/*.py    (seed_corpus.py, inject_poison.py,
+        calibrate.py, benchmark.py all build the same Config so the fixtures
+        talk to the same collection with the same embedder as the service)
+      - vector-anchor/tests/test_config.py
+
+    The defaults (top_rank_threshold=2, topic_similarity=0.20,
+    min_distinct_topics=4) are the CALIBRATED values: the original (3, 0.30)
+    let broad-but-legitimate documents score higher than the poison, and the
+    sweep that fixed it is documented in fixtures/calibration_results.md.
+    """
     cfg = Config(
         chroma_path=os.environ.get("MONOLITH_CHROMA_PATH", "./chroma_store"),
         collection_name=os.environ.get("MONOLITH_COLLECTION", "monolith_corpus"),

@@ -1,3 +1,38 @@
+// The threat-overview page (route "/").
+//
+// WHAT THIS PAGE IS
+// -----------------
+// The main dashboard screen: a live threat feed plus KPIs, severity donut,
+// and per-module bars. It is a CLIENT component ("use client") because it
+// keeps a live EventSource open and updates state as events arrive.
+//
+// THE DATA FLOW (user opens the dashboard)
+// ----------------------------------------
+//   Browser loads "/"
+//    -> EventSource("/api/events") opens            [app/api/events/route.ts]
+//    -> server authenticates the session cookie (viewer+), starts the Postgres
+//       listener if needed, replays the last 500 ledger events, then streams
+//       new ones live
+//    -> onmessage parses each event, dedupes by event_id (a `seen` Set), and
+//       inserts it into the events array sorted by received time (capped at
+//       500 rows so the browser doesn't grow unbounded)
+//    -> all stats (KPIs, donut, bars, feed) are derived from that one array
+//       with useMemo
+//
+// WHY DEDUPE + SORT
+// -----------------
+// The server sends the event_id in the SSE `id:` field and the client dedupes
+// on it anyway: subscribe-before-replay means a just-committed live event can
+// arrive before older replay frames, and after dedupe the array is re-sorted
+// by received time so stale evidence can never sit above the latest event.
+//
+// WHY TRIAGE IS POLLED, NOT STREAMED
+// ----------------------------------
+// Triage state lives in the ledger (incident_triage), not on the event
+// stream. The page polls GET /api/incidents?status=triaged&limit=500 every
+// 15s — only the SMALL triaged set plus the counts, so the timer never ships
+// the whole ledger just to render a few badges.
+
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -47,16 +82,18 @@ const SEVERITY_TABS: { key: Severity | "all"; label: string }[] = [
 ];
 
 export default function Page() {
-  const [events, setEvents] = useState<MonolithEvent[]>([]);
-  const [connected, setConnected] = useState(false);
-  const [filter, setFilter] = useState<string | null>(null);
+  // ---- local state ------------------------------------------------------
+  const [events, setEvents] = useState<MonolithEvent[]>([]); // the live feed buffer
+  const [connected, setConnected] = useState(false);         // EventSource open?
+  const [filter, setFilter] = useState<string | null>(null); // module filter
   const [severity, setSeverity] = useState<Severity | "all">("all");
-  const [query, setQuery] = useState("");
-  const [now, setNow] = useState<string>("");
+  const [query, setQuery] = useState("");                    // search box
+  const [now, setNow] = useState<string>("");                // clock display
   const [openIncidents, setOpenIncidents] = useState<number | null>(null);
   const [triageByEvent, setTriageByEvent] = useState<Map<string, IncidentStatus>>(new Map());
-  const seen = useRef<Set<string>>(new Set());
+  const seen = useRef<Set<string>>(new Set()); // dedupe across re-renders
 
+  // A 1-second clock for the topbar.
   useEffect(() => {
     const tick = () => setNow(new Date().toLocaleTimeString([], { hour12: false }));
     tick();
@@ -64,6 +101,10 @@ export default function Page() {
     return () => clearInterval(t);
   }, []);
 
+  // ---- the live feed -----------------------------------------------------
+  // Opens the SSE stream. The server (app/api/events/route.ts +
+  // sse-event-stream.ts) replays history then streams live. Every incoming
+  // event is deduped by event_id and inserted sorted, capped at 500.
   useEffect(() => {
     const es = new EventSource("/api/events");
     es.onopen = () => setConnected(true);
@@ -122,6 +163,7 @@ export default function Page() {
     };
   }, []);
 
+  // ---- derived stats (all from the single events array) ------------------
   const byModule = useMemo(() => {
     const map: Record<string, MonolithEvent[]> = {};
     for (const m of KNOWN_MODULES) map[m] = [];
@@ -151,6 +193,8 @@ export default function Page() {
   const intercepted = severityCounts.critical + severityCounts.warning;
   const latency = avgEndToEndLatency(events);
 
+  // The four KPI cards. Only cards that lead somewhere are links (the hover
+  // affordance must never promise a destination that doesn't exist).
   const kpis = [
     {
       k: "Attacks intercepted",
@@ -260,7 +304,7 @@ export default function Page() {
               <div className="card-head">
                 <div>
                   <span className="card-title">Live threat feed</span>
-                  <div className="card-meta" style={{ marginTop: 3 }}>
+                  <div className="card-meta" style={{ marginTop: 4 }}>
                     {filter ? `${MODULE_LABELS[filter]} · ` : "newest first · "}
                     {shown.length} event{shown.length === 1 ? "" : "s"}
                   </div>

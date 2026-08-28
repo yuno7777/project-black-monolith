@@ -5,11 +5,40 @@
 # Then:   ./run_full_demo.sh
 # Watch:  http://localhost:3000  (detections stream in live as each fires)
 #
-# This drives all three attack fixtures in sequence — MCP-Shield rug pull,
+# WHAT THIS SCRIPT DOES (the demo end-to-end)
+# -------------------------------------------
+# Drives all three attack fixtures in sequence — MCP-Shield rug pull,
 # VectorAnchor corpus poisoning, TraceAudit reasoning divergence + PII — every
 # one entirely through `docker compose exec`, so the only host requirement is
 # Docker. Each module forwards its detection events to the dashboard over the
 # internal network, so the whole story appears on one live feed.
+#
+#   Attack 1 (mcp-shield): reset the baseline, run the 3-phase rug-pull demo
+#   Attack 2 (vector-anchor): reset detection state, seed a clean corpus,
+#     run clean queries, inject the bait, run unrelated queries that all
+#     retrieve it -> quarantine
+#   Attack 3 (trace-audit): stream a divergence prompt (expect termination)
+#     and a PII prompt (expect redaction)
+#   VERIFY: query the ledger with the OPERATOR token and assert that
+#     schema_mismatch, corpus_poison_quarantine, reasoning_divergence_terminate
+#     and pii_redacted ALL arrived, under ONE session id, within a few seconds.
+#
+# THE "ONE SESSION" TRICK
+# -----------------------
+# A fresh SESSION_ID is minted per run and passed to each module
+# (MONOLITH_SESSION_ID for mcp-shield, X-Monolith-Session-Id header for the
+# others). The final verification checks that all three modules reported under
+# that one id — that is what makes the demo "one compromised agent" instead of
+# three unrelated blips.
+#
+# WHY THE VERIFICATION IS LEDGER-BASED, NOT EXIT-CODE-BASED
+# ---------------------------------------------------------
+# Every attack below is deliberately tolerant (`|| true`) so a hiccup in one
+# phase still lets the rest of the story play out on screen. That tolerance is
+# why the run is verified against the ledger at the end rather than by exit
+# codes along the way — otherwise "the demo ran" and "the demo worked" would be
+# indistinguishable, which is exactly the kind of green-but-meaningless check
+# this project is supposed to be arguing against.
 
 set -uo pipefail
 cd "$(dirname "$0")"

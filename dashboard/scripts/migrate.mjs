@@ -1,3 +1,31 @@
+// The checksum-verified migration runner.
+//
+// WHAT THIS FILE IS
+// -----------------
+// Applies supabase/migrations/*.sql to the `monolith` schema. It runs as a
+// one-shot container (dashboard-migrator) BEFORE the dashboard starts, and
+// also via the local runner. It connects as the ADMINISTRATIVE postgres role
+// (the runtime role has no migration privileges — that separation is the
+// point of the trust model).
+//
+// WHAT MAKES IT SAFE
+// ------------------
+//   1. Advisory lock (pg_try_advisory_lock): if two migrators race (e.g. two
+//      replicas starting together), exactly one proceeds and the other fails
+//      loudly instead of applying migrations twice.
+//   2. Checksum tracking: every applied migration's SHA-256 is recorded in
+//      monolith.schema_migrations. If a file that was ALREADY applied is
+//      modified, startup fails ("Applied migration X was modified") — you
+//      can't silently rewrite history; you add a NEW migration file instead.
+//   3. Each migration runs in its own transaction: on failure it rolls back
+//      and the process exits non-zero (Compose then refuses to start the
+//      dashboard, and the failure is visible).
+//
+// The migration files themselves live in supabase/migrations/ and are shared
+// with the docker-compose stack; the bootstrap role script
+// (supabase/bootstrap/001-runtime-role.sh) creates the runtime login that the
+// dashboard then uses.
+
 import { readdir, readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -48,6 +76,9 @@ try {
     const sql = await readFile(join(migrationsDir, file), "utf8");
     const checksum = createHash("sha256").update(sql, "utf8").digest("hex");
     if (applied.rowCount) {
+      // Already applied: verify it wasn't modified since (fail loudly if so),
+      // and backfill the checksum for migrations applied before checksums
+      // existed.
       const recorded = applied.rows[0].checksum;
       if (recorded && recorded !== checksum) {
         throw new Error(

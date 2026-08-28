@@ -1,34 +1,36 @@
 //! Structured security-event emission.
 //!
-//! Every detection is emitted both as a human-readable tracing line *and* as
-//! a single-line JSON object in the shared Project Black Monolith event shape:
+//! WHAT THIS FILE IS
+//! -----------------
+//! MCP-Shield's side of the shared event contract. Every detection the proxy
+//! makes is converted here into the exact JSON envelope shape that the
+//! dashboard's /api/ingest expects — the SAME shape VectorAnchor and TraceAudit
+//! emit (python-common/monolith_events/events.py builds it in Python; the
+//! contract itself is contracts/schemas/event-envelope.v2.schema.json).
 //!
-//! ```json
-//! {
-//!   "event_id": "6f1c0f6a-2a1e-4b7d-9c3f-2f6b8d4e1a90",
-//!   "schema_version": 2,
-//!   "timestamp_ms": 1770000000000,
-//!   "module": "mcp-shield",
-//!   "event_type": "schema_mismatch",
-//!   "severity": "critical",
-//!   "details": { ... },
-//!   "source": "module"
-//! }
-//! ```
+//! Emission does two things for every event:
+//!   1. Logs it as a JSON line under the `monolith_event` tracing target
+//!      (visible in stderr, greppable, and what fixtures/tests assert on).
+//!   2. Spools it to the durable outbox (outbox.rs) for delivery to the
+//!      dashboard with retry and dead-lettering.
 //!
-//! VectorAnchor and TraceAudit emit this exact same shape, so the unified
-//! dashboard can consume all three modules' feeds uniformly. The JSON lines
-//! are logged under the `monolith_event` tracing target, which makes them
-//! easy to filter (e.g. `RUST_LOG=monolith_event=info`).
+//! THE CRITICAL INVARIANT
+//! ----------------------
+//! Emission NEVER blocks and never fails the proxy path. A serialization error
+//! is logged and the event is dropped; a spool failure is logged and delivery
+//! degrades. The dashboard being down must cost delivery latency, never the
+//! proxy's availability.
 //!
 //! `event_id` is the ingest endpoint's idempotency key: redelivering an event
-//! after an uncertain failure is a no-op rather than a duplicate row.
+//! after an uncertain failure is a no-op rather than a duplicate row, because
+//! the dashboard inserts with `on conflict (event_id) do nothing`.
 //!
-//! Dashboard integration: when `MONOLITH_DASHBOARD_URL` and
-//! `MONOLITH_EVENT_TOKEN` are set, each event is durably spooled by
-//! [`crate::outbox`] and delivered asynchronously. Emission never blocks and
-//! never fails the proxy path — a dashboard outage costs delivery latency,
-//! not events.
+//! WHO CALLS IT
+//! ------------
+//! proxy.rs — events::emit / events::emit_traced for every detection
+//! (baseline_registered, schema_mismatch, suspicious_description,
+//! tool_pending_approval, tools_list_changed, suspicious_catalog_entry,
+//! suspicious_tool_output, analysis_error).
 
 use crate::outbox;
 use serde::Serialize;
@@ -102,6 +104,8 @@ struct Identity {
 }
 
 fn clean_id(value: String) -> Option<String> {
+    /// Trim + clamp a correlation id to 128 chars; drop blanks. Mirrors the
+    /// Python side (_clean_id in python-common) and the dashboard's bounds.
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return None;
@@ -110,6 +114,10 @@ fn clean_id(value: String) -> Option<String> {
 }
 
 fn identity() -> &'static Identity {
+    /// Read MONOLITH_TENANT_ID / MONOLITH_AGENT_ID / MONOLITH_SESSION_ID once
+    /// (OnceLock) and reuse for the process lifetime. run_full_demo.sh passes
+    /// MONOLITH_SESSION_ID at exec time, which is how one demo run's events
+    /// all land in one session.
     static IDENTITY: OnceLock<Identity> = OnceLock::new();
     IDENTITY.get_or_init(|| Identity {
         tenant_id: std::env::var("MONOLITH_TENANT_ID")
@@ -126,6 +134,10 @@ fn identity() -> &'static Identity {
 /// Deliberately not the JSON-RPC request id: that is only unique within one
 /// connection and is usually a small integer, so `2` would collide across every
 /// session in the ledger.
+///
+/// Called from: proxy.rs (analyze_tools_list, analyze_inspectable_response) so
+/// a schema mismatch and the suspicious description that arrived with it share
+/// one trace_id — one finding seen twice, not two unrelated rows.
 pub fn new_trace_id() -> String {
     new_event_id()
 }
@@ -196,6 +208,16 @@ pub fn emit(event_type: &str, severity: Severity, details: Value) {
 /// Detections from the same `tools/list` exchange share a `trace_id` — a schema
 /// mismatch and the suspicious description that came with it are one finding
 /// seen twice, not two unrelated ones.
+///
+/// Envelope construction, step by step:
+///   1. Read the process identity (tenant/agent/session from env).
+///   2. Derive resource_type/resource_id from the details: whichever of
+///      "tool"/"resource"/"prompt" is present becomes the resource key.
+///   3. Derive `outcome` from details.action, else a sensible default by event
+///      type ("registered", "observed", "degraded", "detected", "reported").
+///   4. Build ShieldEvent, serialize to JSON (failure -> log + return).
+///   5. Log under the monolith_event target (info/warn/error by severity).
+///   6. Spool to the outbox (failure -> log only; the proxy continues).
 pub fn emit_traced(event_type: &str, severity: Severity, details: Value, trace_id: Option<&str>) {
     let id = identity();
     let (resource_type, resource_id) = [
@@ -282,10 +304,10 @@ mod tests {
         groups[2].starts_with('4') && matches!(groups[3].as_bytes()[0], b'8' | b'9' | b'a' | b'b')
     }
 
+    /// The ledger's event_id column is a Postgres `uuid`; anything else is
+    /// rejected at insert time and would retry forever as a poison pill.
     #[test]
     fn event_ids_are_valid_v4_uuids() {
-        // The ledger's event_id column is a Postgres `uuid`; anything else is
-        // rejected at insert time and would retry forever as a poison pill.
         for _ in 0..256 {
             let id = new_event_id();
             assert!(is_uuid_v4(&id), "{id} is not a valid v4 UUID");
@@ -343,11 +365,11 @@ mod tests {
         assert_eq!(value["policy_version"], "mcp-shield/1");
     }
 
+    /// A null would assert "this event belongs to no session"; absence says
+    /// "nobody told us". The dashboard treats these as optional, and the
+    /// difference matters when the queue groups by session.
     #[test]
     fn unknown_correlation_fields_are_omitted_not_nulled() {
-        // A null would assert "this event belongs to no session"; absence says
-        // "nobody told us". The dashboard treats these as optional, and the
-        // difference matters when the queue groups by session.
         let value = serialized(&sample_event(None, None, None));
         let object = value.as_object().unwrap();
         assert!(!object.contains_key("agent_id"));
@@ -380,9 +402,9 @@ mod tests {
         );
     }
 
+    /// Two tools/list exchanges must not look like one operation.
     #[test]
     fn trace_ids_are_unique_per_operation() {
-        // Two tools/list exchanges must not look like one operation.
         assert_ne!(new_trace_id(), new_trace_id());
     }
 }

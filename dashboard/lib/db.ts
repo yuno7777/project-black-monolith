@@ -1,3 +1,38 @@
+// The dashboard's PostgreSQL connection layer.
+//
+// WHAT THIS FILE IS
+// -----------------
+// The single place that owns the pg connection Pool and the two helpers every
+// data-access module uses:
+//   - getDb():      the shared Pool (one per process, cached on globalThis so
+//                   Next.js dev hot-reloads don't leak connections).
+//   - withTenantDb(tenantId, op): run `op` in a transaction with the
+//                   tenant set as transaction-local context.
+//   - withSessionDb(sessionHash, op): same, but scoped to an operator session
+//                   digest instead of a tenant.
+//
+// THE LEAST-PRIVILEGE RUNTIME (the security-relevant part)
+// --------------------------------------------------------
+// The dashboard connects as `monolith_runtime` (a LOGIN role created by
+// supabase/bootstrap/001-runtime-role.sh) and immediately `SET ROLE`s to
+// `monolith_app` — a NOLOGIN group role that holds ONLY the SQL verbs the
+// application needs (see the trust migration). The `options: "-c role=..."`
+// on the Pool means EVERY connection sheds its administrative privileges
+// before the app ever runs a query. Migrations run separately as the
+// `postgres` role via scripts/migrate.mjs, so the runtime never has migration
+// privileges.
+//
+// THE RLS CONTEXT (why the transaction matters)
+// ---------------------------------------------
+// `monolith.tenant_id` is set via set_config(..., true) — the "true" makes it
+// TRANSACTION-LOCAL. Postgres row-level-security policies compare against this
+// setting (see the trust migration), so:
+//   - every query in this transaction can only see the tenant that was set;
+//   - when the transaction ends (commit/rollback) the setting disappears, so
+//     a pooled connection can never leak one request's tenant into the next.
+// The application ALSO filters by tenant_id in every query it writes — two
+// independent bounds on the same property.
+
 import { Pool, type PoolClient } from "pg";
 
 const globalRef = globalThis as unknown as { __monolithPool?: Pool };
@@ -66,6 +101,10 @@ async function withDatabaseContext<T>(
 /**
  * Execute one tenant-scoped unit of work. The context is transaction-local, so
  * a pooled connection cannot leak one request's tenant into the next request.
+ *
+ * Used by: event-store.ts, incident-store.ts, benchmark-store.ts,
+ * operations-store.ts, operator-auth.ts (session creation) — i.e. every data
+ * access module in the dashboard.
  */
 export function withTenantDb<T>(
   tenantId: string,
@@ -74,7 +113,8 @@ export function withTenantDb<T>(
   return withDatabaseContext({ tenantId }, operation);
 }
 
-/** Scope an operator-session lookup/revocation to its opaque digest. */
+/** Scope an operator-session lookup/revocation to its opaque digest.
+ * Used by: operator-auth.ts authenticateSession/revokeOperatorSession. */
 export function withSessionDb<T>(
   sessionHash: string,
   operation: (client: PoolClient) => Promise<T>,

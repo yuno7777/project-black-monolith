@@ -1,5 +1,44 @@
 "use client";
 
+// The investigation queue page (route "/investigate").
+//
+// WHAT THIS PAGE IS
+// -----------------
+// The human operator's working surface: a worst-first, filterable,
+// cursor-paginated queue of incidents, with a detail panel (IncidentPanel)
+// for triaging a selected event (assign / acknowledge / resolve with verdict /
+// reopen), its audit trail, and its cross-layer session view.
+//
+// THE DATA FLOW
+// -------------
+//   Page loads (or filters change)
+//    -> GET /api/incidents?<filters>          [app/api/incidents/route.ts]
+//    -> listIncidents + counts + crossLayer   [incident-store.ts]
+//    -> rows rendered; "Load older" uses the next_cursor for pagination
+//   Analyst clicks a triage button in IncidentPanel
+//    -> POST /api/incidents {event_id, status, ...}   [route.ts]
+//    -> normalizeTransition (actor from the session) + applyTransition
+//       (state + audit row in ONE transaction)
+//    -> response patches the row in place, then reload() reconciles
+//
+// WHY POLLING INSTEAD OF SSE HERE (the overview page streams, this page polls)
+// ---------------------------------------------------------------------------
+// The queue is a working surface, not a live feed: re-sorting under an
+// analyst's cursor mid-triage would be hostile. New events arrive via a slow
+// 15s poll instead.
+//
+// WHY THE ANALYST ROLE IS FETCHED SEPARATELY
+// ------------------------------------------
+// setCanTriage comes from GET /api/auth/session — the UI only shows the
+// triage buttons when the identity is analyst or admin. The server still
+// enforces the role on every POST (defense in depth; the UI is just a
+// convenience).
+//
+// Why the deep-link/focus-session behavior: arriving from a feed row
+// (?event=<id>) or focusing a session widens filters to "all" — the point is
+// to see everything that agent did, and a 24h/open default would hide exactly
+// the older or already-resolved events that make it worth looking at.
+
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import type { Incident, IncidentStatus, MonolithEvent, Severity } from "@/lib/types";

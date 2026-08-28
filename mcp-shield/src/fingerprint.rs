@@ -1,17 +1,51 @@
 //! Schema fingerprinting: deterministic serialization + HMAC-SHA256, and a
 //! JSON-file-backed baseline store.
 //!
-//! On the first sighting of a tool name the tool object's fingerprint is
-//! stored as the trusted baseline. Every later sighting is recomputed and
-//! compared. A mismatch is the signature of the documented "MCP rug pull"
-//! pattern: a server presents a clean schema at approval time, then silently
-//! swaps in a mutated one (typically with instructions injected into the
-//! description) on a later `tools/list`.
+//! WHAT THIS FILE IS
+//! -----------------
+//! MCP-Shield's "memory" and its primary detection mechanism. When a tool
+//! server first advertises a tool (via `tools/list`), this module computes a
+//! fingerprint of the tool's schema and stores it as the TRUSTED BASELINE.
+//! Every later sighting of that tool is re-fingerprinted and compared. If the
+//! fingerprint differs, the schema changed after it was trusted — the
+//! documented "MCP rug pull" pattern (a server presents a clean schema at
+//! approval time, then silently swaps in a mutated one, typically with
+//! instructions injected into the description).
 //!
-//! An HMAC (keyed hash) is used instead of a plain SHA-256 so that a
-//! malicious server that somehow learns the baseline file's contents cannot
-//! forge a colliding "clean-looking" record without also knowing the local
-//! secret key.
+//! THE SIMPLE VERSION
+//! ------------------
+//! Think of it as a signed "photo" of every approved tool. The photo is taken
+//! the first time the tool is seen, stored in baseline_hashes.json, and every
+//! subsequent viewing is compared against the photo. Different photo -> the
+//! tool changed after approval -> alarm (and, in enforce mode, the mutated
+//! tool is replaced by the stored original before the agent sees it).
+//!
+//! WHY HMAC INSTEAD OF PLAIN SHA-256
+//! ---------------------------------
+//! The baseline file stores the fingerprint AND the full tool object (so
+//! enforce mode can rewrite back to it). If someone with filesystem access
+//! edits the file, a plain hash would let them replace both the hash and the
+//! payload — turning the defense into a schema-INJECTION mechanism. An HMAC
+//! (keyed hash) means the stored fingerprint can only be produced by someone
+//! who knows MCP_SHIELD_KEY, so a tampered file fails verification at load
+//! time and the proxy refuses to start (fail closed).
+//!
+//! THE BASELINE IS NEVER OVERWRITTEN ON MISMATCH (and why)
+//! -------------------------------------------------------
+//! Once a tool is registered as trusted, a mismatched serving does NOT update
+//! the baseline. Consequences, both deliberate:
+//!   - every later sighting of the mutated schema re-flags — each serving of a
+//!     poisoned schema is a live attempt against the agent, never suppressed
+//!     as an "already seen" duplicate;
+//!   - the only way to re-baseline a legitimately updated tool is for an
+//!     operator to delete the baseline file (or use approve-mode's --approve
+//!     for never-before-seen tools).
+//!
+//! WHO USES IT
+//! -----------
+//! proxy.rs analyze_tools_list() calls fingerprint_tool() + store.check() for
+//! every tool in every tools/list response, and store.load() at startup.
+//! main.rs --list-pending / --approve use pending_names() / approve().
 
 use anyhow::{anyhow, bail, Context, Result};
 use hmac::{Hmac, Mac};
@@ -32,6 +66,14 @@ const MAX_TOOL_NAME_BYTES: usize = 128;
 /// deterministic canonical form. `serde_json::Map` preserves insertion order
 /// by default, so two semantically identical tool objects could otherwise
 /// hash differently just because a server reordered its fields.
+///
+/// Step by step:
+///   - Object: sort the keys, then emit `"key":<canonical value>` joined
+///     inside braces. The key is encoded exactly as serde_json would encode a
+///     string so the output is unambiguous.
+///   - Array: emit `[<canonical items>]`.
+///   - Scalars (null/bool/number/string): to_string() is already
+///     deterministic.
 pub fn canonicalize(value: &Value) -> String {
     match value {
         Value::Object(map) => {
@@ -64,6 +106,8 @@ pub fn hmac_hex(key: &[u8], data: &str) -> Result<String> {
 }
 
 /// Fingerprint one tool object from a `tools/list` result.
+/// Called from: proxy.rs analyze_tools_list(), and BaselineStore::load() to
+/// re-verify persisted entries.
 pub fn fingerprint_tool(key: &[u8], tool: &Value) -> Result<String> {
     hmac_hex(key, &canonicalize(tool))
 }
@@ -97,6 +141,10 @@ pub struct BaselineEntry {
 /// novel wording outside its corpus is silently blessed as the baseline.
 /// `Approve` removes the guesswork: an unseen tool is withheld from the agent
 /// and parked as pending until an operator approves it by name.
+///
+/// Configured via MCP_SHIELD_FIRST_CONTACT=trust|approve (proxy.rs
+/// ShieldConfig::from_env). `trust` is the default; `approve` is the
+/// no-trust-on-first-use option.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FirstContact {
     /// Register the first sighting as trusted. Convenient, and the reason
@@ -159,6 +207,8 @@ impl BaselineStore {
     /// edit the JSON file could replace both the hash and the rewrite payload,
     /// turning the defense into a schema-injection mechanism. Corrupt,
     /// unreadable, legacy-unverifiable, or tampered files fail startup closed.
+    ///
+    /// Called from: main.rs (all modes), proxy.rs run().
     pub fn load(path: &Path, hmac_key: &[u8]) -> Result<Self> {
         match std::fs::metadata(path) {
             Ok(metadata) if metadata.len() > MAX_BASELINE_BYTES => {
@@ -211,6 +261,12 @@ impl BaselineStore {
                 MAX_BASELINE_TOOLS
             );
         }
+        // Authenticate EVERY entry (trusted and pending alike) before the
+        // store is usable:
+        //   1. name is bounded and matches the stored tool object's name;
+        //   2. description metadata matches the stored object;
+        //   3. the HMAC of the stored tool object equals the stored hash —
+        //      anything else means the file or the key changed.
         for (name, entry) in file.tools.iter().chain(file.pending.iter()) {
             if name.is_empty() || name.len() > MAX_TOOL_NAME_BYTES {
                 bail!(
@@ -263,6 +319,7 @@ impl BaselineStore {
     }
 
     /// Tool names awaiting approval, sorted for stable operator output.
+    /// Used by main.rs --list-pending.
     pub fn pending_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self.pending.keys().cloned().collect();
         names.sort();
@@ -273,6 +330,9 @@ impl BaselineStore {
     /// existing pending record: if a tool is re-served with different content
     /// while awaiting approval, the operator must approve what they first saw,
     /// not whatever arrived most recently.
+    ///
+    /// Returns true if newly parked. Called from proxy.rs analyze_tools_list()
+    /// under FirstContact::Approve.
     pub fn register_pending(
         &mut self,
         tool_name: &str,
@@ -297,7 +357,7 @@ impl BaselineStore {
 
     /// Promote a pending tool to trusted. Returns false when nothing is
     /// pending under that name, so an operator approving a typo is told so
-    /// rather than silently succeeding.
+    /// rather than silently succeeding. Called from main.rs --approve.
     pub fn approve(&mut self, tool_name: &str) -> bool {
         match self.pending.remove(tool_name) {
             None => false,
@@ -310,6 +370,10 @@ impl BaselineStore {
 
     /// Compare a freshly computed hash against the baseline, registering it
     /// (hash + full tool object) if the tool has never been seen before.
+    ///
+    /// Called from: proxy.rs analyze_tools_list() for every tool.
+    /// Returns the Verdict the proxy reacts to (Register -> baseline_registered
+    /// event; Match -> pass; Mismatch -> critical event + possible rewrite).
     pub fn check(
         &mut self,
         tool_name: &str,
@@ -342,6 +406,9 @@ impl BaselineStore {
     /// A direct truncate-and-write can leave a corrupt or empty trust store if
     /// the process or host stops mid-write. Build and fsync a sibling temporary
     /// file first, then atomically replace the destination.
+    ///
+    /// Called from: proxy.rs analyze_tools_list() after any registration, and
+    /// main.rs --approve.
     pub fn save(&self) -> Result<()> {
         let file = BaselineFile {
             tools: self.tools.clone(),
@@ -383,6 +450,9 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Two JSON objects with the same content but different key order must
+    /// canonicalize identically — otherwise a server could evade detection
+    /// merely by reordering its fields.
     #[test]
     fn canonicalize_is_key_order_independent() {
         let a: Value = serde_json::from_str(r#"{"b":1,"a":{"y":2,"x":3}}"#).unwrap();
@@ -390,6 +460,8 @@ mod tests {
         assert_eq!(canonicalize(&a), canonicalize(&b));
     }
 
+    /// A mismatch must re-flag on EVERY sighting (each serving is a live
+    /// attack attempt), and must never overwrite the trusted baseline.
     #[test]
     fn mismatch_is_reflagged_on_every_subsequent_sighting() {
         // Load from a path that doesn't exist: in-memory store, never saved.
@@ -420,6 +492,9 @@ mod tests {
         ));
     }
 
+    /// The stored HMAC makes the file tamper-evident: a wrong key, an edited
+    /// rewrite payload, or a legacy entry without a tool object must all fail
+    /// load() (fail closed, so a tampered store can never drive enforcement).
     #[test]
     fn persisted_baselines_are_authenticated_before_use() {
         let path = std::env::temp_dir().join(format!(
@@ -459,6 +534,7 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    /// Corrupt JSON and legacy (tool-less) entries must fail closed.
     #[test]
     fn corrupt_or_legacy_baselines_fail_closed() {
         let path = std::env::temp_dir().join(format!(
@@ -477,6 +553,8 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    /// Size check must happen before parsing (a giant file should be refused
+    /// without attempting to read it all).
     #[test]
     fn oversized_baseline_file_fails_before_parsing() {
         let path = std::env::temp_dir().join(format!(
@@ -490,6 +568,7 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    /// Repeated saves must keep the file valid and reloadable.
     #[test]
     fn saving_replaces_an_existing_baseline_with_valid_json() {
         let path = std::env::temp_dir().join(format!(

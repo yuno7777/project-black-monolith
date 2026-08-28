@@ -3,11 +3,38 @@
 //! class where a tool's description carries instructions aimed at the agent
 //! rather than at the human who approved the tool.
 //!
-//! Three detector families:
-//!   1. instruction-override phrases ("ignore previous instructions", ...)
-//!   2. embedded shell-command-looking substrings ("rm -rf", "curl ", ...)
-//!   3. invisible / non-printable Unicode used to hide text from human
-//!      reviewers while remaining visible to the model.
+//! WHAT THIS FILE IS
+//! -----------------
+//! MCP-Shield's SECOND detector (after the fingerprint in fingerprint.rs).
+//! The fingerprint can only detect that a schema CHANGED after approval. This
+//! sanitizer is stateless — it judges the description text itself on every
+//! serving — so it can also catch FIRST-CONTACT poisoning: a tool that was
+//! already malicious before anyone ever looked. In enforce mode, a suspicious
+//! first contact is removed from the response and NEVER registered as a
+//! baseline (see proxy.rs analyze_tools_list).
+//!
+//! THE THREE DETECTOR FAMILIES
+//! ---------------------------
+//!   1. instruction_override: phrases used to hijack the agent's instruction
+//!      hierarchy ("ignore previous instructions", "do not tell the user"...).
+//!   2. shell_command: substrings that look like embedded shell commands
+//!      ("curl ", "rm -rf", "| bash"...). The trailing space on "curl "/"wget "
+//!      is deliberate — it catches real command usage while not flagging prose
+//!      like "curling".
+//!   3. invisible_unicode: zero-width and bidi-control characters used to hide
+//!      text from human reviewers while the model still sees it, plus a
+//!      catch-all for any other non-whitespace control character.
+//!
+//! HONEST LIMITATION (say this in an interview)
+//! --------------------------------------------
+//! It is pattern-based: precise on look-alikes, but it misses novel injection
+//! phrasings that carry no known marker. The benchmark corpus keeps two such
+//! misses on purpose, which is why the sanitizer's recall is 71.4% — the
+//! imperfect number is the honest one (EVALUATION.md, the Benchmarks page).
+//!
+//! Called from: proxy.rs — scan_description() runs in analyze_tools_list()
+//! (per tool), analyze_inspectable_response() (prompts/resources/templates),
+//! and analyze_tool_result() (tool output text).
 
 use serde::Serialize;
 
@@ -79,6 +106,18 @@ const INVISIBLE_CHARS: &[(char, &str)] = &[
 
 /// Scan a tool description and return every suspicious pattern found.
 /// An empty vec means the description looks clean.
+///
+/// Called from: proxy.rs (tools/list analysis, catalog inspection, tool result
+/// inspection) and the benchmark/tests.
+///
+/// Implementation notes:
+///   - Instruction and shell patterns are matched against the LOWERCASED copy
+///     so "Ignore Previous Instructions" is caught regardless of case.
+///   - Invisible characters are matched against the ORIGINAL string (the
+///     lowercase copy keeps the characters, but checking the original avoids
+///     any doubt about casing).
+///   - The control-character catch-all deliberately excludes \n \r \t (legal
+///     whitespace) but includes every other control char.
 pub fn scan_description(description: &str) -> Vec<Finding> {
     let mut findings = Vec::new();
     let lowered = description.to_lowercase();

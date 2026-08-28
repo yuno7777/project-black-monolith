@@ -1,5 +1,31 @@
 "use client";
 
+// The investigation detail panel: everything about ONE incident.
+//
+// WHAT THIS FILE IS
+// -----------------
+// Rendered when an incident is selected in the queue (/investigate). It shows
+// the event's details, its triage state, the append-only audit trail, and the
+// cross-layer session view — and, for analysts, the triage controls
+// (assign / acknowledge / resolve with verdict / reopen).
+//
+// THE DATA FLOW
+// -------------
+//   Panel opens for incident X
+//    -> GET /api/incidents/<id>/session  (sessionForEvent — what else the
+//       agent session did; 404 just means "no correlation identity", shown
+//       as nothing)
+//    -> GET /api/incidents/<id>/audit    (getAuditTrail — the append-only
+//       transition log)
+//   Analyst clicks a triage action
+//    -> onTransition({status, ...})      (the investigate page's transition(),
+//       which POSTs /api/incidents — the actor is derived from the session,
+//       never sent by the client)
+//    -> onSelectSession(session, agent)  (widen the queue to the whole session)
+//
+// The draft note/resolution are reset whenever the incident changes so a note
+// typed for one incident can never leak into another.
+
 import { useEffect, useState } from "react";
 import type { AuditEntry, Incident, IncidentStatus, Resolution, SessionView } from "@/lib/types";
 import {

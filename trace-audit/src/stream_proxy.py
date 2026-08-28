@@ -1,7 +1,24 @@
 """Streaming proxy: forwards a prompt to a model backend and intercepts the
 token stream in real time.
 
-Two backends:
+WHAT THIS FILE IS
+-----------------
+The core of TraceAudit: it wraps a model backend's token stream and runs every
+token through two detectors BEFORE the token is released to the caller:
+
+  1. DivergenceMonitor (divergence_monitor.py) — rolling KL divergence vs a
+     captured baseline distribution. Off-distribution reasoning spikes it;
+     crossing the threshold TERMINATES the stream with a safe refusal.
+  2. PiiStreamBuffer + PiiMatch scan (pii_scanner.py) — credential/PII
+     patterns are redacted to [REDACTED:label] before any fragment is
+     forwarded, logged, or emitted.
+
+The tricky engineering bit is that both checks must happen on the TOKEN stream
+while it is still streaming, and the PII check needs a small look-behind window
+because a tokenizer can split a credential across two tokens.
+
+THE TWO BACKENDS
+----------------
   * "mock" (default): a deterministic, offline stand-in model so the whole
     demo runs with no model download. Its output distribution depends on the
     prompt, exactly as a real model's would: an ordinary prompt yields normal
@@ -13,10 +30,13 @@ Two backends:
   * "ollama": streams from a local Ollama server (or any compatible
     /api/generate endpoint) at MONOLITH_OLLAMA_URL.
 
-As each token arrives it is run through the divergence monitor and the PII
-scanner. On divergence the stream is terminated early and a safe refusal is
-substituted; on a PII/credential hit the span is redacted before it is
-forwarded, logged, or emitted.
+WHO CALLS WHAT
+--------------
+  main.py /generate -> StreamAuditor.audit() (this file) -> per token:
+      DivergenceMonitor.observe()   (divergence_monitor.py)
+      PiiStreamBuffer.push() + scan() (pii_scanner.py)
+  -> yields SSE frames back to main.py -> the agent.
+  -> events via EventEmitter (python-common outbox) -> dashboard.
 """
 
 from __future__ import annotations
@@ -32,16 +52,21 @@ from .divergence_monitor import DivergenceMonitor
 from .events import EventContext, now_ms
 from .pii_scanner import PiiMatch, scan
 
-# Ordinary, on-distribution reasoning vocabulary.
+# Ordinary, on-distribution reasoning vocabulary — the pool the mock backend
+# draws from for benign prompts. These words are what the baseline distribution
+# is captured from (baseline_capture.py), so they ARE on-distribution.
 NORMAL_TOKENS = ["let", "us", "think", "about", "this", "the", "user", "wants", "a", "clear", "answer", "first", "we", "consider", "the", "context", "then", "we", "provide", "a", "helpful", "response", "step", "by", "step", "because", "it", "is", "correct", "and", "safe", "so", "the", "answer", "follows", "from", "the", "facts", "we", "explain", "plainly", "and", "stay", "on", "topic"]
 
 # Off-distribution "roundabout / evasive" reasoning: familiar connective words
 # mixed with unfamiliar nonsense tokens that never appear in the baseline, so
-# the live distribution shifts hard away from it.
+# the live distribution shifts hard away from it (the <other> bucket absorbs
+# the nonsense tokens and drives KL up).
 DIVERGENT_TOKENS = ["however", "conversely", "hypothetically", "circumvent", "pretend", "secretly", "bypass", "ignore", "the", "guardrails", "obfuscate", "reroute", "exfiltrate", "quietly", "without", "telling", "anyone", "fabricate", "a", "pretext", "misdirect", "the", "auditor", "zzxq", "qwploo", "vbnmk", "glorptastic", "wibblewobble", "frobnicate", "quuxly"]
 
+# If the PROMPT contains any of these words, the mock picks the divergent pool.
 _DIVERGENCE_MARKERS = ("roundabout", "unusual", "evasive", "obfuscat", "circumvent")
 
+# Substituted for the remaining output when a trace is terminated.
 SAFE_REFUSAL = (
     "[TraceAudit] Response terminated: the reasoning trace diverged from the "
     "safe baseline distribution and was stopped before completion. A safe "
@@ -50,7 +75,9 @@ SAFE_REFUSAL = (
 
 # Delay a small number of output fragments so a credential split by a
 # tokenizer can be recognized and redacted before any fragment is released.
-# The bound keeps streaming latency and memory finite.
+# The bound keeps streaming latency and memory finite. The evasion test pins
+# the boundary: splits within this window are caught, splits across more than
+# the window still evade.
 PII_TOKEN_WINDOW = 16
 OLLAMA_CONNECT_TIMEOUT_SECONDS = 5.0
 OLLAMA_READ_TIMEOUT_SECONDS = 30.0
@@ -61,18 +88,32 @@ POLICY_VERSION = "trace-audit/1"
 
 @dataclass
 class _BufferedToken:
+    """One token held in the PII look-behind buffer, together with the KL value
+    computed when it was observed (so a released token still reports its KL)."""
+
     token: str
     kl: float | None
 
 
 @dataclass
 class _BufferDrain:
+    """The result of pushing a token into the buffer: which tokens can now be
+    released (possibly redacted) and which PII matches were found."""
+
     outputs: list[_BufferedToken]
     matches: list[PiiMatch]
 
 
 class PiiStreamBuffer:
-    """Bounded look-behind that redacts matches spanning token boundaries."""
+    """Bounded look-behind that redacts matches spanning token boundaries.
+
+    WHY IT EXISTS: a tokenizer can split a credential across two tokens (e.g.
+    "AKIA" + "ABCDEF..."). Scanning each token in isolation would miss the
+    split credential. So the buffer keeps the last up-to-16 tokens, scans their
+    concatenations, and only releases a token once it can no longer be part of
+    a match. The 16-token cap bounds streaming latency (tokens are delayed at
+    most 16 positions) and memory.
+    """
 
     def __init__(self, window_tokens: int = PII_TOKEN_WINDOW):
         if window_tokens < 2:
@@ -81,16 +122,31 @@ class PiiStreamBuffer:
         self._pending: list[_BufferedToken] = []
 
     def push(self, token: str, kl: float | None) -> _BufferDrain:
+        """Append a new token and release whatever can be safely released.
+        Called from StreamAuditor.audit() for every backend token."""
         self._pending.append(_BufferedToken(token, kl))
         return self._drain(force=False)
 
     def finish(self) -> _BufferDrain:
+        """Release everything at end of stream (no more tokens can extend a
+        match). Called once when the backend stream ends normally."""
         return self._drain(force=True)
 
     def clear(self) -> None:
+        """Discard buffered tokens WITHOUT releasing them. Called when a trace
+        is terminated: fragments of a divergent/secret-bearing trace must never
+        be released after the fact."""
         self._pending.clear()
 
     def _drain(self, *, force: bool) -> _BufferDrain:
+        """Decide what to release now:
+          - If a PII match ends in the newest token: redact ALL pending tokens
+            and release them (the match is resolved).
+          - If force (end of stream): release everything as-is.
+          - If the buffer exceeds the window: release the OLDEST token (it can
+            no longer be part of a match ending in the newest token).
+          - Otherwise: hold everything.
+        """
         matches = self._matches_ending_in_latest()
         if matches:
             outputs, applied = self._redact_matches(matches)
@@ -110,6 +166,12 @@ class PiiStreamBuffer:
         ``normal`` followed by ``AKIA...`` would lose the word boundary before
         the key. Suffixes include the final token by itself and every possible
         cross-token reconstruction ending at it.
+
+        For each suffix [i..end], run the PII scanner; keep only matches that
+        END at or after the newest token starts (a match fully inside older
+        text would already have been released). Offsets are translated from
+        suffix-local to whole-buffer coordinates; dedupe on
+        (label, start, end) so overlapping suffix scans don't double-report.
         """
         if not self._pending:
             return []
@@ -142,7 +204,22 @@ class PiiStreamBuffer:
     def _redact_matches(
         self, matches: list[PiiMatch]
     ) -> tuple[list[_BufferedToken], list[PiiMatch]]:
-        """Apply combined-buffer offsets while retaining token boundaries."""
+        """Apply combined-buffer offsets while retaining token boundaries.
+
+        Step by step:
+          1. Compute each pending token's start/end offset in the concatenated
+             buffer.
+          2. Sort matches by start DESCENDING so replacing earlier spans does
+             not shift later offsets.
+          3. Skip any match overlapping one already applied (defensive).
+          4. For each match: find which token(s) it spans. If it is inside one
+             token, splice the [REDACTED:label] placeholder into that token.
+             If it spans several, truncate the first token at the match start,
+             blank the middle tokens, and truncate the last token from the
+             match end.
+          5. Drop blanked tokens; return the surviving (redacted) tokens with
+             their original KL values, plus the list of applied matches.
+        """
         starts: list[int] = []
         ends: list[int] = []
         cursor = 0
@@ -191,6 +268,9 @@ class PiiStreamBuffer:
 
 
 def _looks_divergent(prompt: str) -> bool:
+    """Does this prompt push for evasive reasoning? Used ONLY by the mock
+    backend to pick its token pool. The real detector (KL divergence) does not
+    look at the prompt at all — it judges the OUTPUT distribution."""
     p = prompt.lower()
     return any(m in p for m in _DIVERGENCE_MARKERS)
 
@@ -202,19 +282,35 @@ def _leaked_secrets(prompt: str) -> list[str]:
 
 
 def _stable_seed(prompt: str) -> int:
-    """Process-independent seed. Python's built-in ``hash()`` is salted per
-    process (PYTHONHASHSEED), so use a stable digest instead — this makes the
-    mock backend genuinely deterministic across restarts, which the demo and
-    the calibration harness rely on."""
+    """Process-independent seed for the mock's RNG. Python's built-in ``hash()``
+    is salted per process (PYTHONHASHSEED), so using it made the "deterministic"
+    mock produce different output across restarts (the KL max drifted between
+    runs — a real bug found during calibration). A SHA-256 digest of the prompt
+    is stable everywhere, so the demo and calibration are genuinely
+    reproducible."""
     return int.from_bytes(hashlib.sha256(prompt.encode("utf-8")).digest()[:8], "big")
 
 
 def _secret_fingerprint(value: str) -> bytes:
-    """One-way in-memory dedupe key; never retain the plaintext credential."""
+    """One-way in-memory dedupe key for reported secrets; never retain the
+    plaintext credential. Used so a credential that appears repeatedly in one
+    trace emits one pii_redacted event, not hundreds."""
     return hashlib.sha256(value.encode("utf-8")).digest()
 
 
 async def _mock_stream(prompt: str, max_tokens: int) -> AsyncIterator[str]:
+    """The deterministic offline mock model.
+
+    Behavior:
+      - Seed an RNG from the prompt (stable across processes).
+      - Pick the token pool: divergent words if the prompt looks evasive,
+        normal words otherwise.
+      - If the prompt contains credential-looking strings, "leak" them at
+        position 8 (modeling a model echoing a secret from its context) so the
+        PII scanner has something to catch.
+      - Yield max_tokens tokens with tiny sleeps so the stream behaves like a
+        real async stream (and the demo is watchable).
+    """
     rng = random.Random(_stable_seed(prompt))
     pool = DIVERGENT_TOKENS if _looks_divergent(prompt) else NORMAL_TOKENS
     secrets = _leaked_secrets(prompt)
@@ -234,6 +330,16 @@ async def _ollama_stream(
     *,
     transport=None,
 ) -> AsyncIterator[str]:
+    """Stream tokens from a real Ollama server (or any compatible
+    /api/generate endpoint) at MONOLITH_OLLAMA_URL.
+
+    Interaction: POSTs {model, prompt, stream: true, options: {num_predict}}
+    to <base>/api/generate; Ollama answers with newline-delimited JSON, each
+    line carrying a "response" chunk; the loop yields each whitespace-split
+    token and stops when "done" is true. httpx is imported lazily so the mock
+    backend path never needs it installed. Exceptions propagate to
+    StreamAuditor.audit(), which lets the error abort the /generate stream.
+    """
     import json
 
     import httpx  # lazily imported: only needed for the ollama backend
@@ -268,6 +374,7 @@ async def _ollama_stream(
 
 
 def _backend_stream(prompt: str, max_tokens: int, cfg: Config) -> AsyncIterator[str]:
+    """Pick the backend stream by configuration (mock default, ollama if set)."""
     if cfg.model_backend == "ollama":
         return _ollama_stream(prompt, max_tokens, cfg)
     return _mock_stream(prompt, max_tokens)
@@ -275,7 +382,12 @@ def _backend_stream(prompt: str, max_tokens: int, cfg: Config) -> AsyncIterator[
 
 class StreamAuditor:
     """Wraps a backend token stream with divergence + PII interception and
-    yields event dicts ready for SSE serialization."""
+    yields event dicts ready for SSE serialization.
+
+    One instance is built at startup (main.py lifespan) and shared by every
+    /generate request; the per-request state (monitor, buffer) is created
+    inside audit(), so concurrent requests are independent.
+    """
 
     def __init__(self, cfg: Config, baseline_counts: dict[str, int], emit):
         self.cfg = cfg
@@ -288,9 +400,38 @@ class StreamAuditor:
         max_tokens: int | None = None,
         ctx: EventContext | None = None,
     ) -> AsyncIterator[dict]:
-        """`ctx` carries the caller's correlation identity for this one
-        generation, so a leaked credential or a terminated trace can be tied to
-        detections the other layers made in the same agent session."""
+        """Audit one generation and yield SSE frames.
+
+        Called from: main.py /generate event_stream().
+
+        Frame types yielded (these become the "data:" lines the agent sees):
+          {"type":"token","token":...,"kl":...,"threshold":...}
+          {"type":"pii","label":...,"redacted":"[REDACTED:...]"}
+          {"type":"terminated","reason":"reasoning_divergence","safe_refusal":...}
+          {"type":"done","peak_kl":...,"tokens":...}
+
+        The loop, step by step:
+          1. Clamp max_tokens to the OPERATOR's ceiling (MONOLITH_MAX_TOKENS) —
+             an untrusted request must not be able to raise it.
+          2. Build a fresh DivergenceMonitor and PiiStreamBuffer for this
+             request.
+          3. For each backend token:
+             a. monitor.observe(token) — update the rolling window and compute
+                current KL. The observation is immediate; only RELEASE to the
+                client is delayed by the PII look-behind.
+             b. pii_buffer.push(token, kl) — may release redacted tokens and
+                report matches.
+             c. Yield a "pii" frame (once per unique secret) and a "token"
+                frame for each released token.
+             d. If KL >= threshold: clear the PII buffer (never release
+                fragments of a terminated trace), emit the critical
+                reasoning_divergence_terminate event, yield the "terminated"
+                frame with the safe refusal, and STOP.
+          4. On normal end of stream: flush the PII buffer, then yield "done".
+        """
+        # `ctx` carries the caller's correlation identity for this one
+        # generation, so a leaked credential or a terminated trace can be tied to
+        # detections the other layers made in the same agent session.
         if max_tokens is not None and max_tokens < 1:
             raise ValueError("max_tokens must be positive")
         # MONOLITH_MAX_TOKENS is an operator-owned ceiling, not merely a

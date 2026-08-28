@@ -4,10 +4,13 @@
 // This is the endpoint the whole correlation effort exists for: one module
 // firing is a detection, but the same session tripping the tool, memory and
 // reasoning layers is a compromised agent, and no single module can see that.
+// The grouping key is the complete (tenant_id, agent_id, session_id) tuple —
+// a session_id alone is NOT treated as globally unique.
 //
 // 404 is not an error here in the usual sense — an event whose caller never
 // told us its session simply cannot be correlated, and saying so is better than
-// inventing a grouping.
+// inventing a grouping. Called by the IncidentPanel (session view) and
+// included in the evidence export bundle.
 
 import { sessionForEvent } from "@/lib/incident-store";
 import { requireOperator } from "@/lib/route-auth";

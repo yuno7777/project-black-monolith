@@ -1,7 +1,15 @@
 //! Durable, at-least-once dashboard delivery for MCP-Shield security events.
 //!
-//! # Why this is not a copy of the Python outbox
+//! WHAT THIS FILE IS
+//! -----------------
+//! The Rust twin of python-common's SQLite outbox: it guarantees that a
+//! security event is durably stored on disk BEFORE the detection code
+//! continues, then delivers it to the dashboard's /api/ingest endpoint with
+//! retries and dead-lettering. Same delivery contract as the Python modules;
+//! different storage because the runtime is different.
 //!
+//! WHY THIS IS NOT A COPY OF THE PYTHON OUTBOX
+//! -------------------------------------------
 //! VectorAnchor and TraceAudit are long-lived uvicorn servers, so their
 //! outboxes can spool an event and retry it minutes later on a background
 //! thread. MCP-Shield is the opposite: it is a **short-lived proxy** that
@@ -14,12 +22,14 @@
 //! 2. A background flusher drains due records while the proxy runs, so
 //!    detections still reach the dashboard live.
 //! 3. `drain(.., force = true)` runs once more before exit, ignoring backoff,
-//!    to give this run's events a last chance to land.
+//!    to give this run's events a last chance to land (main.rs calls it with a
+//!    3-second budget).
 //! 4. Anything still undelivered stays on the spool and is retried by the
 //!    next proxy invocation or the resident `--drain-outbox` process.
 //!
 //! Production runs keep that resident worker on the shared spool so retry
-//! progress is independent of any individual agent session.
+//! progress is independent of any individual agent session (docker-compose
+//! runs `mcp-shield --drain-outbox`).
 //!
 //! # Storage
 //!
@@ -29,6 +39,11 @@
 //! write-to-temp + `rename` over the original, which is atomic within a
 //! directory. Permanently rejected events move to a sibling `.dead` file
 //! rather than being silently dropped.
+//!
+//! WHO USES IT
+//! -----------
+//! events.rs emit_traced() enqueues every event; main.rs spawns the flusher,
+//! force-drains on exit, and runs the resident drainer mode.
 
 use crate::events::now_ms;
 use fs2::FileExt;
@@ -61,6 +76,9 @@ fn is_permanent(status: u16) -> bool {
     matches!(status, 400 | 401 | 403 | 413 | 422)
 }
 
+/// Token must be >= 16 chars of header-safe characters — the same rule the
+/// dashboard enforces (dashboard/lib/credentials.ts), so a token that passes
+/// here will pass there. Rejects header-injection attempts (newlines/spaces).
 fn valid_event_token(token: &str) -> bool {
     token.len() >= MIN_EVENT_TOKEN_LENGTH
         && token.bytes().all(|byte| {
@@ -69,6 +87,8 @@ fn valid_event_token(token: &str) -> bool {
         })
 }
 
+/// One line of the JSONL spool: the event id (idempotency key), the serialized
+/// envelope, the attempt count, and when the next retry is allowed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SpoolRecord {
     pub event_id: String,
@@ -103,6 +123,9 @@ impl SpoolRecord {
 }
 
 pub(crate) fn parse_dashboard_url(value: &str) -> Option<reqwest::Url> {
+    /// Validate the dashboard URL: http(s), has a host, and contains NO
+    /// embedded credentials or fragment (a URL with user:pass@ or #secret
+    /// could leak the secret into logs). Used by from_env.
     let url = reqwest::Url::parse(value).ok()?;
     if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none()
@@ -128,6 +151,9 @@ pub(crate) struct Outbox {
 }
 
 impl Outbox {
+    /// Build the outbox from the environment. Returns None (with a loud
+    /// warning) when delivery is not fully configured — events then only go to
+    /// stderr, which is the correct degradation for a module run standalone.
     fn from_env() -> Option<Outbox> {
         let url = std::env::var("MONOLITH_DASHBOARD_URL").ok()?;
         let target = match parse_dashboard_url(&url) {
@@ -184,6 +210,10 @@ impl Outbox {
 
     /// Append one event to the spool and fsync it. This is the only operation
     /// on the proxy's hot path; it is synchronous and bounded.
+    ///
+    /// Called from: events.rs emit_traced() for every event. The in-process
+    /// mutex serializes tasks; the cross-process file lock serializes the
+    /// proxy processes and the resident drainer sharing the same volume.
     pub(crate) fn enqueue(&self, event_id: &str, payload: &str) -> std::io::Result<()> {
         let record = SpoolRecord {
             event_id: event_id.to_string(),
@@ -197,6 +227,8 @@ impl Outbox {
         append_record(&self.path, &record)
     }
 
+    /// POST one event to the dashboard with the bearer token. Returns the HTTP
+    /// status, or the error text on network failure (the caller retries those).
     async fn post(&self, body: &str) -> Result<u16, String> {
         self.client
             .post(self.target.clone())
@@ -214,6 +246,21 @@ impl Outbox {
     /// `force` ignores per-record backoff — used for the final drain before
     /// exit, where a last attempt now beats a scheduled attempt that will
     /// never happen.
+    ///
+    /// Step by step:
+    ///   1. Load all pending records (under both locks).
+    ///   2. For each (until the time budget runs out): POST it.
+    ///      - 2xx          -> mark delivered (removed at reconcile).
+    ///      - permanent    -> move to the dead list immediately.
+    ///      - other/error  -> defer() (backoff); dead-list it if attempts
+    ///                        have reached MAX_ATTEMPTS.
+    ///   3. reconcile(): re-read the spool, drop delivered/dead, apply updated
+    ///      backoff fields, cap the spool at MAX_SPOOL_RECORDS, append dead
+    ///      records to the .dead file, and atomically rewrite the spool.
+    ///
+    /// The re-read under the lock is what makes concurrent enqueue() safe:
+    /// events appended while the drain was awaiting network I/O are still in
+    /// the file and are preserved.
     pub(crate) async fn drain(&self, budget: Duration, force: bool) {
         let started = Instant::now();
         let pending = match self.load_pending() {
@@ -331,7 +378,7 @@ impl Outbox {
 
     /// Serialize spool mutations across proxy processes and the resident
     /// drainer. The in-memory mutex only protects tasks in one process; this
-    /// advisory lock protects the shared volume itself.
+    /// advisory lock (fs2, exclusive) protects the shared volume itself.
     fn acquire_process_lock(&self) -> std::io::Result<std::fs::File> {
         let file = OpenOptions::new()
             .create(true)
@@ -345,6 +392,8 @@ impl Outbox {
 }
 
 fn append_record(path: &Path, record: &SpoolRecord) -> std::io::Result<()> {
+    /// Append one line and fsync — this is the durability point: once this
+    /// returns, the record survives a crash.
     let line = serde_json::to_string(record)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
@@ -354,6 +403,9 @@ fn append_record(path: &Path, record: &SpoolRecord) -> std::io::Result<()> {
 }
 
 fn read_records(path: &Path) -> std::io::Result<Vec<SpoolRecord>> {
+    /// Read the whole spool. A torn final line (power loss mid-append) must
+    /// not poison the whole file — it is skipped with a warning and the rest
+    /// is kept.
     let file = match OpenOptions::new().read(true).open(path) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -376,6 +428,9 @@ fn read_records(path: &Path) -> std::io::Result<Vec<SpoolRecord>> {
 }
 
 fn write_records_atomically(path: &Path, records: &[SpoolRecord]) -> std::io::Result<()> {
+    /// Rewrite the spool via temp-file + fsync + rename (atomic within a
+    /// directory), so a crash mid-compaction can never leave a truncated file.
+    /// An empty record set removes the file entirely.
     if records.is_empty() {
         return match fs::remove_file(path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -400,6 +455,9 @@ fn write_records_atomically(path: &Path, records: &[SpoolRecord]) -> std::io::Re
     fs::rename(&temp, path)
 }
 
+/// Process-wide singleton: the first call builds the Outbox from the env
+/// (and caches the None case too, so a misconfigured environment is not
+/// retried on every event).
 static OUTBOX: OnceLock<Option<Outbox>> = OnceLock::new();
 
 pub(crate) fn outbox() -> Option<&'static Outbox> {
@@ -407,6 +465,7 @@ pub(crate) fn outbox() -> Option<&'static Outbox> {
 }
 
 /// Drain the spool. No-op when dashboard forwarding is not configured.
+/// Called from: main.rs (final drain before exit).
 pub async fn drain(budget: Duration, force: bool) {
     if let Some(outbox) = outbox() {
         outbox.drain(budget, force).await;
@@ -415,6 +474,7 @@ pub async fn drain(budget: Duration, force: bool) {
 
 /// Background flusher: drains the backlog left by previous runs immediately,
 /// then keeps delivering this run's events as they are emitted.
+/// Called from: main.rs (proxy mode and --drain-outbox mode).
 pub fn spawn_flusher() -> Option<tokio::task::JoinHandle<()>> {
     let outbox = outbox()?;
     Some(tokio::spawn(async move {

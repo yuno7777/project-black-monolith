@@ -1,4 +1,29 @@
-"""Validate canonical fixtures and cross-service contract invariants."""
+"""Validate canonical fixtures and cross-service contract invariants.
+
+WHAT THIS FILE IS
+-----------------
+The CI "contract gate". The whole project stands on the promise that all four
+sides of the shared event contract agree: the JSON Schema (contracts/schemas/),
+the Python emitter (python-common/), the Rust emitter (mcp-shield/src/events.rs),
+and the TypeScript types (dashboard/lib/types.ts). This script can't read code,
+but it CAN check the two things that are machine-checkable:
+
+  1. Every schema is valid JSON Schema (2020-12) and every canonical fixture
+     payload validates against it — so the shapes the modules are tested
+     against are the shapes the dashboard accepts.
+  2. The OpenAPI document's correlation headers have not drifted — the five
+     X-Monolith-* headers the modules read (python-common header constants)
+     must be exactly the five declared in contracts/openapi.yaml.
+
+It also pins two API-surface decisions:
+  - the VectorAnchor /retrieve input field is named `k` (public), and
+    ChromaDB's internal `n_results` must NEVER leak into the contract
+    (an assertion actively rejects a legacy payload using n_results);
+  - the OpenAPI document must be 3.1.0 (needed for JSON Schema 2020-12).
+
+Called from: CI (contracts job in .github/workflows/ci.yml) and locally:
+  python contracts/check_contracts.py
+"""
 
 from __future__ import annotations
 
@@ -20,17 +45,21 @@ def load_json(path: Path):
 
 
 def validator(name: str) -> Draft202012Validator:
+    """Load a schema file and construct a validating object. FormatChecker
+    enables format keywords (e.g. "uuid")."""
     schema = load_json(SCHEMAS / name)
     Draft202012Validator.check_schema(schema)
     return Draft202012Validator(schema, format_checker=FormatChecker())
 
 
 def validate() -> None:
+    # Load all four schemas.
     event = validator("event-envelope.v2.schema.json")
     vector = validator("vector-anchor-api.v1.schema.json")
     trace = validator("trace-audit-api.v1.schema.json")
     benchmark = validator("benchmark-run.v1.schema.json")
 
+    # Validate the canonical fixtures against the relevant subschemas.
     event.validate(load_json(FIXTURES / "event-envelope.valid.json"))
     vector.evolve(schema={"$ref": "#/$defs/retrieveRequest"}).validate(
         load_json(FIXTURES / "vector-retrieve-request.valid.json")
@@ -53,6 +82,7 @@ def validate() -> None:
     if vector.evolve(schema={"$ref": "#/$defs/retrieveRequest"}).is_valid(legacy):
         raise AssertionError("VectorAnchor contract unexpectedly accepts n_results")
 
+    # OpenAPI checks: version and exact correlation-header set.
     with (ROOT / "openapi.yaml").open(encoding="utf-8") as handle:
         openapi = yaml.safe_load(handle)
     if openapi.get("openapi") != "3.1.0":

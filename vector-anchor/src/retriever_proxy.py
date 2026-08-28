@@ -1,10 +1,37 @@
 """Retrieval proxy: the single choke point every retrieval passes through.
 
-For each query it pulls a few more candidates than requested, records the
-top-ranked ones in the frequency tracker, quarantines any document that has
-crossed the universal-bait threshold, and serves the next-best clean
-documents in place of quarantined ones — so a poisoned document never
-reaches the caller's (agent's) context.
+WHAT THIS FILE IS
+-----------------
+The middle layer of VectorAnchor. main.py hands it the ChromaDB collection,
+the embedding function, the FrequencyTracker, the Quarantine store, the
+config, and the event emitter — and from then on, every /retrieve request
+flows through RetrieverProxy.retrieve(). This is where the pieces connect:
+
+  query text
+    -> embed once (embed_fn)
+    -> ChromaDB collection.query()           (the actual vector search)
+    -> FrequencyTracker.record_query()       (remember what ranked highly)
+    -> for each candidate: is_anomalous()?   (the poison decision)
+    -> Quarantine.add() + emit critical event (if yes)
+    -> return top-k CLEAN docs (quarantined docs replaced by next-best)
+
+WHY IT EXISTS
+-------------
+The whole point of the module is that the agent must never receive a poisoned
+document. If the agent called ChromaDB directly, nothing would stand between it
+and the bait. This proxy is that stand-in: same API shape the agent expects,
+but every result passes through detection first.
+
+It also centralizes three side effects that must stay consistent:
+  1. detector state updates (tracker + quarantine),
+  2. event emission (delivery to the dashboard),
+  3. state persistence (detector_state.json).
+All three happen under one lock so a detection decision can never interleave
+with another request or an admin reset.
+
+Called from: main.py /retrieve, /admin/add-documents, /quarantine, /stats,
+/admin/reset-detection routes. Calls: frequency_tracker.py, quarantine.py,
+detector_state.py, events.py.
 """
 
 from __future__ import annotations
@@ -23,6 +50,9 @@ POLICY_VERSION = "vector-anchor/1"
 
 
 def _content_fingerprint(value: str) -> str:
+    """SHA-256 hex digest of text. Used instead of raw text in event details:
+    query text and document text may contain end-user secrets or credentials,
+    and the ledger should never copy them (see the emit calls below)."""
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
@@ -38,6 +68,15 @@ class RetrieverProxy:
         emit,
         state_store: DetectorStateStore | None = None,
     ):
+        """Assembled by build_proxy() in main.py. Receives:
+          collection:  the ChromaDB collection (store.py get_or_create_collection)
+          embed_fn:    the embedding function (store.py build_embedding_function)
+          tracker:     FrequencyTracker (loaded from disk or fresh)
+          quarantine:  Quarantine (loaded from disk or fresh)
+          cfg:         validated Config (config.py load_config)
+          emit:        the EventEmitter (events.py make_emitter)
+          state_store: atomic persistence for tracker + quarantine
+        """
         self.collection = collection
         self.embed_fn = embed_fn
         self.tracker = tracker
@@ -56,9 +95,41 @@ class RetrieverProxy:
         k: int | None = None,
         ctx: EventContext | None = None,
     ) -> dict[str, Any]:
-        """`ctx` carries the caller's correlation identity for this one
-        retrieval, so a quarantine here can be tied to detections the other
-        layers made in the same agent session."""
+        """THE main flow. Called from main.py retrieve() for every /retrieve.
+
+        Input:  query text, requested result count k, correlation context.
+        Output: {query, results: [{id, document, distance}], withheld, quarantine_size}
+
+        Step by step:
+          1. n = k + candidate_buffer. Pull extra candidates so that if some
+             results are quarantined, the next-best clean ones can fill their
+             slots — the agent still gets k documents.
+          2. Embed the query ONCE. The same vector goes to ChromaDB and to the
+             frequency tracker, so the two decisions cannot diverge (using
+             Chroma's query_texts would re-embed and could give different
+             vectors with a non-deterministic embedder).
+          3. collection.query(...) — the real vector search.
+          4. Under the state lock:
+             a. Record the top-ranked doc ids (ids[:top_rank_threshold]) in the
+                tracker. A doc at rank 8 is NOT "ranking highly"; only the
+                genuinely top results earn a hit.
+             b. Walk every candidate in rank order:
+                  - already quarantined? -> withheld, skip.
+                  - tracker.is_anomalous(doc_id)? -> quarantine it NOW (first
+                    time only emits the critical event), withhold it.
+                  - else -> add to the clean list.
+             c. served = clean[:k]; persist tracker+quarantine to disk.
+          5. Emit an info "retrieval" event (query hashed, not copied).
+          6. Return the clean results.
+
+        Why withhold instead of returning nothing: the agent asked for k
+        documents; silently returning fewer would break its retrieval
+        contract. It gets k clean documents and a list of what was withheld and
+        why.
+        """
+        # `ctx` carries the caller's correlation identity for this one
+        # retrieval, so a quarantine here can be tied to detections the other
+        # layers made in the same agent session.
         start = now_ms()
         k = k or self.cfg.top_k
         n = k + self.cfg.candidate_buffer
@@ -104,6 +175,9 @@ class RetrieverProxy:
                         quarantined_at_ms=now_ms(),
                     )
                     newly = self.quarantine.add(qd)
+                    # Emit the critical event only on FIRST quarantine (newly),
+                    # so repeated retrievals of an already-quarantined doc do
+                    # not flood the ledger.
                     if newly:
                         self.emit(
                             "corpus_poison_quarantine",
@@ -168,14 +242,20 @@ class RetrieverProxy:
         }
 
     def quarantine_snapshot(self) -> list[QuarantinedDoc]:
+        """All quarantined docs, for the admin GET /quarantine route
+        (main.py). The readable preview lives only here — never in events."""
         with self._state_lock:
             return self.quarantine.all()
 
     def quarantine_size(self) -> int:
+        """How many docs are quarantined, for /stats."""
         with self._state_lock:
             return len(self.quarantine)
 
     def reset_detection(self) -> None:
+        """Fresh tracker + quarantine, same corpus. Called from
+        POST /admin/reset-detection (main.py); run_full_demo.sh uses it to
+        re-run the poison attack from a clean slate."""
         with self._state_lock:
             self.tracker = FrequencyTracker(
                 min_distinct_topics=self.cfg.min_distinct_topics,
@@ -189,10 +269,15 @@ class RetrieverProxy:
     def upsert_documents(self, documents: list[tuple[str, str]]) -> int:
         """Replace corpus documents and invalidate detector state atomically.
 
+        Called from: main.py POST /admin/add-documents (and therefore from the
+        seed/inject fixtures seed_corpus.py and inject_poison.py).
+
         Frequency and quarantine decisions describe specific content. Keeping
         them after an administrator replaces that content would either leave a
         remediated document blocked or immediately condemn the new version
-        using the old version's history.
+        using the old version's history. So: upsert into ChromaDB, forget the
+        tracker history for those ids, un-quarantine them, persist, and return
+        the new corpus size.
         """
         ids = [doc_id for doc_id, _ in documents]
         with self._state_lock:
@@ -206,5 +291,8 @@ class RetrieverProxy:
             return self.collection.count()
 
     def _persist_state(self) -> None:
+        """Atomically save tracker + quarantine after every mutation, so the
+        detector's memory survives restarts. The write happens inside the
+        state lock; see detector_state.py for the atomic-temp-file mechanics."""
         if self.state_store:
             self.state_store.save(self.tracker, self.quarantine)

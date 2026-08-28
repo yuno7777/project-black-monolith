@@ -1,3 +1,46 @@
+// Event validation, persistence, and reads — the dashboard's "event ledger"
+// data-access module.
+//
+// WHAT THIS FILE IS
+// -----------------
+// The receiver side of the shared event contract. When a module's outbox
+// POSTs an event to /api/ingest, this file is what:
+//   1. normalizeEvent() — strictly validates the envelope, field by field,
+//      turning raw JSON into a typed MonolithEvent.
+//   2. persistEvents() — inserts it into Postgres (idempotently), and if the
+//      event is critical and a webhook is configured, queues an alert row in
+//      the SAME transaction.
+//   3. listRecentEvents() / findEventById() — read paths used by the SSE
+//      replay and the live-event listener.
+//
+// THE REJECT-DON'T-COERCE POLICY (the most important design decision here)
+// ------------------------------------------------------------------------
+// Validation is deliberately STRICT. An unknown severity, a non-object
+// `details`, or a malformed `event_id` is REJECTED with a 422 — never coerced
+// to a "safe" value. Why: coercing an unknown severity to `info` would
+// silently DOWNGRADE a finding, and coercing non-object details would discard
+// the evidence the detection exists to carry. Only genuinely ABSENT optional
+// fields are defaulted server-side (severity->info, timestamp->now,
+// event_id->fresh UUID, tenant->"default").
+//
+// THE POISON-PILL FIX (know this for interviews)
+// ----------------------------------------------
+// security_events.event_id is a Postgres `uuid` column. A supplied non-UUID
+// would fail the insert with error 22P02, surface as a 503, and be retried
+// FOREVER by the module outboxes (which correctly treat 5xx as transient) —
+// a "poison pill" that blocks the whole spool behind it. That is why a
+// malformed supplied id is rejected as a permanent 422 here, and why it is
+// NOT silently replaced with a fresh UUID: event_id is the idempotency key,
+// and regenerating it on every retry would let a redelivered event insert
+// duplicates.
+//
+// IDEMPOTENT REDELIVERY
+// ---------------------
+// The insert uses `on conflict (event_id) do nothing`. If a module redelivers
+// an event after a timeout, the second insert is a no-op and the response
+// reports it as a duplicate. This is what makes the whole "at-least-once"
+// delivery contract safe.
+
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import { getDb, withTenantDb } from "@/lib/db";
@@ -20,6 +63,9 @@ const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function optionalText(value: unknown): string | undefined {
+  // Text fields (event_type, resource_type, outcome, source, ...): must be
+  // strings, printable (no control chars — protects logs and the SSE feed
+  // from injection), and at most 512 chars.
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "string") throw new Error("event text fields must be strings");
   const trimmed = value.trim();
@@ -30,6 +76,9 @@ function optionalText(value: unknown): string | undefined {
 }
 
 function identityText(value: unknown, field: string): string | undefined {
+  // Correlation ids (tenant/agent/session/trace/correlation): must be
+  // non-blank strings of at most 128 chars, mirroring the modules' own clamp
+  // (python-common _clean_id).
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "string") {
     throw new Error(`event.${field} must be a string`);
@@ -46,6 +95,22 @@ function isDetails(value: unknown): value is Record<string, unknown> {
 }
 
 export function normalizeEvent(raw: unknown): MonolithEvent {
+  // Validate one raw event envelope. Called from: /api/ingest route
+  // (route.ts) for every event in the batch. Throws on anything invalid —
+  // the route catches and answers 422.
+  //
+  // Field-by-field rules (matching contracts/schemas/event-envelope.v2):
+  //   module        required, must be a known module.
+  //   event_type    required, printable text.
+  //   severity      optional -> "info"; INVALID values rejected.
+  //   timestamp_ms  optional -> now; INVALID (non-integer, out of range)
+  //                 rejected.
+  //   schema_version optional; must be 1 or 2 if present.
+  //   details       optional -> {}; must be a JSON object if present.
+  //   event_id      optional -> fresh UUID; a SUPPLIED non-UUID is rejected
+  //                 (the poison-pill case above).
+  //   tenant_id     optional -> "default"; bounded like the ids below.
+  //   correlation fields: bounded strings when present.
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error("each event must be a JSON object");
   }
@@ -111,6 +176,7 @@ export function normalizeEvent(raw: unknown): MonolithEvent {
   };
 }
 
+// The DB row shape (received_at is a Postgres timestamptz, converted to ms).
 type EventRow = {
   event_id: string;
   schema_version: number;
@@ -133,6 +199,7 @@ type EventRow = {
 };
 
 function fromRow(row: EventRow): MonolithEvent {
+  // Map a DB row back to the API shape (nulls -> undefined).
   return {
     event_id: row.event_id,
     schema_version: row.schema_version === 2 ? 2 : 1,
@@ -155,6 +222,7 @@ function fromRow(row: EventRow): MonolithEvent {
   };
 }
 
+// Reused SELECT column list (with received_at converted to ms).
 const returningColumns = `
   event_id, schema_version, occurred_at_ms,
   (extract(epoch from received_at) * 1000)::bigint as received_ms,
@@ -164,6 +232,12 @@ const returningColumns = `
 `;
 
 async function insertWithClient(client: PoolClient, event: MonolithEvent) {
+  // Insert one event. `on conflict (event_id) do nothing` makes redelivery
+  // idempotent: a duplicate insert returns no row, so `inserted` is false.
+  //
+  // If the event is critical AND a webhook is configured, the alert job is
+  // queued in the SAME transaction (alert_outbox row) — critical evidence and
+  // its notification are committed together, so a crash cannot separate them.
   const result = await client.query<EventRow>(
     `insert into monolith.security_events (
       event_id, schema_version, occurred_at_ms, module, event_type, severity, details,
@@ -195,6 +269,9 @@ async function insertWithClient(client: PoolClient, event: MonolithEvent) {
 }
 
 export async function persistEvents(events: MonolithEvent[]) {
+  // Insert a batch in ONE tenant-scoped transaction. A batch must not span
+  // tenants (one transaction sets one RLS context), so mixed batches are
+  // rejected before any SQL runs. Called from: /api/ingest route.
   if (!events.length) return [];
   const tenantId = events[0].tenant_id;
   if (events.some((event) => event.tenant_id !== tenantId)) {
@@ -212,6 +289,11 @@ export async function listRecentEvents(
   limit = 500,
   afterEventId?: string,
 ): Promise<MonolithEvent[]> {
+  // The SSE replay query: the most recent events, optionally AFTER a cursor
+  // event (for Last-Event-ID resume). The cursor is compared as a Postgres
+  // tuple (received_at, event_id) so ordering is stable even for events with
+  // identical timestamps.
+  // Called from: sse-event-stream.ts createEventStream().
   const safeLimit = Math.max(1, Math.min(limit, 1_000));
   const cursor = afterEventId && UUID_PATTERN.test(afterEventId) ? afterEventId : null;
   return withTenantDb(tenantId, async (db) => {
@@ -240,6 +322,9 @@ export async function findEventById(
   tenantId: string,
   eventId: string,
 ): Promise<MonolithEvent | null> {
+  // Load ONE event by id, scoped to the tenant. Called from:
+  // live-event-listener.ts — when Postgres LISTEN/NOTIFY reports a new event,
+  // the listener loads the full row with this and pushes it into the broker.
   if (!UUID_PATTERN.test(eventId)) return null;
   return withTenantDb(tenantId, async (db) => {
     const result = await db.query<EventRow>(
@@ -252,5 +337,6 @@ export async function findEventById(
 }
 
 export async function checkDatabase() {
+  // Liveness probe for GET /api/ingest (used by the Compose healthcheck).
   await getDb().query("select 1");
 }

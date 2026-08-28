@@ -1,5 +1,20 @@
 "use client";
 
+// The dark/light theme toggle.
+//
+// WHAT THIS FILE IS
+// -----------------
+// Flips the data-theme attribute on <html> and persists the choice in
+// localStorage ("monolith-theme"). The pre-paint script in layout.tsx reads
+// that same localStorage value before React hydrates, so the page is painted
+// in the right theme from the first frame.
+//
+// THE MOUNT GATE
+// --------------
+// The server can't know the stored theme, so the first render must match the
+// server's markup (dark) and the real icon swaps in after hydration
+// (mounted state) — otherwise React would warn about a hydration mismatch.
+
 import { useEffect, useState } from "react";
 import { IconSun, IconMoon } from "./Icons";
 

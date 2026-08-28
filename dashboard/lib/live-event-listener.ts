@@ -1,3 +1,39 @@
+// The Postgres LISTEN/NOTIFY bridge: how every dashboard instance learns about
+// newly committed events.
+//
+// WHAT THIS FILE IS
+// -----------------
+// A single long-lived database connection per dashboard process that runs
+// `LISTEN monolith_security_events`. The migration
+// (supabase/migrations/20260803091919_add_live_delivery_and_retention.sql)
+// created a trigger that calls pg_notify('monolith_security_events', ...)
+// after EVERY insert into security_events. When this connection receives a
+// notification, the listener loads the FULL event by id and pushes it into
+// the in-process broker (event-ingest.ts), which fans it out to SSE clients.
+//
+// WHY THIS DESIGN (multi-instance correctness)
+// --------------------------------------------
+// If the dashboard is scaled to several instances, each instance's in-process
+// broker would only see events ingested THROUGH that instance. Postgres
+// LISTEN/NOTIFY delivers the notification to EVERY connected instance, so all
+// instances stay in sync — the live feed is the same on every instance,
+// because the trigger fires on the shared database.
+//
+// The notification payload is deliberately tiny (event_id + tenant_id only) —
+// LISTEN/NOTIFY payloads are limited and the full row is re-fetched via
+// findEventById() (scoped to the tenant, so RLS applies).
+//
+// RECONNECTION HANDLING
+// ---------------------
+// If the connection drops, the client emits 'error'; the listener releases
+// the broken client and retries connect() after 1s (and after 5s when idle),
+// so a Postgres blip degrades live delivery but self-heals.
+//
+// WHO USES IT
+// -----------
+//   /api/events route calls ensureLiveEventListener() before opening SSE
+//   streams — so the first browser connection starts the listener.
+
 import type { PoolClient } from "pg";
 import { getDb } from "@/lib/db";
 import { getBroker } from "@/lib/event-ingest";
@@ -12,6 +48,9 @@ export interface EventNotification {
 }
 
 export function parseEventNotification(payload: string | undefined): EventNotification | null {
+  // The trigger sends {"event_id": "...", "tenant_id": "..."}. Validate
+  // strictly (the payload is untrusted DB-level input); return null for
+  // anything malformed rather than forwarding garbage.
   if (!payload) return null;
   try {
     const value = JSON.parse(payload) as Record<string, unknown>;
@@ -32,12 +71,13 @@ export function parseEventNotification(payload: string | undefined): EventNotifi
 
 class LiveEventListener {
   private client?: PoolClient;
-  private starting?: Promise<void>;
+  private starting?: Promise<void>; // dedupe concurrent ensureStarted() calls
   private retry?: ReturnType<typeof setTimeout>;
-  private pending = new Map<string, EventNotification>();
+  private pending = new Map<string, EventNotification>(); // notification queue
   private draining = false;
 
   ensureStarted(): Promise<void> {
+    // Connect once; if a connect is already in flight, return the same promise.
     if (this.client) return Promise.resolve();
     if (!this.starting) {
       this.starting = this.connect().finally(() => {
@@ -68,6 +108,7 @@ class LiveEventListener {
   }
 
   private disconnect(client: PoolClient) {
+    // The listening connection died: drop it and schedule a reconnect in 1s.
     if (this.client !== client) return;
     this.client = undefined;
     client.release(true);
@@ -83,6 +124,7 @@ class LiveEventListener {
   }
 
   private disconnectIfIdle() {
+    // Slower retry loop used when the listener is idle (no clients).
     if (this.client || this.retry) return;
     this.retry = setTimeout(() => {
       this.retry = undefined;
@@ -95,11 +137,19 @@ class LiveEventListener {
   }
 
   private enqueue(notification: EventNotification) {
+    // Notifications can arrive in bursts faster than the (async) drain keeps
+    // up; buffer them in a Map keyed by tenant/event_id (dedupe) and kick the
+    // drain.
     this.pending.set(`${notification.tenant_id}/${notification.event_id}`, notification);
     void this.drain();
   }
 
   private async drain() {
+    // Serialize the work: load each notified event from the ledger (RLS-scoped
+    // via withTenantDb inside findEventById) and hand it to the broker. A
+    // failed load is logged and the notification is dropped — the SSE replay
+    // will still deliver the event to any client that connects later, so
+    // nothing is permanently lost.
     if (this.draining) return;
     this.draining = true;
     try {
@@ -122,6 +172,8 @@ class LiveEventListener {
 const globalRef = globalThis as unknown as { __monolithLiveListener?: LiveEventListener };
 
 export function ensureLiveEventListener(): Promise<void> {
+  // Process-wide singleton (survives Next.js hot-reloads). Called from the
+  // /api/events route before any SSE stream is created.
   if (!globalRef.__monolithLiveListener) {
     globalRef.__monolithLiveListener = new LiveEventListener();
   }

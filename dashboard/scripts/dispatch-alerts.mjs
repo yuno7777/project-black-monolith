@@ -1,4 +1,44 @@
 #!/usr/bin/env node
+// The alert webhook dispatcher — a separate long-running container.
+//
+// WHAT THIS FILE IS
+// -----------------
+// Delivers critical-event webhook notifications. The ingest path NEVER does
+// network I/O to the receiver: when a critical event is persisted, the
+// dashboard inserts a row into monolith.alert_outbox IN THE SAME TRANSACTION
+// (event-store.ts insertWithClient). This worker then claims due rows and
+// POSTs them to the webhook, so collector availability never depends on the
+// receiver being up.
+//
+// THE LOOP
+// --------
+//   for each configured tenant:
+//     claim(): pick one pending row due now, `for update skip locked` (safe
+//              with multiple dispatcher replicas), bump attempts, set a 5-min
+//              fallback next_attempt
+//     deliver(): build the versioned payload, HMAC-SHA256-sign
+//              "<timestamp>.<body>", POST with x-monolith-timestamp and
+//              x-monolith-signature headers, 10s timeout, no redirects
+//     markDelivered() on 2xx; markFailed() otherwise:
+//       408/429/5xx -> retry with exponential backoff (2^n s, cap 5 min),
+//                      up to MAX_ATTEMPTS (10), then dead
+//       other 4xx   -> dead immediately (permanent)
+//   idle for 2s when nothing is due
+//
+// WHY THE SIGNATURE
+// -----------------
+// The receiver can verify the notification really came from this system by
+// recomputing HMAC-SHA256 over "<x-monolith-timestamp>.<raw body>" with the
+// shared secret. The timestamp prevents replay; the scheme is documented in
+// .env.example.
+//
+// WHY "PARK" WHEN DISABLED
+// ------------------------
+// If no webhook is configured, the process does NOT exit: `docker compose
+// --wait` treats an exited service as failed, and an unconfigured alert
+// feature must not take the whole stack down. It holds the event loop with a
+// huge-interval timer and waits for SIGINT/SIGTERM.
+
 import { createHmac } from "node:crypto";
 import pg from "pg";
 
@@ -34,6 +74,8 @@ if (!tenants.length || tenants.some((tenant) => tenant.length > 128 || /[\r\n\0]
   throw new Error("MONOLITH_ALERT_TENANTS must contain bounded tenant identifiers");
 }
 
+// Same URL rules as alert-config.ts: HTTPS (or loopback HTTP), no embedded
+// credentials, no fragment.
 const target = new URL(targetValue);
 if (target.username || target.password || target.hash) {
   throw new Error("alert webhook URL must not contain credentials or a fragment");
@@ -42,6 +84,9 @@ if (target.protocol !== "https:" && !(target.protocol === "http:" && LOOPBACK.ha
   throw new Error("alert webhook URL must use HTTPS (HTTP is loopback-only)");
 }
 
+// The dispatcher connects as the least-privilege runtime role, same as the
+// dashboard (SET ROLE monolith_app), and scopes every query with the
+// transaction-local tenant context (RLS applies).
 const { Client } = pg;
 const client = new Client({
   connectionString: databaseUrl,
@@ -55,6 +100,8 @@ process.on("SIGTERM", () => { stopping = true; });
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 async function inTenant(tenant, operation) {
+  // Run one unit of work with the tenant set as transaction-local context
+  // (set_config(..., true)); RLS then scopes every row to this tenant.
   await client.query("begin");
   try {
     await client.query("select set_config('monolith.tenant_id', $1, true)", [tenant]);
@@ -68,6 +115,10 @@ async function inTenant(tenant, operation) {
 }
 
 async function claim(tenant) {
+  // Atomically take one due alert. `for update skip locked` means concurrent
+  // dispatcher instances never double-deliver: each row is locked by exactly
+  // one claimant. Attempts is bumped here (not after delivery) so a crash
+  // mid-delivery does not reset the count.
   return inTenant(tenant, async () => {
     const selected = await client.query(`
       select event_id::text, payload, attempts
@@ -99,6 +150,8 @@ async function markDelivered(tenant, eventId) {
 }
 
 async function markFailed(tenant, alert, message, permanent) {
+  // dead = permanent rejection OR attempts exhausted; otherwise schedule a
+  // retry with exponential backoff (2^n seconds, capped at 5 minutes).
   const dead = permanent || alert.attempts >= MAX_ATTEMPTS;
   const backoff = Math.min(300, 2 ** Math.min(alert.attempts, 8));
   await inTenant(tenant, () => client.query(`
@@ -111,6 +164,8 @@ async function markFailed(tenant, alert, message, permanent) {
 }
 
 async function deliver(tenant, alert) {
+  // Build the versioned, HMAC-signed payload and POST it. The receiver
+  // verifies: signature over "<timestamp>.<body>" with the shared secret.
   const timestamp = Date.now().toString();
   const body = JSON.stringify({
     format: "project-black-monolith/critical-alert@1",

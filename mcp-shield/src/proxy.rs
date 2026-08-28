@@ -1,6 +1,14 @@
 //! Transparent stdio pass-through proxy with interception of `tools/list`
 //! responses.
 //!
+//! WHAT THIS FILE IS
+//! -----------------
+//! The heart of MCP-Shield: the actual proxy that sits between an agent and a
+//! tool server. Everything else in the module supports this file — main.rs
+//! starts it, jsonrpc.rs provides the message model it parses, fingerprint.rs
+//! and sanitizer.rs provide the two detectors, events.rs/outbox.rs deliver the
+//! results to the dashboard.
+//!
 //! Data flow (all line-delimited JSON-RPC 2.0):
 //!
 //! ```text
@@ -8,11 +16,59 @@
 //!   agent ◀─stdout── mcp-shield ◀─child stdout── real MCP server
 //! ```
 //!
+//! THE TRANSPARENCY PRINCIPLE (read this first)
+//! ---------------------------------------------
 //! Messages are forwarded byte-for-byte untouched (the proxy never rewrites
-//! traffic); a parsed copy of each line drives logging and detection. The
-//! ids of outbound `tools/list` requests are recorded so that the matching
-//! inbound responses can be routed through the fingerprint + sanitizer
-//! pipeline.
+//! traffic EXCEPT the two documented enforce-mode cases below); a parsed copy
+//! of each line drives logging and detection. This "parse a copy, forward the
+//! original" design is what keeps the proxy safe: even traffic it cannot
+//! understand passes through unmodified (fail-open transparency).
+//!
+//! THE INTERCEPTION MECHANISM
+//! --------------------------
+//! The proxy is two concurrent halves:
+//!   * forward_agent_to_server()  (spawned as a background task)
+//!       reads the agent's stdin, notes the ids of any `tools/list` (and other
+//!       inspectable) requests it sees, and forwards each line to the child.
+//!   * forward_server_to_agent()  (foreground)
+//!       reads the child's stdout; when a RESPONSE's id matches a recorded
+//!       `tools/list` request, it routes the response through
+//!       analyze_tools_list() (fingerprint + sanitizer). If that function
+//!       returns a rewritten line (enforce mode), the REWRITTEN line is
+//!       written to the agent instead of the server's original bytes.
+//!
+//! THE TWO DETECTORS (run per tool inside analyze_tools_list)
+//! ----------------------------------------------------------
+//!   1. fingerprint.rs — HMAC-SHA256 over the canonical schema, compared to a
+//!      persisted baseline. Mismatch = "rug pull" (schema changed after
+//!      approval).
+//!   2. sanitizer.rs — stateless pattern scan of the description. Hit =
+//!      "tool poisoning" (hidden instructions). This one works on FIRST
+//!      contact too, which the fingerprint cannot.
+//!
+//! THE THREE MODES
+//! ---------------
+//!   * enforce (default): a mismatched tool is REWRITTEN back to its trusted
+//!     baseline schema; a suspicious tool with no baseline is REMOVED from
+//!     the response entirely.
+//!   * monitor: detections are logged + emitted, but traffic passes through
+//!     unmodified.
+//!   * first_contact approve: unseen tools are withheld from the agent until
+//!     an operator runs `mcp-shield --approve <tool>`.
+//!
+//! BEYOND tools/list
+//! -----------------
+//! The proxy also inspects prompts/list, resources/list, resources/templates/
+//! list (catalog entries with poisoned descriptions are removed in enforce
+//! mode) and tools/call results (suspicious text blocks are redacted to a
+//! safety notice). These go through analyze_inspectable_response().
+//!
+//! FAIL-OPEN INVARIANT
+//! -------------------
+//! Any detector-internal error is logged at error level, emitted as an
+//! `analysis_error` event, and the message is forwarded UNMODIFIED. A
+//! detector bug must never masquerade as "nothing to flag" — and must never
+//! break the proxied conversation.
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
@@ -144,6 +200,22 @@ impl ShieldConfig {
 
 /// Spawn the real MCP server and run both forwarding directions until the
 /// agent closes stdin (or the server exits).
+///
+/// Called from: main.rs (proxy mode) — `proxy::run(server_cmd, config).await`.
+///
+/// Step by step:
+///   1. Load + authenticate the baseline store (fingerprint.rs) — a tampered
+///      file fails here and aborts startup (fail closed).
+///   2. Spawn the child MCP server with piped stdin/stdout (its stderr passes
+///      straight through so server errors stay debuggable).
+///   3. Create the two shared correlation queues (Arc<Mutex<VecDeque>>):
+///      pending_tools_list (ids of in-flight tools/list requests) and
+///      pending_inspections (ids + kinds of other inspectable requests).
+///   4. Start forward_agent_to_server as a background task, then run
+///      forward_server_to_agent in the foreground — the foreground half owns
+///      the baseline store, so only one half mutates it.
+///   5. When the server's stdout closes: reap the child, abort the stdin
+///      reader (it may still be blocked on the agent), and return the result.
 pub async fn run(server_cmd: Vec<String>, config: ShieldConfig) -> Result<()> {
     let store = BaselineStore::load(&config.baseline_path, &config.hmac_key)?;
 
@@ -201,6 +273,22 @@ pub async fn run(server_cmd: Vec<String>, config: ShieldConfig) -> Result<()> {
 
 /// Read lines from the agent (our stdin), log them, note tools/list request
 /// ids, and forward each line untouched to the server's stdin.
+///
+/// This is the "agent -> server" half of the proxy, spawned as a background
+/// task by run(). For every line it:
+///   1. Parses a COPY (jsonrpc.rs) purely for logging + correlation.
+///   2. If it is a tools/list request, records its id in the shared
+///      pending_tools_list queue — so the matching RESPONSE can later be
+///      identified by forward_server_to_agent.
+///   3. If it is another inspectable request (prompts/list, resources/list,
+///      resources/templates/list, tools/call), records an entry in
+///      pending_inspections (with the tool name for tools/call).
+///   4. Forwards the ORIGINAL bytes + newline to the child.
+///
+/// Both queues are bounded (MAX_PENDING_TOOLS_LIST = 1024): if a server
+/// stops answering, the oldest correlation is evicted with a warning event so
+/// memory stays bounded. The agent closing stdin drops child_stdin, which
+/// sends EOF to the server so it can shut down cleanly.
 async fn forward_agent_to_server(
     mut child_stdin: tokio::process::ChildStdin,
     pending: Arc<Mutex<VecDeque<String>>>,
@@ -312,6 +400,24 @@ async fn forward_agent_to_server(
 
 /// Read lines from the server's stdout, log them, run detection on
 /// tools/list responses, and forward each line untouched to the agent.
+///
+/// This is the "server -> agent" half of the proxy, run in the foreground by
+/// run(). For every line it:
+///   1. Parses a COPY for logging + detection.
+///   2. A `notifications/tools/list_changed` from the server is the classic
+///      prelude to a rug pull — it is logged and emitted as an info event
+///      (the notification carries no schema; the NEXT tools/list response
+///      gets re-verified against the baseline).
+///   3. If the line is a RESPONSE whose id matches a recorded tools/list
+///      request, it runs analyze_tools_list() (the fingerprint + sanitizer
+///      pipeline) and, in enforce mode, replaces the line with the rewritten
+///      one (mutated schemas swapped back to their trusted baselines).
+///   4. Else if it is a response to another inspectable request, it runs
+///      analyze_inspectable_response() (catalog entries / tool results).
+///   5. Writes the (possibly rewritten) line to the agent's stdout.
+///
+/// Fail-open: any analysis error is logged at error level, emitted as
+/// analysis_error, and the original line is forwarded unmodified.
 async fn forward_server_to_agent(
     child_stdout: tokio::process::ChildStdout,
     pending: Arc<Mutex<VecDeque<String>>>,
@@ -493,6 +599,11 @@ fn catalog_shape(kind: InspectionKind) -> Option<(&'static str, &'static [&'stat
 /// context. Catalog entries containing prompt-injection patterns are removed
 /// in enforce mode. Suspicious text blocks returned by tools are replaced by
 /// an explicit safety notice while non-text content remains untouched.
+///
+/// Called from: forward_server_to_agent() when a response matches an entry in
+/// pending_inspections. Delegates to analyze_tool_result() for tools/call
+/// responses; otherwise handles prompts/list, resources/list and
+/// resources/templates/list by scanning the listed fields of every entry.
 fn analyze_inspectable_response(
     msg: &JsonRpcMessage,
     inspection: &PendingInspection,
@@ -654,6 +765,10 @@ enum AnalysisOutcome {
 /// baseline is registered. Duplicate or missing names make "the schema for
 /// tool X" ambiguous and could let an invalid first response seed a baseline
 /// that later enforcement rewrites back into the stream.
+///
+/// Called from: analyze_tools_list() before any fingerprinting. Returns
+/// Err(reason) which the caller turns into a Malformed outcome (baseline
+/// unchanged, analysis_error event emitted).
 fn validate_tool_entries(tools: &[Value]) -> Result<(), String> {
     let mut names = HashSet::with_capacity(tools.len());
     for (index, tool) in tools.iter().enumerate() {
@@ -695,6 +810,28 @@ fn validate_tool_entries(tools: &[Value]) -> Result<(), String> {
 /// the description sanitizer, then persist any newly registered baselines.
 /// In enforce mode, mismatched tools are swapped back to their trusted
 /// baseline schema in the returned rewritten response line.
+///
+/// Called from: forward_server_to_agent() for every tools/list response.
+/// Returns AnalysisOutcome: Malformed (structural anomaly), or Analyzed with
+/// an optional rewritten line the caller forwards to the agent instead of the
+/// original.
+///
+/// Per-tool decision order (this ordering IS the policy):
+///   1. Validate the whole list first (validate_tool_entries) — duplicate or
+///      missing names would make "the schema for tool X" ambiguous, and an
+///      invalid first response must not seed a baseline.
+///   2. Sanitizer scan of the description.
+///   3. Enforce + suspicious + NO baseline -> the tool is REMOVED and never
+///      registered (first-contact poisoning, statelessly caught).
+///   4. Fingerprint the schema; under first_contact=Approve, an unseen tool
+///      is withheld and parked pending approval instead of being blessed.
+///   5. store.check(): Registered -> emit baseline_registered; Match -> pass;
+///      Mismatch -> emit schema_mismatch (critical) and, in enforce mode,
+///      swap the tool back to the stored trusted schema.
+///   6. If the description had findings and enforcement is on: if the tool
+///      was already restored from its baseline, fine; otherwise remove it.
+///   7. Persist the store (save), then rebuild the response if anything was
+///      rewritten or removed.
 fn analyze_tools_list(
     msg: &JsonRpcMessage,
     store: &mut BaselineStore,
