@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { createEventStream } from "../lib/sse-event-stream";
+import {
+  createEventStream,
+  MAX_REPLAY_BUFFERED_EVENTS,
+} from "../lib/sse-event-stream";
 import { BenchmarkInputError, normalizeRun } from "../lib/benchmark-store";
 import { decodeIncidentCursor, IncidentInputError } from "../lib/incident-store";
 import { normalizeEvent } from "../lib/event-store";
@@ -546,6 +549,35 @@ test("event streams replay history before buffered live events without duplicate
     chunks.join("").match(new RegExp(`"event_id":"${caughtUpEvent.event_id}"`, "g"))?.length,
     1,
   );
+});
+
+test("event streams close and reconnect instead of buffering live events without bound", async () => {
+  let subscriber: ((event: ReturnType<typeof normalizeEvent>) => void) | undefined;
+  let unsubscribeCalls = 0;
+  const stream = createEventStream(
+    new Request("http://localhost/api/events"),
+    "default",
+    {
+      subscribe(_tenantId, callback) {
+        subscriber = callback;
+        return () => { unsubscribeCalls++; };
+      },
+    },
+    async () => new Promise<ReturnType<typeof normalizeEvent>[]>(() => {}),
+  );
+  const reader = stream.getReader();
+  for (let index = 0; index <= MAX_REPLAY_BUFFERED_EVENTS; index++) {
+    subscriber!(normalizeEvent({
+      event_id: `00000000-0000-4000-8000-${index.toString().padStart(12, "0")}`,
+      module: "mcp-shield",
+      event_type: "probe",
+    }));
+  }
+
+  const first = await reader.read();
+  assert.match(new TextDecoder().decode(first.value), /reconnect/);
+  assert.equal((await reader.read()).done, true);
+  assert.equal(unsubscribeCalls, 1);
 });
 
 test("event streams pass Last-Event-ID to history replay", async () => {
