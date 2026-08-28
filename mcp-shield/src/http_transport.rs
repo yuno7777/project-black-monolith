@@ -21,6 +21,7 @@ const DEFAULT_PROTOCOL_VERSION: &str = "2025-11-25";
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 300;
 const MAX_REQUEST_TIMEOUT_SECS: u64 = 3_600;
 const MAX_STDIN_MESSAGE_BYTES: usize = 1024 * 1024;
+const MAX_CONCURRENT_REQUESTS: usize = 64;
 
 #[derive(Clone)]
 struct Bridge {
@@ -70,7 +71,7 @@ pub(crate) async fn run(remote_url: &str) -> Result<()> {
     let mut requests = JoinSet::new();
     loop {
         tokio::select! {
-            line = read_bounded_line(&mut input) => {
+            line = read_bounded_line(&mut input), if can_accept_request(requests.len()) => {
                 match line? {
                     Some(line) if line.trim().is_empty() => continue,
                     Some(line) => {
@@ -97,6 +98,10 @@ pub(crate) async fn run(remote_url: &str) -> Result<()> {
     }
     bridge.close_session().await;
     Ok(())
+}
+
+fn can_accept_request(active: usize) -> bool {
+    active < MAX_CONCURRENT_REQUESTS
 }
 
 async fn read_bounded_line<R: AsyncBufRead + Unpin>(reader: &mut R) -> Result<Option<String>> {
@@ -457,5 +462,12 @@ mod tests {
         let oversized = vec![b'x'; MAX_STDIN_MESSAGE_BYTES + 1];
         let mut input = BufReader::new(oversized.as_slice());
         assert!(read_bounded_line(&mut input).await.is_err());
+    }
+
+    #[test]
+    fn remote_bridge_caps_in_flight_requests() {
+        assert!(can_accept_request(MAX_CONCURRENT_REQUESTS - 1));
+        assert!(!can_accept_request(MAX_CONCURRENT_REQUESTS));
+        assert!(!can_accept_request(MAX_CONCURRENT_REQUESTS + 1));
     }
 }
