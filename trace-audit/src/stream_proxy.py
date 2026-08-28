@@ -58,6 +58,7 @@ OLLAMA_READ_TIMEOUT_SECONDS = 30.0
 OLLAMA_WRITE_TIMEOUT_SECONDS = 10.0
 OLLAMA_POOL_TIMEOUT_SECONDS = 5.0
 MAX_OLLAMA_LINE_BYTES = 256 * 1024
+MAX_BACKEND_TOKEN_CHARS = 8 * 1024
 POLICY_VERSION = "trace-audit/1"
 
 
@@ -257,21 +258,25 @@ async def _ollama_stream(
     ):
             resp.raise_for_status()
             pending = bytearray()
+            yielded = 0
             async for chunk in resp.aiter_bytes():
                 pending.extend(chunk)
                 while (newline := pending.find(b"\n")) >= 0:
                     line = bytes(pending[:newline])
                     del pending[: newline + 1]
                     tokens, done = _parse_ollama_line(line)
-                    for token in tokens:
+                    for token in _bounded_ollama_tokens(tokens, max_tokens - yielded):
                         yield token
+                        yielded += 1
+                    if yielded >= max_tokens:
+                        return
                     if done:
                         return
                 if len(pending) > MAX_OLLAMA_LINE_BYTES:
                     raise ValueError("Ollama response line exceeds 256 KiB")
             if pending.strip():
                 tokens, _done = _parse_ollama_line(bytes(pending))
-                for token in tokens:
+                for token in _bounded_ollama_tokens(tokens, max_tokens - yielded):
                     yield token
 
 
@@ -288,6 +293,13 @@ def _parse_ollama_line(line: bytes) -> tuple[list[str], bool]:
     if not isinstance(response, str) or not isinstance(done, bool):
         raise ValueError("Ollama response fields have invalid types")
     return response.split(), done
+
+
+def _bounded_ollama_tokens(tokens: list[str], remaining: int) -> list[str]:
+    selected = tokens[: max(remaining, 0)]
+    if any(len(token) > MAX_BACKEND_TOKEN_CHARS for token in selected):
+        raise ValueError("Ollama token exceeds 8192 characters")
+    return selected
 
 
 def _backend_stream(prompt: str, max_tokens: int, cfg: Config) -> AsyncIterator[str]:
