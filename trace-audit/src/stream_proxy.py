@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import random
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -56,6 +57,7 @@ OLLAMA_CONNECT_TIMEOUT_SECONDS = 5.0
 OLLAMA_READ_TIMEOUT_SECONDS = 30.0
 OLLAMA_WRITE_TIMEOUT_SECONDS = 10.0
 OLLAMA_POOL_TIMEOUT_SECONDS = 5.0
+MAX_OLLAMA_LINE_BYTES = 256 * 1024
 POLICY_VERSION = "trace-audit/1"
 
 
@@ -234,8 +236,6 @@ async def _ollama_stream(
     *,
     transport=None,
 ) -> AsyncIterator[str]:
-    import json
-
     import httpx  # lazily imported: only needed for the ollama backend
 
     url = cfg.ollama_base_url.rstrip("/") + "/api/generate"
@@ -256,15 +256,38 @@ async def _ollama_stream(
         client.stream("POST", url, json=payload) as resp,
     ):
             resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line.strip():
-                    continue
-                data = json.loads(line)
-                chunk = data.get("response", "")
-                for tok in chunk.split():
-                    yield tok
-                if data.get("done"):
-                    break
+            pending = bytearray()
+            async for chunk in resp.aiter_bytes():
+                pending.extend(chunk)
+                while (newline := pending.find(b"\n")) >= 0:
+                    line = bytes(pending[:newline])
+                    del pending[: newline + 1]
+                    tokens, done = _parse_ollama_line(line)
+                    for token in tokens:
+                        yield token
+                    if done:
+                        return
+                if len(pending) > MAX_OLLAMA_LINE_BYTES:
+                    raise ValueError("Ollama response line exceeds 256 KiB")
+            if pending.strip():
+                tokens, _done = _parse_ollama_line(bytes(pending))
+                for token in tokens:
+                    yield token
+
+
+def _parse_ollama_line(line: bytes) -> tuple[list[str], bool]:
+    if not line.strip():
+        return [], False
+    if len(line) > MAX_OLLAMA_LINE_BYTES:
+        raise ValueError("Ollama response line exceeds 256 KiB")
+    data = json.loads(line)
+    if not isinstance(data, dict):
+        raise ValueError("Ollama response line must be a JSON object")
+    response = data.get("response", "")
+    done = data.get("done", False)
+    if not isinstance(response, str) or not isinstance(done, bool):
+        raise ValueError("Ollama response fields have invalid types")
+    return response.split(), done
 
 
 def _backend_stream(prompt: str, max_tokens: int, cfg: Config) -> AsyncIterator[str]:

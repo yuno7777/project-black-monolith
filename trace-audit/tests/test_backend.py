@@ -3,8 +3,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-
-from src.stream_proxy import _ollama_stream
+from src.stream_proxy import MAX_OLLAMA_LINE_BYTES, _ollama_stream
 
 
 def config():
@@ -55,3 +54,53 @@ def test_ollama_backend_parses_successful_ndjson_stream():
         ]
 
     assert asyncio.run(collect()) == ["safe", "answer"]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b'[]\n',
+        b'{"response":42,"done":false}\n',
+        b'{"response":"safe","done":"yes"}\n',
+    ],
+)
+def test_ollama_backend_rejects_malformed_or_oversized_records(content):
+    async def handler(_request):
+        return httpx.Response(200, content=content)
+
+    async def collect():
+        transport = httpx.MockTransport(handler)
+        return [
+            token
+            async for token in _ollama_stream(
+                "prompt",
+                2,
+                config(),
+                transport=transport,
+            )
+        ]
+
+    with pytest.raises(ValueError):
+        asyncio.run(collect())
+
+
+def test_ollama_backend_rejects_oversized_records():
+    content = b'{"response":"' + b"x" * MAX_OLLAMA_LINE_BYTES + b'"}\n'
+
+    async def handler(_request):
+        return httpx.Response(200, content=content)
+
+    async def collect():
+        transport = httpx.MockTransport(handler)
+        return [
+            token
+            async for token in _ollama_stream(
+                "prompt",
+                2,
+                config(),
+                transport=transport,
+            )
+        ]
+
+    with pytest.raises(ValueError):
+        asyncio.run(collect())
