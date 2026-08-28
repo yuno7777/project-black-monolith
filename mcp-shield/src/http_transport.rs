@@ -53,16 +53,8 @@ pub(crate) async fn run(remote_url: &str) -> Result<()> {
         DEFAULT_PROTOCOL_VERSION,
         "MCP protocol version",
     )?;
-    let authorization = std::env::var("MCP_SHIELD_REMOTE_TOKEN")
-        .ok()
-        .filter(|token| !token.trim().is_empty())
-        .map(|token| {
-            let mut value = HeaderValue::from_str(&format!("Bearer {token}"))
-                .context("MCP_SHIELD_REMOTE_TOKEN contains invalid header characters")?;
-            value.set_sensitive(true);
-            Ok::<_, anyhow::Error>(value)
-        })
-        .transpose()?;
+    let remote_token = std::env::var("MCP_SHIELD_REMOTE_TOKEN").ok();
+    let authorization = remote_authorization(remote_token.as_deref())?;
 
     let bridge = Bridge {
         client,
@@ -305,6 +297,23 @@ fn remote_timeout_secs(value: Option<&str>) -> Result<u64> {
     Ok(seconds)
 }
 
+fn remote_authorization(token: Option<&str>) -> Result<Option<HeaderValue>> {
+    let Some(token) = token.filter(|value| !value.trim().is_empty()) else {
+        return Ok(None);
+    };
+    if !(16..=512).contains(&token.len())
+        || !token
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-._~+/=".contains(character))
+    {
+        bail!("MCP_SHIELD_REMOTE_TOKEN must be a 16-512 character header-safe token");
+    }
+    let mut value = HeaderValue::from_str(&format!("Bearer {token}"))
+        .context("MCP_SHIELD_REMOTE_TOKEN contains invalid header characters")?;
+    value.set_sensitive(true);
+    Ok(Some(value))
+}
+
 fn validate_jsonrpc(value: &Value) -> Result<()> {
     if value.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
         bail!("message is not JSON-RPC 2.0");
@@ -383,5 +392,20 @@ mod tests {
         for value in ["0", "3601", "invalid"] {
             assert!(remote_timeout_secs(Some(value)).is_err());
         }
+    }
+
+    #[test]
+    fn remote_bearer_token_is_bounded_and_header_safe() {
+        assert!(remote_authorization(None).unwrap().is_none());
+        assert!(remote_authorization(Some(" ")).unwrap().is_none());
+        let header = remote_authorization(Some("valid-token-0000"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(header.to_str().unwrap(), "Bearer valid-token-0000");
+        assert!(header.is_sensitive());
+        for value in ["short", "invalid token value", "valid-token\r\ninjected"] {
+            assert!(remote_authorization(Some(value)).is_err());
+        }
+        assert!(remote_authorization(Some(&"x".repeat(513))).is_err());
     }
 }
