@@ -35,7 +35,12 @@ def _clean_id(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
     trimmed = value.strip()[:MAX_ID_LENGTH]
-    return trimmed or None
+    if (
+        not trimmed
+        or any(not character.isprintable() for character in trimmed)
+    ):
+        return None
+    return trimmed
 
 
 @dataclass(frozen=True)

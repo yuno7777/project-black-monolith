@@ -3,7 +3,13 @@ from __future__ import annotations
 import json
 
 import pytest
-from monolith_events.events import EventContext, EventOutbox, make_emitter
+from monolith_events.events import (
+    AGENT_HEADER,
+    EventContext,
+    EventOutbox,
+    context_from_headers,
+    make_emitter,
+)
 
 
 def outbox(tmp_path, **limits) -> EventOutbox:
@@ -79,6 +85,12 @@ def test_outbox_rejects_oversized_or_malformed_records(tmp_path):
             delivery.enqueue(event_id, payload)
     assert delivery.stats()["pending"] == 0
     delivery.close()
+
+
+def test_correlation_headers_reject_controls_and_overlong_values():
+    assert context_from_headers({AGENT_HEADER: " agent-1 "}).agent_id == "agent-1"
+    assert context_from_headers({AGENT_HEADER: "agent\nforged"}).agent_id is None
+    assert context_from_headers({AGENT_HEADER: "x" * 129}).agent_id == "x" * 128
 
 
 def test_emitter_stamps_policy_and_resource_evidence(capsys):
