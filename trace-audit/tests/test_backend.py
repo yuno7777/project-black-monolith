@@ -56,6 +56,50 @@ def test_ollama_backend_parses_successful_ndjson_stream():
     assert asyncio.run(collect()) == ["safe", "answer"]
 
 
+def test_ollama_backend_cannot_exceed_the_requested_token_budget():
+    async def handler(_request):
+        return httpx.Response(
+            200,
+            content=b'{"response":"one two three four","done":false}\n',
+        )
+
+    async def collect():
+        transport = httpx.MockTransport(handler)
+        return [
+            token
+            async for token in _ollama_stream(
+                "prompt",
+                2,
+                config(),
+                transport=transport,
+            )
+        ]
+
+    assert asyncio.run(collect()) == ["one", "two"]
+
+
+def test_ollama_backend_rejects_pathologically_large_tokens():
+    content = b'{"response":"' + b"x" * (8 * 1024 + 1) + b'","done":false}\n'
+
+    async def handler(_request):
+        return httpx.Response(200, content=content)
+
+    async def collect():
+        transport = httpx.MockTransport(handler)
+        return [
+            token
+            async for token in _ollama_stream(
+                "prompt",
+                2,
+                config(),
+                transport=transport,
+            )
+        ]
+
+    with pytest.raises(ValueError, match="token exceeds"):
+        asyncio.run(collect())
+
+
 @pytest.mark.parametrize(
     "content",
     [
