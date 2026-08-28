@@ -6,6 +6,8 @@ interface EventBrokerLike {
   subscribe(tenantId: string, subscriber: (event: MonolithEvent) => void): () => void;
 }
 
+export const MAX_REPLAY_BUFFERED_EVENTS = 2_048;
+
 export function createEventStream(
   req: Request,
   tenantId: string,
@@ -66,6 +68,11 @@ export function createEventStream(
       let bufferedLive: MonolithEvent[] = [];
       const sendLive = (event: MonolithEvent) => {
         if (replaying) {
+          if (bufferedLive.length >= MAX_REPLAY_BUFFERED_EVENTS) {
+            safeEnqueue(`event: system\ndata: {"error":"live replay buffer exceeded; reconnect"}\n\n`);
+            cleanup();
+            return;
+          }
           bufferedLive.push(event);
         } else {
           send(event);
