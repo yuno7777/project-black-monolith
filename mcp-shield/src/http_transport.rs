@@ -11,7 +11,7 @@ use serde_json::Value;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinSet;
 
@@ -20,6 +20,7 @@ const PROTOCOL_HEADER: &str = "mcp-protocol-version";
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-11-25";
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 300;
 const MAX_REQUEST_TIMEOUT_SECS: u64 = 3_600;
+const MAX_STDIN_MESSAGE_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone)]
 struct Bridge {
@@ -65,12 +66,12 @@ pub(crate) async fn run(remote_url: &str) -> Result<()> {
         authorization,
     };
 
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    let mut input = BufReader::new(tokio::io::stdin());
     let mut requests = JoinSet::new();
     loop {
         tokio::select! {
-            line = lines.next_line() => {
-                match line.context("read JSON-RPC message from stdin")? {
+            line = read_bounded_line(&mut input) => {
+                match line? {
                     Some(line) if line.trim().is_empty() => continue,
                     Some(line) => {
                         let message: Value = serde_json::from_str(&line)
@@ -96,6 +97,41 @@ pub(crate) async fn run(remote_url: &str) -> Result<()> {
     }
     bridge.close_session().await;
     Ok(())
+}
+
+async fn read_bounded_line<R: AsyncBufRead + Unpin>(reader: &mut R) -> Result<Option<String>> {
+    let mut bytes = Vec::new();
+    loop {
+        let available = reader
+            .fill_buf()
+            .await
+            .context("read JSON-RPC message from stdin")?;
+        if available.is_empty() {
+            if bytes.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+        let consumed = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |index| index + 1);
+        if bytes.len() + consumed > MAX_STDIN_MESSAGE_BYTES {
+            bail!("stdin JSON-RPC message exceeds 1 MiB");
+        }
+        bytes.extend_from_slice(&available[..consumed]);
+        reader.consume(consumed);
+        if bytes.last() == Some(&b'\n') {
+            bytes.pop();
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
+            break;
+        }
+    }
+    String::from_utf8(bytes)
+        .context("stdin JSON-RPC message was not valid UTF-8")
+        .map(Some)
 }
 
 impl Bridge {
@@ -407,5 +443,19 @@ mod tests {
             assert!(remote_authorization(Some(value)).is_err());
         }
         assert!(remote_authorization(Some(&"x".repeat(513))).is_err());
+    }
+
+    #[tokio::test]
+    async fn stdin_messages_are_bounded_before_allocation_runs_away() {
+        let mut input = BufReader::new(&b"{\"jsonrpc\":\"2.0\"}\r\n"[..]);
+        assert_eq!(
+            read_bounded_line(&mut input).await.unwrap().as_deref(),
+            Some("{\"jsonrpc\":\"2.0\"}")
+        );
+        assert!(read_bounded_line(&mut input).await.unwrap().is_none());
+
+        let oversized = vec![b'x'; MAX_STDIN_MESSAGE_BYTES + 1];
+        let mut input = BufReader::new(oversized.as_slice());
+        assert!(read_bounded_line(&mut input).await.is_err());
     }
 }
