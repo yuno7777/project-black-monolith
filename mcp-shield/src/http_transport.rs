@@ -19,6 +19,7 @@ const SESSION_HEADER: &str = "mcp-session-id";
 const PROTOCOL_HEADER: &str = "mcp-protocol-version";
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-11-25";
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 300;
+const MAX_REQUEST_TIMEOUT_SECS: u64 = 3_600;
 
 #[derive(Clone)]
 struct Bridge {
@@ -35,11 +36,11 @@ struct Bridge {
 /// JSON-RPC request while another POST's SSE stream remains open.
 pub(crate) async fn run(remote_url: &str) -> Result<()> {
     let target = parse_target(remote_url)?;
-    let timeout_secs = std::env::var("MCP_SHIELD_REMOTE_TIMEOUT_SECS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_REQUEST_TIMEOUT_SECS);
+    let timeout_secs = remote_timeout_secs(
+        std::env::var("MCP_SHIELD_REMOTE_TIMEOUT_SECS")
+            .ok()
+            .as_deref(),
+    )?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(10))
@@ -291,6 +292,19 @@ fn header_from_env(name: &str, fallback: &str, label: &str) -> Result<HeaderValu
     HeaderValue::from_str(&value).with_context(|| format!("invalid {label}"))
 }
 
+fn remote_timeout_secs(value: Option<&str>) -> Result<u64> {
+    let Some(value) = value else {
+        return Ok(DEFAULT_REQUEST_TIMEOUT_SECS);
+    };
+    let seconds = value
+        .parse::<u64>()
+        .context("MCP_SHIELD_REMOTE_TIMEOUT_SECS must be an integer")?;
+    if !(1..=MAX_REQUEST_TIMEOUT_SECS).contains(&seconds) {
+        bail!("MCP_SHIELD_REMOTE_TIMEOUT_SECS must be between 1 and 3600");
+    }
+    Ok(seconds)
+}
+
 fn validate_jsonrpc(value: &Value) -> Result<()> {
     if value.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
         bail!("message is not JSON-RPC 2.0");
@@ -359,5 +373,15 @@ mod tests {
     fn finds_lf_and_crlf_event_boundaries() {
         assert_eq!(next_sse_event("data: one\n\nrest"), Some((9, 11)));
         assert_eq!(next_sse_event("data: one\r\n\r\nrest"), Some((9, 13)));
+    }
+
+    #[test]
+    fn remote_timeout_is_bounded_and_invalid_values_fail_closed() {
+        assert_eq!(remote_timeout_secs(None).unwrap(), 300);
+        assert_eq!(remote_timeout_secs(Some("1")).unwrap(), 1);
+        assert_eq!(remote_timeout_secs(Some("3600")).unwrap(), 3600);
+        for value in ["0", "3601", "invalid"] {
+            assert!(remote_timeout_secs(Some(value)).is_err());
+        }
     }
 }
