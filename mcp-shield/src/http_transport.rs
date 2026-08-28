@@ -8,6 +8,7 @@
 use anyhow::{bail, Context, Result};
 use reqwest::header::{HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, WWW_AUTHENTICATE};
 use serde_json::Value;
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -270,7 +271,19 @@ fn parse_target(value: &str) -> Result<reqwest::Url> {
     if url.fragment().is_some() {
         bail!("MCP remote URL must not contain a fragment");
     }
+    if url.scheme() == "http" && !is_loopback_host(url.host_str()) {
+        bail!("MCP remote URL must use HTTPS unless it targets loopback");
+    }
     Ok(url)
+}
+
+fn is_loopback_host(host: Option<&str>) -> bool {
+    host.is_some_and(|value| {
+        value.eq_ignore_ascii_case("localhost")
+            || value
+                .parse::<IpAddr>()
+                .is_ok_and(|address| address.is_loopback())
+    })
 }
 
 fn header_from_env(name: &str, fallback: &str, label: &str) -> Result<HeaderValue> {
@@ -329,6 +342,8 @@ mod tests {
         assert!(parse_target("file:///tmp/mcp").is_err());
         assert!(parse_target("https://user:pass@example.test/mcp").is_err());
         assert!(parse_target("https://example.test/mcp#token").is_err());
+        assert!(parse_target("http://example.test/mcp").is_err());
+        assert!(parse_target("http://192.0.2.1/mcp").is_err());
     }
 
     #[test]

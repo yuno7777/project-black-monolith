@@ -258,6 +258,7 @@ impl BaselineStore {
     }
 
     /// Whether this tool has been seen and is awaiting approval.
+    #[cfg(test)]
     pub fn is_pending(&self, tool_name: &str) -> bool {
         self.pending.contains_key(tool_name)
     }
