@@ -22,6 +22,8 @@ const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 300;
 const MAX_REQUEST_TIMEOUT_SECS: u64 = 3_600;
 const MAX_STDIN_MESSAGE_BYTES: usize = 1024 * 1024;
 const MAX_CONCURRENT_REQUESTS: usize = 64;
+const MAX_HTTP_RESPONSE_BYTES: usize = 1024 * 1024;
+const MAX_SSE_BUFFER_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone)]
 struct Bridge {
@@ -173,7 +175,9 @@ impl Bridge {
                 .and_then(|value| value.to_str().ok())
                 .unwrap_or("")
                 .to_owned();
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_response_text(response, MAX_HTTP_RESPONSE_BYTES)
+                .await
+                .context("read remote MCP error response")?;
             bail!(
                 "remote MCP server returned {status}{}: {}",
                 if challenge.is_empty() {
@@ -197,7 +201,9 @@ impl Bridge {
             .to_ascii_lowercase();
         match content_type.as_str() {
             "application/json" => {
-                let body = response.text().await.context("read JSON response")?;
+                let body = read_bounded_response_text(response, MAX_HTTP_RESPONSE_BYTES)
+                    .await
+                    .context("read JSON response")?;
                 let value: Value =
                     serde_json::from_str(&body).context("remote returned invalid JSON-RPC JSON")?;
                 validate_jsonrpc(&value)?;
@@ -218,6 +224,7 @@ impl Bridge {
     ) -> Result<()> {
         let mut pending = String::new();
         while let Some(chunk) = response.chunk().await.context("read MCP SSE response")? {
+            ensure_within_limit(pending.len(), chunk.len(), MAX_SSE_BUFFER_BYTES)?;
             pending.push_str(
                 std::str::from_utf8(&chunk).context("MCP SSE response was not valid UTF-8")?,
             );
@@ -292,6 +299,25 @@ impl Bridge {
             Err(error) => tracing::warn!(%error, "remote MCP session cleanup failed"),
         }
     }
+}
+
+async fn read_bounded_response_text(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> Result<String> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.context("read HTTP response body")? {
+        ensure_within_limit(body.len(), chunk.len(), limit)?;
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body).context("HTTP response body was not valid UTF-8")
+}
+
+fn ensure_within_limit(current: usize, additional: usize, limit: usize) -> Result<()> {
+    if current.saturating_add(additional) > limit {
+        bail!("remote MCP response exceeds 1 MiB");
+    }
+    Ok(())
 }
 
 fn parse_target(value: &str) -> Result<reqwest::Url> {
@@ -469,5 +495,12 @@ mod tests {
         assert!(can_accept_request(MAX_CONCURRENT_REQUESTS - 1));
         assert!(!can_accept_request(MAX_CONCURRENT_REQUESTS));
         assert!(!can_accept_request(MAX_CONCURRENT_REQUESTS + 1));
+    }
+
+    #[test]
+    fn remote_response_buffers_are_bounded() {
+        assert!(ensure_within_limit(512, 512, 1024).is_ok());
+        assert!(ensure_within_limit(1024, 1, 1024).is_err());
+        assert!(ensure_within_limit(usize::MAX, 1, 1024).is_err());
     }
 }
