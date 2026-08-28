@@ -16,7 +16,11 @@ import { requireSameOrigin } from "../lib/route-auth";
 import { JsonBodyError, readJsonBody } from "../lib/request-body";
 import { parseEventNotification } from "../lib/live-event-listener";
 import { operatorRateLimitKey } from "../lib/login-rate-limit";
-import { externalIdentityFromClaims } from "../lib/external-auth";
+import {
+  authenticateExternalToken,
+  ExternalAuthUnavailable,
+  externalIdentityFromClaims,
+} from "../lib/external-auth";
 import { normalizeModuleLedgerHealth } from "../lib/operations-store";
 import { alertConfigStatus } from "../lib/alert-config";
 
@@ -331,7 +335,16 @@ test("role hierarchy denies viewer writes and admits analyst writes", async () =
 test("operator cookie security follows the actual request transport", () => {
   process.env.OPERATOR_COOKIE_SECURE = "";
   const local = operatorCookie(new Request("http://localhost/api/auth/session"), "opaque", 300);
-  const proxied = operatorCookie(
+  process.env.OPERATOR_TRUST_PROXY_HEADERS = "false";
+  const untrustedProxy = operatorCookie(
+    new Request("http://dashboard/api/auth/session", {
+      headers: { "x-forwarded-proto": "https" },
+    }),
+    "opaque",
+    300,
+  );
+  process.env.OPERATOR_TRUST_PROXY_HEADERS = "true";
+  const trustedProxy = operatorCookie(
     new Request("http://dashboard/api/auth/session", {
       headers: { "x-forwarded-proto": "https" },
     }),
@@ -339,7 +352,8 @@ test("operator cookie security follows the actual request transport", () => {
     300,
   );
   assert.doesNotMatch(local, /; Secure/);
-  assert.match(proxied, /; Secure/);
+  assert.doesNotMatch(untrustedProxy, /; Secure/);
+  assert.match(trustedProxy, /; Secure/);
   assert.match(local, /HttpOnly; SameSite=Strict/);
 });
 
@@ -433,6 +447,24 @@ test("external identities require explicit project role, tenant, and MFA", () =>
     null,
   );
   assert.equal(externalIdentityFromClaims({ sub: "user-1", aal: "aal2" }), null);
+});
+
+test("external identity metadata requires secure transport", async () => {
+  process.env.OPERATOR_OIDC_ISSUER = "http://identity.example.test";
+  process.env.OPERATOR_OIDC_AUDIENCE = "project-black-monolith";
+  process.env.OPERATOR_OIDC_JWKS_URL = "http://identity.example.test/.well-known/jwks.json";
+  await assert.rejects(
+    () => authenticateExternalToken("not-a-jwt"),
+    ExternalAuthUnavailable,
+  );
+
+  process.env.OPERATOR_OIDC_ISSUER = "http://127.0.0.1:54321";
+  process.env.OPERATOR_OIDC_JWKS_URL = "http://127.0.0.1:54321/jwks.json";
+  assert.equal(await authenticateExternalToken("not-a-jwt"), null);
+
+  delete process.env.OPERATOR_OIDC_ISSUER;
+  delete process.env.OPERATOR_OIDC_AUDIENCE;
+  delete process.env.OPERATOR_OIDC_JWKS_URL;
 });
 
 test("event streams release broker subscriptions when readers cancel", async () => {

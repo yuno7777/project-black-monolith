@@ -253,7 +253,9 @@ export function hasRole(identity: OperatorIdentity, minimum: OperatorRole): bool
 function requestUsesTls(req: Request): boolean {
   if (process.env.OPERATOR_COOKIE_SECURE === "true") return true;
   if (process.env.OPERATOR_COOKIE_SECURE === "false") return false;
-  const forwarded = req.headers.get("x-forwarded-proto")?.split(",", 1)[0]?.trim();
+  const forwarded = process.env.OPERATOR_TRUST_PROXY_HEADERS === "true"
+    ? req.headers.get("x-forwarded-proto")?.split(",", 1)[0]?.trim()
+    : undefined;
   return forwarded === "https" || new URL(req.url).protocol === "https:";
 }
 
