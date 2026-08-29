@@ -46,6 +46,8 @@ def test_document_ids_and_text_are_bounded():
         Document.model_validate({"id": " ", "text": "content"})
     with pytest.raises(ValidationError):
         Document.model_validate({"id": "x" * 129, "text": "content"})
+    with pytest.raises(ValidationError, match="printable"):
+        Document.model_validate({"id": "doc\nforged", "text": "content"})
     with pytest.raises(ValidationError):
         Document.model_validate(
             {"id": "large", "text": "x" * (MAX_DOCUMENT_TEXT_BYTES + 1)}
