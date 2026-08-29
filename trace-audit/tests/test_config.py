@@ -19,6 +19,7 @@ from src.main import MAX_BASELINE_TOKEN_COUNT, _load_baseline
         ("MONOLITH_SMOOTHING", "nan", "greater than 0"),
         ("MONOLITH_MAX_TOKENS", "4097", "between 1 and 4096"),
         ("MONOLITH_TENANT_ID", " ", "between 1 and 128"),
+        ("MONOLITH_SESSION_ID", "session\nforged", "between 1 and 128"),
     ],
 )
 def test_invalid_runtime_configuration_fails_at_startup(

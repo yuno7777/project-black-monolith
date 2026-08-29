@@ -70,7 +70,12 @@ def _valid_bearer_token(value: str) -> bool:
 def _validate_id(name: str, value: str | None, *, required: bool = False) -> None:
     if value is None and not required:
         return
-    if value is None or not value.strip() or len(value.strip()) > MAX_ID_LENGTH:
+    trimmed = value.strip() if value is not None else ""
+    if (
+        not trimmed
+        or len(trimmed) > MAX_ID_LENGTH
+        or any(not character.isprintable() for character in trimmed)
+    ):
         raise ValueError(f"{name} must be between 1 and {MAX_ID_LENGTH} characters")
 
 
