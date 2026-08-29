@@ -36,6 +36,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -102,7 +103,7 @@ impl SpoolRecord {
     }
 }
 
-pub(crate) fn parse_dashboard_url(value: &str) -> Option<reqwest::Url> {
+pub(crate) fn parse_dashboard_url(value: &str, allow_insecure_http: bool) -> Option<reqwest::Url> {
     let url = reqwest::Url::parse(value).ok()?;
     if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none()
@@ -110,6 +111,15 @@ pub(crate) fn parse_dashboard_url(value: &str) -> Option<reqwest::Url> {
         || url.password().is_some()
         || url.fragment().is_some()
     {
+        return None;
+    }
+    let loopback = url.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .parse::<IpAddr>()
+                .is_ok_and(|address| address.is_loopback())
+    });
+    if url.scheme() == "http" && !loopback && !allow_insecure_http {
         return None;
     }
     Some(url)
@@ -130,10 +140,12 @@ pub(crate) struct Outbox {
 impl Outbox {
     fn from_env() -> Option<Outbox> {
         let url = std::env::var("MONOLITH_DASHBOARD_URL").ok()?;
-        let target = match parse_dashboard_url(&url) {
+        let allow_insecure_http =
+            std::env::var("MONOLITH_ALLOW_INSECURE_DASHBOARD").is_ok_and(|value| value == "true");
+        let target = match parse_dashboard_url(&url, allow_insecure_http) {
             Some(t) => t,
             None => {
-                tracing::warn!(url = %url, "MONOLITH_DASHBOARD_URL must be an http(s) URL without credentials or a fragment; dashboard forwarding disabled");
+                tracing::warn!(url = %url, "MONOLITH_DASHBOARD_URL must use HTTPS (HTTP is loopback-only unless explicitly enabled) and contain no credentials or fragment; dashboard forwarding disabled");
                 return None;
             }
         };
@@ -511,17 +523,19 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_urls_require_http_without_embedded_secrets() {
-        let http = parse_dashboard_url("http://dashboard:3000/api/ingest").unwrap();
+    fn dashboard_urls_require_secure_transport_or_explicit_opt_in() {
+        assert!(parse_dashboard_url("http://dashboard:3000/api/ingest", false).is_none());
+        let http = parse_dashboard_url("http://dashboard:3000/api/ingest", true).unwrap();
         assert_eq!(http.as_str(), "http://dashboard:3000/api/ingest");
+        assert!(parse_dashboard_url("http://127.0.0.1:3000/api/ingest", false).is_some());
 
-        let https = parse_dashboard_url("https://example.com/api/ingest").unwrap();
+        let https = parse_dashboard_url("https://example.com/api/ingest", false).unwrap();
         assert_eq!(https.scheme(), "https");
 
-        assert!(parse_dashboard_url("ftp://example.com/api/ingest").is_none());
-        assert!(parse_dashboard_url("https://user:pass@example.com/api/ingest").is_none());
-        assert!(parse_dashboard_url("https://example.com/api/ingest#secret").is_none());
-        assert!(parse_dashboard_url("not a url").is_none());
+        assert!(parse_dashboard_url("ftp://example.com/api/ingest", false).is_none());
+        assert!(parse_dashboard_url("https://user:pass@example.com/api/ingest", false).is_none());
+        assert!(parse_dashboard_url("https://example.com/api/ingest#secret", false).is_none());
+        assert!(parse_dashboard_url("not a url", false).is_none());
     }
 
     #[test]
