@@ -56,6 +56,20 @@ def test_outbox_allows_loopback_http_for_local_development(tmp_path):
     delivery.close()
 
 
+@pytest.mark.parametrize(
+    "token",
+    ["short", "token with spaces 0000", "token\r\ninjected-0000", "x" * 513],
+)
+def test_outbox_rejects_unsafe_bearer_tokens(tmp_path, token):
+    with pytest.raises(ValueError, match="header-safe"):
+        EventOutbox(
+            str(tmp_path / "outbox.db"),
+            "https://dashboard.invalid/api/ingest",
+            token,
+            start_worker=False,
+        )
+
+
 def test_transient_failures_stop_at_the_attempt_cap(tmp_path):
     delivery = outbox(tmp_path, max_attempts=2)
     delivery._post = lambda _payload: (503, "http 503")  # type: ignore[method-assign]

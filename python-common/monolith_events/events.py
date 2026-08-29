@@ -22,6 +22,8 @@ from typing import Any, Literal
 Severity = Literal["info", "warning", "critical"]
 MAX_ID_LENGTH = 128
 MAX_EVENT_PAYLOAD_BYTES = 256 * 1024
+MIN_BEARER_TOKEN_LENGTH = 16
+MAX_BEARER_TOKEN_LENGTH = 512
 AGENT_HEADER = "x-monolith-agent-id"
 TENANT_HEADER = "x-monolith-tenant-id"
 SESSION_HEADER = "x-monolith-session-id"
@@ -66,6 +68,13 @@ def _safe_delivery_url(value: str) -> bool:
     )
 
 
+def _valid_bearer_token(value: str) -> bool:
+    return MIN_BEARER_TOKEN_LENGTH <= len(value) <= MAX_BEARER_TOKEN_LENGTH and all(
+        character.isascii() and (character.isalnum() or character in "-._~+/=")
+        for character in value
+    )
+
+
 @dataclass(frozen=True)
 class EventContext:
     tenant_id: str | None = None
@@ -104,6 +113,8 @@ class EventOutbox:
             raise ValueError("outbox limits must be positive")
         if not _safe_delivery_url(url):
             raise ValueError("outbox URL must use HTTPS (HTTP is loopback-only)")
+        if not _valid_bearer_token(token):
+            raise ValueError("outbox token must be 16-512 header-safe characters")
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(path, check_same_thread=False, timeout=1.0)
         self._connection.execute("pragma journal_mode = wal")
