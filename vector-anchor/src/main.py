@@ -58,6 +58,8 @@ class Document(StrictRequest):
         value = value.strip()
         if not value:
             raise ValueError("document id must not be blank")
+        if any(not character.isprintable() for character in value):
+            raise ValueError("document id must contain only printable characters")
         return value
 
     @field_validator("text")
