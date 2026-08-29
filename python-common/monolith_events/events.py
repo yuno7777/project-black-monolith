@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import random
 import sqlite3
@@ -9,9 +10,11 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -42,6 +45,25 @@ def _clean_id(value: Any) -> str | None:
     ):
         return None
     return trimmed
+
+
+def _safe_delivery_url(value: str) -> bool:
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        host = parsed.hostname
+    except ValueError:
+        return False
+    loopback = host == "localhost"
+    if host and not loopback:
+        with suppress(ValueError):
+            loopback = ipaddress.ip_address(host).is_loopback
+    return bool(
+        host
+        and not parsed.username
+        and not parsed.password
+        and not parsed.fragment
+        and (parsed.scheme == "https" or (parsed.scheme == "http" and loopback))
+    )
 
 
 @dataclass(frozen=True)
@@ -80,6 +102,8 @@ class EventOutbox:
     ) -> None:
         if min(max_attempts, max_pending, max_dead, dead_retention_ms) < 1:
             raise ValueError("outbox limits must be positive")
+        if not _safe_delivery_url(url):
+            raise ValueError("outbox URL must use HTTPS (HTTP is loopback-only)")
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(path, check_same_thread=False, timeout=1.0)
         self._connection.execute("pragma journal_mode = wal")

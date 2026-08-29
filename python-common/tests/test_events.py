@@ -32,6 +32,30 @@ def test_pending_and_dead_letter_storage_are_bounded(tmp_path):
     delivery.close()
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://dashboard.example/api/ingest",
+        "https://user:password@dashboard.example/api/ingest",
+        "https://dashboard.example/api/ingest#secret",
+        "file:///tmp/ingest",
+    ],
+)
+def test_outbox_rejects_unsafe_delivery_urls(tmp_path, url):
+    with pytest.raises(ValueError, match="HTTPS"):
+        EventOutbox(str(tmp_path / "outbox.db"), url, "test-token-value")
+
+
+def test_outbox_allows_loopback_http_for_local_development(tmp_path):
+    delivery = EventOutbox(
+        str(tmp_path / "outbox.db"),
+        "http://127.0.0.1:3000/api/ingest",
+        "test-token-value",
+        start_worker=False,
+    )
+    delivery.close()
+
+
 def test_transient_failures_stop_at_the_attempt_cap(tmp_path):
     delivery = outbox(tmp_path, max_attempts=2)
     delivery._post = lambda _payload: (503, "http 503")  # type: ignore[method-assign]
