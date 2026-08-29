@@ -122,6 +122,15 @@ test("event normalization requires identity-bearing contract fields", () => {
       }),
     /tenant_id/,
   );
+  assert.throws(
+    () =>
+      normalizeEvent({
+        module: "mcp-shield",
+        event_type: "probe",
+        trace_id: "trace\nforged",
+      }),
+    /trace_id.*printable/,
+  );
 });
 
 test("event normalization applies safe defaults only when fields are absent", () => {
