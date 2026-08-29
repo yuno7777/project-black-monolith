@@ -87,6 +87,7 @@ async def lifespan(app: FastAPI):
         tenant_id=cfg.tenant_id,
         agent_id=cfg.agent_id,
         session_id=cfg.session_id,
+        allow_insecure_http=cfg.allow_insecure_dashboard,
     )
     baseline_counts = _load_baseline(cfg.baseline_path)
     app.state.cfg = cfg

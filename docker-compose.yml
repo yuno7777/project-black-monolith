@@ -158,6 +158,7 @@ services:
       - "127.0.0.1:8001:8001"
     environment:
       MONOLITH_DASHBOARD_URL: "http://dashboard:3000/api/ingest"
+      MONOLITH_ALLOW_INSECURE_DASHBOARD: "true"
       MONOLITH_EVENT_TOKEN: ${MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR:?set MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR in .env}
       MONOLITH_EVENT_OUTBOX_PATH: /var/lib/monolith/outbox.db
       MONOLITH_DETECTOR_STATE_PATH: /var/lib/monolith/detector_state.json
@@ -193,6 +194,7 @@ services:
       - "127.0.0.1:8002:8002"
     environment:
       MONOLITH_DASHBOARD_URL: "http://dashboard:3000/api/ingest"
+      MONOLITH_ALLOW_INSECURE_DASHBOARD: "true"
       MONOLITH_EVENT_TOKEN: ${MONOLITH_EVENT_TOKEN_TRACE_AUDIT:?set MONOLITH_EVENT_TOKEN_TRACE_AUDIT in .env}
       MONOLITH_EVENT_OUTBOX_PATH: /var/lib/monolith/outbox.db
       MONOLITH_ADMIN_TOKEN: ${MONOLITH_ADMIN_TOKEN:?set MONOLITH_ADMIN_TOKEN in .env}

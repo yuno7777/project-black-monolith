@@ -49,7 +49,7 @@ def _clean_id(value: Any) -> str | None:
     return trimmed
 
 
-def _safe_delivery_url(value: str) -> bool:
+def _safe_delivery_url(value: str, *, allow_insecure_http: bool = False) -> bool:
     try:
         parsed = urllib.parse.urlsplit(value)
         host = parsed.hostname
@@ -64,7 +64,10 @@ def _safe_delivery_url(value: str) -> bool:
         and not parsed.username
         and not parsed.password
         and not parsed.fragment
-        and (parsed.scheme == "https" or (parsed.scheme == "http" and loopback))
+        and (
+            parsed.scheme == "https"
+            or (parsed.scheme == "http" and (loopback or allow_insecure_http))
+        )
     )
 
 
@@ -108,10 +111,11 @@ class EventOutbox:
         max_dead: int = 2_000,
         dead_retention_ms: int = 7 * 24 * 60 * 60 * 1000,
         start_worker: bool = True,
+        allow_insecure_http: bool = False,
     ) -> None:
         if min(max_attempts, max_pending, max_dead, dead_retention_ms) < 1:
             raise ValueError("outbox limits must be positive")
-        if not _safe_delivery_url(url):
+        if not _safe_delivery_url(url, allow_insecure_http=allow_insecure_http):
             raise ValueError("outbox URL must use HTTPS (HTTP is loopback-only)")
         if not _valid_bearer_token(token):
             raise ValueError("outbox token must be 16-512 header-safe characters")
@@ -326,13 +330,19 @@ class EventEmitter:
         tenant_id: str | None = "default",
         agent_id: str | None = None,
         session_id: str | None = None,
+        allow_insecure_http: bool = False,
     ) -> None:
         self.module = module
         self.default_agent = _clean_id(agent_id)
         self.default_session = _clean_id(session_id)
         self.default_tenant = _clean_id(tenant_id) or "default"
         self.outbox = (
-            EventOutbox(outbox_path, dashboard_url, event_token)
+            EventOutbox(
+                outbox_path,
+                dashboard_url,
+                event_token,
+                allow_insecure_http=allow_insecure_http,
+            )
             if dashboard_url and event_token
             else None
         )
@@ -401,6 +411,7 @@ def make_emitter(
     tenant_id: str | None = "default",
     agent_id: str | None = None,
     session_id: str | None = None,
+    allow_insecure_http: bool = False,
 ) -> EventEmitter:
     return EventEmitter(
         module,
@@ -410,4 +421,5 @@ def make_emitter(
         tenant_id=tenant_id,
         agent_id=agent_id,
         session_id=session_id,
+        allow_insecure_http=allow_insecure_http,
     )

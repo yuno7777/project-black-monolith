@@ -47,6 +47,7 @@ class Config:
     dashboard_url: str | None
     event_token: str | None
     event_outbox_path: str
+    allow_insecure_dashboard: bool
     admin_token: str | None
 
     # --- correlation ----------------------------------------------------
@@ -137,6 +138,7 @@ def load_config() -> Config:
         dashboard_url=os.environ.get("MONOLITH_DASHBOARD_URL") or None,
         event_token=os.environ.get("MONOLITH_EVENT_TOKEN") or None,
         event_outbox_path=os.environ.get("MONOLITH_EVENT_OUTBOX_PATH", "./event_outbox.db"),
+        allow_insecure_dashboard=os.environ.get("MONOLITH_ALLOW_INSECURE_DASHBOARD") == "true",
         admin_token=os.environ.get("MONOLITH_ADMIN_TOKEN") or None,
         tenant_id=os.environ.get("MONOLITH_TENANT_ID", "default"),
         agent_id=os.environ.get("MONOLITH_AGENT_ID") or None,

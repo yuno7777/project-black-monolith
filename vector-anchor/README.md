@@ -88,6 +88,7 @@ it and serves the next-best clean result instead.
 | `MONOLITH_RETENTION_HORIZON` | `500`              | how far back a hit still counts (detection reach)   |
 | `MONOLITH_MAX_QUERIES_PER_DOC`| `8`               | hits retained per document (memory + cost bound)    |
 | `MONOLITH_DASHBOARD_URL`     | *(unset)*          | if set, events are also POSTed here                 |
+| `MONOLITH_ALLOW_INSECURE_DASHBOARD` | *(unset)* | allow HTTP delivery on a trusted private network |
 | `MONOLITH_EVENT_TOKEN`       | *(unset)*          | module-scoped ingest token; required with dashboard URL |
 | `MONOLITH_EVENT_OUTBOX_PATH` | `./event_outbox.db` | bounded SQLite retry/dead-letter queue             |
 | `MONOLITH_DETECTOR_STATE_PATH` | `./detector_state.json` | atomic frequency/quarantine snapshot           |

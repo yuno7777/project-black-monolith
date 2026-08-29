@@ -106,6 +106,7 @@ or `{type: "done", peak_kl, tokens}`.
 | `MONOLITH_MIN_TOKENS`       | `12`       | minimum tokens before evaluating divergence    |
 | `MONOLITH_MAX_TOKENS`       | `60`       | max tokens generated per request               |
 | `MONOLITH_DASHBOARD_URL`    | *(unset)*  | if set, events are also POSTed here             |
+| `MONOLITH_ALLOW_INSECURE_DASHBOARD` | *(unset)* | allow HTTP delivery on a trusted private network |
 | `MONOLITH_EVENT_TOKEN`      | *(unset)*  | module-scoped ingest token; required with dashboard URL |
 | `MONOLITH_EVENT_OUTBOX_PATH`| `./event_outbox.db` | bounded SQLite retry/dead-letter queue       |
 | `MONOLITH_TENANT_ID`        | `default`  | tenant stamped onto emitted events              |
