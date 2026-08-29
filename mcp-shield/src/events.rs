@@ -103,10 +103,13 @@ struct Identity {
 
 fn clean_id(value: String) -> Option<String> {
     let trimmed = value.trim();
-    if trimmed.is_empty() {
+    if trimmed.is_empty()
+        || trimmed.chars().count() > MAX_ID_LENGTH
+        || trimmed.chars().any(char::is_control)
+    {
         return None;
     }
-    Some(trimmed.chars().take(MAX_ID_LENGTH).collect())
+    Some(trimmed.to_owned())
 }
 
 fn identity() -> &'static Identity {
@@ -368,16 +371,12 @@ mod tests {
     }
 
     #[test]
-    fn ids_are_trimmed_clamped_and_blanks_dropped() {
+    fn ids_are_trimmed_and_invalid_values_are_dropped() {
         assert_eq!(clean_id("  session-1  ".into()), Some("session-1".into()));
         assert_eq!(clean_id("   ".into()), None);
         assert_eq!(clean_id("".into()), None);
-        let long = clean_id("x".repeat(500)).unwrap();
-        assert_eq!(
-            long.len(),
-            MAX_ID_LENGTH,
-            "an over-long id must be clamped, not dropped"
-        );
+        assert_eq!(clean_id("x".repeat(500)), None);
+        assert_eq!(clean_id("session\nforged".into()), None);
     }
 
     #[test]
