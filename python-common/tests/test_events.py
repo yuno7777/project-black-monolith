@@ -90,7 +90,7 @@ def test_outbox_rejects_oversized_or_malformed_records(tmp_path):
 def test_correlation_headers_reject_controls_and_overlong_values():
     assert context_from_headers({AGENT_HEADER: " agent-1 "}).agent_id == "agent-1"
     assert context_from_headers({AGENT_HEADER: "agent\nforged"}).agent_id is None
-    assert context_from_headers({AGENT_HEADER: "x" * 129}).agent_id == "x" * 128
+    assert context_from_headers({AGENT_HEADER: "x" * 129}).agent_id is None
 
 
 def test_emitter_stamps_policy_and_resource_evidence(capsys):

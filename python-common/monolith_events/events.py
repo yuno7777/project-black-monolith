@@ -34,9 +34,10 @@ def now_ms() -> int:
 def _clean_id(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
-    trimmed = value.strip()[:MAX_ID_LENGTH]
+    trimmed = value.strip()
     if (
         not trimmed
+        or len(trimmed) > MAX_ID_LENGTH
         or any(not character.isprintable() for character in trimmed)
     ):
         return None
