@@ -1,6 +1,7 @@
 import { readLedgerHealth } from "@/lib/operations-store";
 import { requireOperator } from "@/lib/route-auth";
 import { alertConfigStatus } from "@/lib/alert-config";
+import { isBearerToken } from "@/lib/credentials";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,10 +11,33 @@ const MODULES = [
   { module: "trace-audit", env: "TRACE_AUDIT_INTERNAL_URL" },
 ] as const;
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+export function moduleStatsUrl(baseUrl: string, allowInsecureHttp: boolean): URL | null {
+  try {
+    const url = new URL(baseUrl);
+    if (url.username || url.password || url.hash) return null;
+    if (
+      url.protocol !== "https:"
+      && !(url.protocol === "http:" && (LOOPBACK_HOSTS.has(url.hostname) || allowInsecureHttp))
+    ) return null;
+    return new URL("/stats", url);
+  } catch {
+    return null;
+  }
+}
+
 async function moduleRuntimeHealth(module: string, baseUrl: string | undefined, token: string | undefined) {
   if (!baseUrl || !token) return { module, configured: false, reachable: false };
+  const target = moduleStatsUrl(
+    baseUrl,
+    process.env.MONOLITH_ALLOW_INSECURE_MODULE_HEALTH === "true",
+  );
+  if (!target || !isBearerToken(token)) {
+    return { module, configured: true, reachable: false, error: "unsafe configuration" };
+  }
   try {
-    const response = await fetch(new URL("/stats", baseUrl), {
+    const response = await fetch(target, {
       headers: { authorization: `Bearer ${token}` },
       cache: "no-store",
       signal: AbortSignal.timeout(1_500),
