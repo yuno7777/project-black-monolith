@@ -35,8 +35,10 @@ function identityText(value: unknown, field: string): string | undefined {
     throw new Error(`event.${field} must be a string`);
   }
   const trimmed = value.trim();
-  if (!trimmed || trimmed.length > MAX_ID_LENGTH) {
-    throw new Error(`event.${field} must be between 1 and ${MAX_ID_LENGTH} characters`);
+  if (!trimmed || trimmed.length > MAX_ID_LENGTH || CONTROL_CHARACTERS.test(trimmed)) {
+    throw new Error(
+      `event.${field} must be printable and between 1 and ${MAX_ID_LENGTH} characters`,
+    );
   }
   return trimmed;
 }
