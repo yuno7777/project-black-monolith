@@ -23,6 +23,7 @@ from .events import context_from_headers, make_emitter
 from .stream_proxy import StreamAuditor
 
 MAX_PROMPT_BYTES = 64 * 1024
+MAX_BASELINE_TOKEN_BYTES = 512
 MAX_BASELINE_TOKEN_COUNT = 2_147_483_647
 MAX_BASELINE_TOTAL = 100_000_000_000_000
 
@@ -55,8 +56,8 @@ def _load_baseline(path: str) -> dict[str, int]:
     counts: dict[str, int] = {}
     for raw_token, raw_count in data["counts"].items():
         token = str(raw_token).strip()
-        if not token or len(token) > 512:
-            raise ValueError("baseline tokens must be between 1 and 512 characters")
+        if not token or len(token.encode("utf-8")) > MAX_BASELINE_TOKEN_BYTES:
+            raise ValueError("baseline tokens must be between 1 and 512 UTF-8 bytes")
         if (
             isinstance(raw_count, bool)
             or not isinstance(raw_count, int)
