@@ -16,6 +16,7 @@ from src.config import load_config
         ("MONOLITH_MAX_QUERIES_PER_DOC", "0", "between 1 and 4096"),
         ("MONOLITH_TOPIC_SIMILARITY", "1.1", "between -1 and 1"),
         ("MONOLITH_TENANT_ID", " ", "between 1 and 128"),
+        ("MONOLITH_AGENT_ID", "agent\nforged", "between 1 and 128"),
     ],
 )
 def test_invalid_detector_configuration_fails_at_startup(
