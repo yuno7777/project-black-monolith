@@ -226,6 +226,7 @@ services:
     build: ./mcp-shield
     environment:
       MONOLITH_DASHBOARD_URL: "http://dashboard:3000/api/ingest"
+      MONOLITH_ALLOW_INSECURE_DASHBOARD: "true"
       MONOLITH_EVENT_TOKEN: ${MONOLITH_EVENT_TOKEN_MCP_SHIELD:?set MONOLITH_EVENT_TOKEN_MCP_SHIELD in .env}
       # JSONL spool, not SQLite: this module keeps to the deps already in
       # Cargo.toml. Same delivery contract as the Python outboxes.
