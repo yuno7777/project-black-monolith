@@ -24,6 +24,7 @@ from .retriever_proxy import RetrieverProxy
 from .store import build_embedding_function, get_or_create_collection
 
 MAX_QUERY_LENGTH = 16_384
+MAX_QUERY_BYTES = 16_384
 MAX_DOCUMENT_TEXT_BYTES = 64 * 1024
 MAX_DOCUMENT_BATCH_BYTES = 1024 * 1024
 
@@ -42,6 +43,8 @@ class RetrieveRequest(StrictRequest):
         value = value.strip()
         if not value:
             raise ValueError("query must not be blank")
+        if len(value.encode("utf-8")) > MAX_QUERY_BYTES:
+            raise ValueError(f"query must be at most {MAX_QUERY_BYTES} UTF-8 bytes")
         return value
 
 
