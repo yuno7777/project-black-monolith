@@ -13,6 +13,8 @@ from src.main import MAX_BASELINE_TOKEN_BYTES, MAX_BASELINE_TOKEN_COUNT, _load_b
     [
         ("MONOLITH_MODEL_BACKEND", "mystery", "mock"),
         ("MONOLITH_OLLAMA_URL", "file:///tmp/model", "http"),
+        ("MONOLITH_OLLAMA_MODEL", "model\nforged", "printable"),
+        ("MONOLITH_OLLAMA_MODEL", "😀" * 33, "UTF-8 bytes"),
         ("MONOLITH_KL_THRESHOLD", "0", "greater than 0"),
         ("MONOLITH_TA_WINDOW", "0", "between 1 and 10000"),
         ("MONOLITH_MIN_TOKENS", "0", "divergence window"),

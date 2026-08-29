@@ -84,8 +84,13 @@ def _validate_config(cfg: Config) -> Config:
         raise ValueError("MONOLITH_MODEL_BACKEND must be 'mock' or 'ollama'")
     if not cfg.ollama_base_url.startswith(("http://", "https://")):
         raise ValueError("MONOLITH_OLLAMA_URL must use http:// or https://")
-    if not cfg.ollama_model.strip() or len(cfg.ollama_model) > 128:
-        raise ValueError("MONOLITH_OLLAMA_MODEL must be between 1 and 128 characters")
+    ollama_model = cfg.ollama_model.strip()
+    if (
+        not ollama_model
+        or len(ollama_model.encode("utf-8")) > 128
+        or any(not character.isprintable() for character in ollama_model)
+    ):
+        raise ValueError("MONOLITH_OLLAMA_MODEL must be 1-128 printable UTF-8 bytes")
     if not cfg.baseline_path.strip():
         raise ValueError("MONOLITH_BASELINE_PATH must not be blank")
     if not math.isfinite(cfg.kl_threshold) or not 0 < cfg.kl_threshold <= 100:
