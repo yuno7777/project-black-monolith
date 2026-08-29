@@ -56,6 +56,17 @@ def test_outbox_allows_loopback_http_for_local_development(tmp_path):
     delivery.close()
 
 
+def test_plaintext_service_delivery_requires_explicit_opt_in(tmp_path):
+    delivery = EventOutbox(
+        str(tmp_path / "outbox.db"),
+        "http://dashboard:3000/api/ingest",
+        "test-token-value",
+        start_worker=False,
+        allow_insecure_http=True,
+    )
+    delivery.close()
+
+
 @pytest.mark.parametrize(
     "token",
     ["short", "token with spaces 0000", "token\r\ninjected-0000", "x" * 513],
