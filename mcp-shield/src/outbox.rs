@@ -53,6 +53,7 @@ const RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
 /// How often the background flusher looks for due records.
 const FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 const MIN_EVENT_TOKEN_LENGTH: usize = 16;
+const MAX_EVENT_TOKEN_LENGTH: usize = 512;
 
 /// HTTP statuses the ingest endpoint returns for input it will never accept:
 /// a bad credential (401/403), a malformed or oversized body (400/413), or an
@@ -63,7 +64,7 @@ fn is_permanent(status: u16) -> bool {
 }
 
 fn valid_event_token(token: &str) -> bool {
-    token.len() >= MIN_EVENT_TOKEN_LENGTH
+    (MIN_EVENT_TOKEN_LENGTH..=MAX_EVENT_TOKEN_LENGTH).contains(&token.len())
         && token.bytes().all(|byte| {
             byte.is_ascii_alphanumeric()
                 || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'+' | b'/' | b'=')
@@ -545,5 +546,6 @@ mod tests {
         assert!(!valid_event_token("short"));
         assert!(!valid_event_token("valid-length-token\r\nInjected: yes"));
         assert!(!valid_event_token("valid length token with spaces"));
+        assert!(!valid_event_token(&"x".repeat(MAX_EVENT_TOKEN_LENGTH + 1)));
     }
 }
