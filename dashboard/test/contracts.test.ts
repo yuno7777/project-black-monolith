@@ -26,6 +26,7 @@ import {
 } from "../lib/external-auth";
 import { normalizeModuleLedgerHealth } from "../lib/operations-store";
 import { alertConfigStatus } from "../lib/alert-config";
+import { moduleStatsUrl } from "../app/api/operations/route";
 
 function detector(overrides: Record<string, unknown> = {}) {
   return {
@@ -58,6 +59,20 @@ test("operations health retains quiet defense layers", () => {
   assert.equal(modules[0].events_24h, 0);
   assert.equal(modules[1].critical_24h, 1);
   assert.equal(modules[2].latest_received_ms, null);
+});
+
+test("module health credentials only travel to trusted transports", () => {
+  assert.equal(moduleStatsUrl("http://modules.example/stats", false), null);
+  assert.equal(moduleStatsUrl("https://user:secret@modules.example/stats", false), null);
+  assert.equal(moduleStatsUrl("https://modules.example/stats#fragment", false), null);
+  assert.equal(
+    moduleStatsUrl("http://127.0.0.1:8001/base", false)?.toString(),
+    "http://127.0.0.1:8001/stats",
+  );
+  assert.equal(
+    moduleStatsUrl("http://vector-anchor:8001", true)?.toString(),
+    "http://vector-anchor:8001/stats",
+  );
 });
 
 test("alert webhooks require a signed HTTPS destination", () => {
