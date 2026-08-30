@@ -42,7 +42,7 @@ def _clean_id(value: Any) -> str | None:
     trimmed = value.strip()
     if (
         not trimmed
-        or len(trimmed) > MAX_ID_LENGTH
+        or len(trimmed.encode("utf-8")) > MAX_ID_LENGTH
         or any(not character.isprintable() for character in trimmed)
     ):
         return None
@@ -175,7 +175,7 @@ class EventOutbox:
     def enqueue(self, event_id: str, payload: bytes) -> None:
         if (
             not event_id
-            or len(event_id) > MAX_ID_LENGTH
+            or len(event_id.encode("utf-8")) > MAX_ID_LENGTH
             or any(not character.isprintable() for character in event_id)
         ):
             raise ValueError(f"event_id must be 1-{MAX_ID_LENGTH} printable characters")
