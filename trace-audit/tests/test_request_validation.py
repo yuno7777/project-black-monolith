@@ -35,7 +35,7 @@ def test_operator_max_tokens_is_a_hard_ceiling():
         min_tokens_before_check=12,
         smoothing=0.5,
     )
-    auditor = StreamAuditor(cfg, {}, lambda *_args: None)
+    auditor = StreamAuditor(cfg, {}, lambda *_args, **_kwargs: None)
 
     async def collect():
         return [event async for event in auditor.audit("ordinary prompt", max_tokens=100)]
@@ -53,7 +53,7 @@ def test_direct_auditor_call_rejects_non_positive_token_count():
         min_tokens_before_check=12,
         smoothing=0.5,
     )
-    auditor = StreamAuditor(cfg, {}, lambda *_args: None)
+    auditor = StreamAuditor(cfg, {}, lambda *_args, **_kwargs: None)
 
     async def collect():
         return [event async for event in auditor.audit("ordinary prompt", max_tokens=0)]

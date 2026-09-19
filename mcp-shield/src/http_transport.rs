@@ -106,7 +106,9 @@ fn can_accept_request(active: usize) -> bool {
     active < MAX_CONCURRENT_REQUESTS
 }
 
-async fn read_bounded_line<R: AsyncBufRead + Unpin>(reader: &mut R) -> Result<Option<String>> {
+pub(crate) async fn read_bounded_line<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+) -> Result<Option<String>> {
     let mut bytes = Vec::new();
     loop {
         let available = reader
@@ -124,7 +126,7 @@ async fn read_bounded_line<R: AsyncBufRead + Unpin>(reader: &mut R) -> Result<Op
             .position(|byte| *byte == b'\n')
             .map_or(available.len(), |index| index + 1);
         if bytes.len() + consumed > MAX_STDIN_MESSAGE_BYTES {
-            bail!("stdin JSON-RPC message exceeds 1 MiB");
+            bail!("stdio JSON-RPC message exceeds 1 MiB");
         }
         bytes.extend_from_slice(&available[..consumed]);
         reader.consume(consumed);
@@ -137,7 +139,7 @@ async fn read_bounded_line<R: AsyncBufRead + Unpin>(reader: &mut R) -> Result<Op
         }
     }
     String::from_utf8(bytes)
-        .context("stdin JSON-RPC message was not valid UTF-8")
+        .context("stdio JSON-RPC message was not valid UTF-8")
         .map(Some)
 }
 

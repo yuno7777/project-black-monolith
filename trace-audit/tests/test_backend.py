@@ -53,14 +53,14 @@ def test_ollama_backend_parses_successful_ndjson_stream():
             )
         ]
 
-    assert asyncio.run(collect()) == ["safe", "answer"]
+    assert asyncio.run(collect()) == ["safe answer"]
 
 
 def test_ollama_backend_cannot_exceed_the_requested_token_budget():
     async def handler(_request):
         return httpx.Response(
             200,
-            content=b'{"response":"one two three four","done":false}\n',
+            content=b'{"response":"one","done":false}\n{"response":"two","done":false}\n{"response":"three","done":false}\n',
         )
 
     async def collect():

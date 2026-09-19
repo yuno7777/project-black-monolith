@@ -110,3 +110,35 @@ Local checks passed:
 The ordinary `npm test` wrapper could not create its tsx IPC socket in this VM;
 the same dashboard suite passed through Node's tsx import hook instead.
 The full native stack, Rust build, and Docker integration were not run locally.
+
+## Follow-up implementation
+
+The follow-up branch implements the next-work items above:
+
+- MCP stdio is bounded to 1 MiB in both directions; invalid JSON/UTF-8 aborts
+  forwarding. EOF and failed forwarding trigger bounded child cleanup.
+- Corpus query and scoring are serialized with document replacement.
+- TraceAudit uses a character-bounded look-behind, handles format-control and
+  compatibility-glyph obfuscation, and retains incomplete variable-length keys.
+  Overlong unbroken candidates fail closed. This can redact benign long IDs.
+- Ollama fragments preserve whitespace and subword boundaries. Successful
+  generations emit content-free correlation events.
+- A held-out real-model evaluator runs semantic retrieval and multiple installed
+  Ollama models, records provenance, category false positives, and added latency.
+  It never substitutes mock output for unavailable external models.
+- The native demo verifies all three attack findings in PostgreSQL and runs the
+  read-only protected note agent. Native PostgreSQL CI covers the three OSes.
+- Reset tooling now resets authenticated detector history and explicitly retains
+  corpus documents and the incident ledger. New runs use fresh local state.
+
+The first PR's native service tests passed Windows and macOS, including Rust
+and dashboard builds. Its Linux audit failures identified dependencies requiring
+updates: Next.js, Sharp, js-yaml, and rustls. Those have been updated in the
+follow-up. Full-stack CI results must still be reviewed for the follow-up commit.
+
+Local follow-up evidence includes Rust unit and stdio-process integration tests,
+Python service regressions, dashboard tests/build, and a three-service attack
+smoke test against a test ingestion endpoint. This smoke is not a substitute for
+PostgreSQL integration. External semantic-model download timed out, and the
+Ollama binary download was blocked by the VM proxy. No real-model accuracy
+results are claimed from those attempts.
