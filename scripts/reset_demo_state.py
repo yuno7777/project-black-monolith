@@ -21,7 +21,7 @@ def main():
     args = parser.parse_args()
     if args.state_dir:
         marker = args.state_dir / "demo-state.json"
-        data = json.loads(marker.read_text())
+        data = json.loads(marker.read_text(encoding="utf-8"))
         if data.get("kind") != "monolith-local-demo":
             raise ValueError("Not a marked native demo directory")
         print("State retained at", args.state_dir.resolve())

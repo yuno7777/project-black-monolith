@@ -215,7 +215,7 @@ def main():
     parser.add_argument("--dataset", type=Path, default=DATA)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    data = json.loads(args.dataset.read_text())
+    data = json.loads(args.dataset.read_text(encoding="utf-8"))
     validate_dataset(data)
     result = (
         asyncio.run(evaluate_trace(args, data)) if args.layer == "trace" else evaluate_vector(data)
@@ -226,7 +226,7 @@ def main():
         "Attack prompt labels do not prove model compromise. Thresholds are not tuned on evaluation cases.",
     ]
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(result, indent=2) + "\n")
+    args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(result["summary"]))
 
 
