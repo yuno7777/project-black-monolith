@@ -33,7 +33,7 @@ cleanup. Its documented installation commands also assumed Windows `py`.
   launcher tests. Docker integration remains on Linux.
 - Consistent LF checkouts to keep migration hashes stable across platforms.
 
-## Recommended next implementation work
+## Findings at the reviewed baseline
 
 ### 1. Bound and supervise the MCP stdio boundary
 
@@ -93,7 +93,7 @@ startup failure, Ctrl-C, spawned descendants, occupied ports, and an actual
 three-layer event reaching the ledger. Matrix unit tests alone do not prove
 the complete native stack starts successfully on every host.
 
-## Validation limits
+## Initial validation (before follow-up)
 
 The implementation was exercised in a Linux VM. Native Windows/macOS execution
 and complete PostgreSQL-backed startup require their respective environments.
@@ -142,3 +142,21 @@ smoke test against a test ingestion endpoint. This smoke is not a substitute for
 PostgreSQL integration. External semantic-model download timed out, and the
 Ollama binary download was blocked by the VM proxy. No real-model accuracy
 results are claimed from those attempts.
+
+## Verified follow-up status
+
+CI run `35432692710` passed native full-stack integration on Windows, macOS,
+and Linux, including PostgreSQL migrations, real persisted three-layer findings,
+the protected note agent, and service cleanup. All service matrices, dependency
+vulnerability gates, shared contracts, and native tooling tests passed. The
+native tooling suite includes a spawned-descendant cleanup regression.
+
+The Linux Docker job passed ingestion and outage recovery, then exposed CRLF
+line endings in `scripts/verify_incidents.sh`. The file is normalized without
+changing its logic; the subsequent Docker stages are being rerun.
+
+Local deterministic evaluation passed: VectorAnchor detected 75% of authored
+poisoning examples with 0% false positives; its subtle targeted example remained
+undetected. TraceAudit's synthetic divergence and PII gates passed. These figures
+are regression results, not real-world accuracy estimates. The updated PII buffer
+microbenchmark measured about 0.14 ms p95 per fragment in the editing VM.
