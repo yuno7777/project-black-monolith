@@ -227,28 +227,52 @@ complete configuration contract.
 | MCP-Shield | stdio | MCP JSON-RPC proxy |
 | PostgreSQL | internal | Event, incident, session, and benchmark ledgers |
 
-### Docker-free college/demo setup
+### Docker-free setup: Windows, Linux, and macOS
 
-Install PostgreSQL 17 with `psql`, Python 3.12, Node.js/npm, Rust, Bash, and
-`curl`; then install the checked-in dependency graphs and run:
+Install PostgreSQL 17 with `psql`, Python 3.12, Node.js 22/npm, and Rust 1.86+
+so their executables are on PATH. Start PostgreSQL before launching the demo.
+Bash, curl, Docker, and WSL are not required for this native workflow.
+Use a Python 3.12 virtual environment and activate it in your shell first.
+On a system where Python is named `python3`, substitute that for `python` below.
 
-```bash
-bash scripts/generate_secrets.sh
-cd dashboard && npm ci && cd ..
-py -3.12 -m pip install -r vector-anchor/requirements.lock
-py -3.12 -m pip install -r trace-audit/requirements.lock
-
-# Defaults: dashboard 3000, VectorAnchor 8001, TraceAudit 8002.
-# Override any occupied port, for example: DASH_PORT=3101.
-DASH_PORT=3101 bash scripts/run_local_demo.sh
+```text
+python scripts/generate_secrets.py
+cd dashboard
+npm ci
+cd ..
+python -m pip install --require-hashes -r vector-anchor/requirements.lock -r trace-audit/requirements.lock
+python scripts/run_local_demo.py
 ```
 
-The runner targets a local PostgreSQL server on `127.0.0.1:5432`, bootstraps
-the restricted roles, applies checksum-verified migrations, builds/starts the
-dashboard, drives all three attacks, and keeps the services open until Ctrl-C.
-Set `DATABASE_ADMIN_URL` and `DATABASE_URL` to override the administrative and
-runtime connections. The generated operator token stays in `.env` and is the
-credential used on the sign-in page.
+Set `DATABASE_ADMIN_URL` in `.env` to an existing PostgreSQL administrative
+connection. Generating `.env` does not change your installed PostgreSQL user's
+password. The runner creates/reconciles the restricted runtime login using
+`MONOLITH_DATABASE_RUNTIME_PASSWORD`, applies checksum-verified migrations,
+builds the dashboard, and runs all three synthetic attack fixtures.
+Set `DATABASE_URL` too if PostgreSQL is not at `127.0.0.1:5432/postgres`.
+The generated `MONOLITH_OPERATOR_TOKEN` in `.env` is your sign-in credential.
+
+```text
+python scripts/run_local_demo.py --dash-port 3101
+python scripts/run_local_demo.py --no-hold
+python scripts/run_local_demo.py --skip-attacks
+```
+
+Default ports are 3000, 8001, and 8002. Use `--dash-port`, `--va-port`, and
+`--ta-port` to change them. Existing `DASH_PORT`, `VA_PORT`, `TA_PORT`, and
+`DEMO_HOLD=0` settings are also supported. Shell environment values override
+`.env`; its values are read literally, with no shell expansion or execution.
+
+Ctrl-C stops the process trees started by the runner. Occupied ports cause an
+error instead of terminating their owners. Logs and isolated detector state
+are retained in the printed temporary directory for diagnosis. Remove that
+directory manually after inspection. Database events persist in PostgreSQL.
+The Bash entry points remain available as wrappers for existing commands.
+
+Native CI covers all three operating systems; the complete Docker integration
+suite runs on Linux. A native full-stack run still requires local PostgreSQL
+and the installed dependencies. See [the code review](docs/CODEBASE_REVIEW.md)
+for remaining work and validation limits.
 
 ---
 
