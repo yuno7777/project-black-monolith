@@ -6,22 +6,22 @@ anything is logged, and emits an event. Patterns are intentionally conservative
 to keep false positives low in a demo.
 
 **Scope — read this before trusting it.** `scan()` operates on one supplied
-string. `stream_proxy.PiiStreamBuffer` concatenates and delays up to 16 output
-tokens before calling it, so ordinary two- or few-token credential splits are
-redacted before any fragment is released. More than 16 adversarial fragments
-can still outlive that bounded window; the measured boundary is pinned in
-`tests/test_evasion.py`.
+string. `stream_proxy.PiiStreamBuffer` uses a 512-character look-behind
+independent of fragment count and retains incomplete candidate matches.
+Overlong unbroken candidates are withheld, which can redact benign long IDs.
+This is a pattern detector, not a guarantee against arbitrary encodings.
 """
 
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 
 # (label, compiled pattern). Order matters only for reporting.
 _PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("aws_access_key_id", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
-    ("openai_style_api_key", re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")),
+    ("aws_access_key_id", re.compile(r"AKIA[0-9A-Z]{16}\b")),
+    ("openai_style_api_key", re.compile(r"sk-[A-Za-z0-9]{20,}\b")),
     ("generic_bearer_token", re.compile(r"\b[A-Za-z0-9_\-]{32,}\.[A-Za-z0-9_\-]{6,}\b")),
     ("email_address", re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")),
     ("us_ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
@@ -54,10 +54,29 @@ def _valid_card_number(value: str) -> bool:
 
 def scan(text: str) -> list[PiiMatch]:
     """Return all PII/credential matches in ``text``."""
+    # Normalize compatibility glyphs and remove format-control obfuscation,
+    # retaining a mapping so redaction always removes the original characters.
+    normalized = []
+    offsets = []
+    for index, character in enumerate(text):
+        if unicodedata.category(character) == "Cf":
+            continue
+        for value in unicodedata.normalize("NFKC", character):
+            normalized.append(value)
+            offsets.append(index)
+    candidate = "".join(normalized)
     matches: list[PiiMatch] = []
-    for label, pattern in _PATTERNS:
-        for m in pattern.finditer(text):
+    patterns = _PATTERNS + [
+        ("aws_access_key_id", re.compile(r"A\s{0,3}K\s{0,3}I\s{0,3}A(?:\s{0,3}[0-9A-Z]){16}\b"))
+    ]
+    seen = set()
+    for label, pattern in patterns:
+        for m in pattern.finditer(candidate):
             if label == "credit_card" and not _valid_card_number(m.group()):
                 continue
-            matches.append(PiiMatch(label=label, start=m.start(), end=m.end(), value=m.group()))
+            start, end = offsets[m.start()], offsets[m.end() - 1] + 1
+            if (label, start, end) in seen:
+                continue
+            seen.add((label, start, end))
+            matches.append(PiiMatch(label=label, start=start, end=end, value=text[start:end]))
     return matches

@@ -54,3 +54,6 @@ evaluation/results/
 
 # ── Local Compose overrides (e.g. an alternate host port) ────────────
 docker-compose.override.yml
+
+# Local protected-agent state and logs
+.agent-state/

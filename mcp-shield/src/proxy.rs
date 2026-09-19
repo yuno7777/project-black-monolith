@@ -14,6 +14,7 @@
 //! inbound responses can be routed through the fingerprint + sanitizer
 //! pipeline.
 
+use crate::http_transport::read_bounded_line;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -21,8 +22,9 @@ use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::Command;
+use tokio::time::{timeout, Duration};
 
 use crate::events::{self, Severity};
 use crate::fingerprint::{self, BaselineStore, FirstContact, Verdict};
@@ -153,6 +155,7 @@ pub async fn run(server_cmd: Vec<String>, config: ShieldConfig) -> Result<()> {
         .stdout(Stdio::piped())
         // The server's own stderr passes straight through for debuggability.
         .stderr(Stdio::inherit())
+        .kill_on_drop(true)
         .spawn()
         .with_context(|| format!("failed to spawn MCP server: {server_cmd:?}"))?;
 
@@ -171,30 +174,60 @@ pub async fn run(server_cmd: Vec<String>, config: ShieldConfig) -> Result<()> {
 
     // agent -> server runs as a background task so the main task can keep
     // draining server output even while stdin is idle.
-    let agent_task = tokio::spawn(forward_agent_to_server(
+    let mut agent_task = tokio::spawn(forward_agent_to_server(
         child_stdin,
         Arc::clone(&pending_tools_list),
         Arc::clone(&pending_inspections),
     ));
 
-    // server -> agent runs in the foreground and owns the baseline store.
-    let server_result = forward_server_to_agent(
-        child_stdout,
-        pending_tools_list,
-        pending_inspections,
-        store,
-        config.hmac_key,
-        config.mode,
-        config.first_contact,
-    )
-    .await;
-
-    // Server stdout closed: the child is done (or dying). Reap it, then stop
-    // the stdin reader if it is still blocked waiting on the agent.
-    let status = child.wait().await.context("waiting for MCP server exit")?;
-    tracing::info!(exit_status = %status, "MCP server process exited");
+    // Observe either direction failing. Agent EOF permits a bounded final drain;
+    // server EOF cannot leave an idle agent task or a hung child behind.
+    let server_result = {
+        let server = forward_server_to_agent(
+            child_stdout,
+            pending_tools_list,
+            pending_inspections,
+            store,
+            config.hmac_key,
+            config.mode,
+            config.first_contact,
+        );
+        tokio::pin!(server);
+        tokio::select! {
+            result = &mut server => result,
+            result = &mut agent_task => {
+                match result {
+                    Ok(Ok(())) => timeout(Duration::from_secs(5), &mut server)
+                        .await.context("server did not drain within 5 seconds after agent EOF")
+                        .and_then(|result| result),
+                    Ok(Err(error)) => Err(error),
+                    Err(error) => Err(error.into()),
+                }
+            }
+        }
+    };
     agent_task.abort();
-    let _ = agent_task.await;
+    // A completed JoinHandle must not be polled again.
+    if server_result.is_err() {
+        let _ = child.start_kill();
+    }
+    match timeout(Duration::from_secs(5), child.wait()).await {
+        Ok(status) => {
+            let status = status.context("waiting for MCP server exit")?;
+            if !status.success() && server_result.is_ok() {
+                anyhow::bail!("MCP server exited unsuccessfully: {status}");
+            }
+        }
+        Err(_) => {
+            child
+                .start_kill()
+                .context("terminating stalled MCP server")?;
+            timeout(Duration::from_secs(5), child.wait())
+                .await
+                .context("MCP server did not terminate")??;
+            anyhow::bail!("MCP server failed to exit within 5 seconds");
+        }
+    }
 
     server_result
 }
@@ -206,9 +239,8 @@ async fn forward_agent_to_server(
     pending: Arc<Mutex<VecDeque<String>>>,
     pending_inspections: Arc<Mutex<VecDeque<PendingInspection>>>,
 ) -> Result<()> {
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    while let Some(line) = lines
-        .next_line()
+    let mut lines = BufReader::new(tokio::io::stdin());
+    while let Some(line) = read_bounded_line(&mut lines)
         .await
         .context("reading from agent stdin")?
     {
@@ -283,15 +315,7 @@ async fn forward_agent_to_server(
                     }
                 }
             }
-            Err(e) => {
-                // Forward anyway: the proxy must stay transparent even for
-                // traffic it cannot parse — but say so loudly.
-                tracing::warn!(
-                    direction = "agent->server",
-                    error = %e,
-                    "unparseable line; forwarding unmodified"
-                );
-            }
+            Err(e) => return Err(e).context("invalid JSON-RPC from agent"),
         }
         child_stdin
             .write_all(line.as_bytes())
@@ -322,9 +346,8 @@ async fn forward_server_to_agent(
     first_contact: FirstContact,
 ) -> Result<()> {
     let mut stdout = tokio::io::stdout();
-    let mut lines = BufReader::new(child_stdout).lines();
-    while let Some(line) = lines
-        .next_line()
+    let mut lines = BufReader::new(child_stdout);
+    while let Some(line) = read_bounded_line(&mut lines)
         .await
         .context("reading from server stdout")?
     {
@@ -410,13 +433,7 @@ async fn forward_server_to_agent(
                     }
                 }
             }
-            Err(e) => {
-                tracing::warn!(
-                    direction = "server->agent",
-                    error = %e,
-                    "unparseable line; forwarding unmodified"
-                );
-            }
+            Err(e) => return Err(e).context("invalid JSON-RPC from server"),
         }
         let outgoing = rewritten_line.as_deref().unwrap_or(&line);
         stdout
