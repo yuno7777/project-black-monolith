@@ -520,3 +520,6 @@ unchanged.
 </sub>
 
 </div>
+
+See [real-model evaluation and the protected note agent](docs/EVALUATION_AND_AGENT.md)
+for the held-out benchmark profile, real-backend setup, and safe reset workflow.

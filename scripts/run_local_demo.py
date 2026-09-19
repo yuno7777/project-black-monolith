@@ -16,6 +16,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from contextlib import suppress
 from pathlib import Path
 
@@ -195,10 +196,17 @@ def wait_health(url: str, process: subprocess.Popen, timeout: float = 60) -> Non
     raise RuntimeError(f"Service did not become healthy at {url}; inspect logs")
 
 
-def post(url: str, payload: dict, token: str = "") -> dict:
+def post(url: str, payload: dict, token: str = "", context: dict | None = None) -> dict:
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = "Bearer " + token
+    for key, header in (
+        ("MONOLITH_TENANT_ID", "X-Monolith-Tenant-Id"),
+        ("MONOLITH_AGENT_ID", "X-Monolith-Agent-Id"),
+        ("MONOLITH_SESSION_ID", "X-Monolith-Session-Id"),
+    ):
+        if context and context.get(key):
+            headers[header] = context[key]
     request = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
     with urllib.request.urlopen(request, timeout=30) as response:
         return json.load(response)
@@ -282,7 +290,9 @@ def attacks(runner: Runner, env: dict[str, str], state: Path, ports: list[int]) 
             fixture, [sys.executable, "fixtures/" + fixture], ROOT / "vector-anchor", vector_env
         )
         for query in queries:
-            result = post(vector_env["MONOLITH_SERVICE_URL"] + "/retrieve", {"query": query})
+            result = post(
+                vector_env["MONOLITH_SERVICE_URL"] + "/retrieve", {"query": query}, context=env
+            )
     if result.get("quarantine_size", 0) < 1:
         raise RuntimeError("VectorAnchor did not quarantine the demo poison")
     for fixture in ("divergence", "pii"):
@@ -304,7 +314,15 @@ def main() -> int:
     parser.add_argument("--ta-port", type=int)
     parser.add_argument("--no-hold", action="store_true", help="stop after running fixtures")
     parser.add_argument("--skip-attacks", action="store_true", help="start services only")
+    parser.add_argument(
+        "--skip-build", action="store_true", help="use already built dashboard and MCP binary"
+    )
+    parser.add_argument("--backend", choices=["mock", "ollama"], default="mock")
     args = parser.parse_args()
+    if args.backend == "ollama" and not args.skip_attacks:
+        parser.error(
+            "Real-model startup uses --skip-attacks; synthetic detector assertions require mock"
+        )
     runner = None
     try:
         env = load_env(ROOT / ".env", dict(os.environ))
@@ -318,6 +336,8 @@ def main() -> int:
         ]
         check_ports(ports)
         env = configure(env, ports)
+        env.setdefault("MONOLITH_SESSION_ID", "demo-" + uuid.uuid4().hex)
+        env.setdefault("MONOLITH_AGENT_ID", "native-demo-agent")
         for executable in ("node", "psql") + (() if args.skip_attacks else ("cargo",)):
             if not shutil.which(executable):
                 raise RuntimeError(f"Required executable missing from PATH: {executable}")
@@ -327,6 +347,16 @@ def main() -> int:
         # Run Node's JS entry point directly, avoiding npm.cmd / shell quoting on Windows.
         node = shutil.which("node")
         state = Path(tempfile.mkdtemp(prefix="monolith-demo-"))
+        (state / "demo-state.json").write_text(
+            json.dumps(
+                {
+                    "kind": "monolith-local-demo",
+                    "session_id": env["MONOLITH_SESSION_ID"],
+                    "ports": ports,
+                }
+            ),
+            encoding="utf-8",
+        )
         runner = Runner(state)
         print(f"Demo logs and state: {state}", flush=True)
         # Reuse the canonical bootstrap SQL without requiring Bash on the host.
@@ -355,8 +385,9 @@ def main() -> int:
                 "DATABASE_MIGRATIONS_DIR": str(ROOT / "supabase/migrations"),
             },
         )
-        runner.run("build", [node, str(next_cli), "build"], dashboard, env, timeout=900)
-        if not args.skip_attacks:
+        if not args.skip_build:
+            runner.run("build", [node, str(next_cli), "build"], dashboard, env, timeout=900)
+        if not args.skip_attacks and not args.skip_build:
             runner.run(
                 "cargo-build",
                 [shutil.which("cargo"), "build", "--locked"],
@@ -385,7 +416,7 @@ def main() -> int:
                 "MONOLITH_DETECTOR_STATE_PATH": str(state / "vector-state.json"),
                 "MONOLITH_CHROMA_PATH": str(state / "chroma"),
                 "MONOLITH_EMBEDDING": "hash",
-                "MONOLITH_MODEL_BACKEND": "mock",
+                "MONOLITH_MODEL_BACKEND": args.backend,
                 "MONOLITH_BASELINE_PATH": str(state / "baseline.json"),
             }
             if module == "trace-audit":
@@ -414,6 +445,22 @@ def main() -> int:
             wait_health(f"http://127.0.0.1:{port}/health", process)
         if not args.skip_attacks:
             attacks(runner, env, state, ports)
+            from verify_session import verify_session
+
+            report = verify_session(
+                f"http://127.0.0.1:{ports[0]}",
+                env["MONOLITH_OPERATOR_TOKEN"],
+                env["MONOLITH_SESSION_ID"],
+                env["MONOLITH_AGENT_ID"],
+            )
+            (state / "verification.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+            print("Verified all three layers in the PostgreSQL ledger", flush=True)
+            runner.run("protected-agent", [sys.executable, str(ROOT / "examples/protected_agent.py"),
+                "Summarize the project note", "--note", str(ROOT / "examples/project-note.txt"),
+                "--state-dir", str(state / "protected-agent"),
+                "--vector-url", f"http://127.0.0.1:{ports[1]}",
+                "--trace-url", f"http://127.0.0.1:{ports[2]}",
+                "--dashboard-url", f"http://127.0.0.1:{ports[0]}"], ROOT, env)
         print(f"Local services ready: http://127.0.0.1:{ports[0]}", flush=True)
         if not args.no_hold and env.get("DEMO_HOLD", "1") != "0":
             print("Press Ctrl-C to stop services.", flush=True)

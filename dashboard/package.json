@@ -2,7 +2,7 @@
   "name": "monolith-dashboard",
   "version": "0.1.0",
   "private": true,
-  "description": "Project Black Monolith — unified real-time threat dashboard",
+  "description": "Project Black Monolith \u2014 unified real-time threat dashboard",
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "next build",
@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "jose": "^6.1.3",
-    "next": "16.2.12",
+    "next": "16.3.5",
     "pg": "^8.16.3",
     "react": "19.2.8",
     "react-dom": "19.2.8",
@@ -24,12 +24,12 @@
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "eslint": "9.39.5",
-    "eslint-config-next": "16.2.12",
+    "eslint-config-next": "16.3.5",
     "tsx": "4.23.1",
     "typescript": "5.9.3"
   },
   "overrides": {
     "postcss": "8.5.23",
-    "sharp": "0.35.3"
+    "sharp": "0.35.4"
   }
 }
