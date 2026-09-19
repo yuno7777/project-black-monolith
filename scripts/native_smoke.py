@@ -6,7 +6,8 @@ import shutil
 import socket
 import subprocess
 import sys
-import tempfile
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 from generate_secrets import generate
@@ -37,10 +38,21 @@ def postgres_bin():
     raise RuntimeError("Install PostgreSQL or set PG_BIN to its bin directory")
 
 
+@contextmanager
+def postgres_state():
+    # Python's Windows 0700 temporary directory ACL blocks initdb's restricted
+    # child token. Inherit the CI workspace ACL, which that token can access.
+    state = ROOT / (".native-pg-" + uuid.uuid4().hex)
+    state.mkdir(mode=0o755)
+    try:
+        yield state
+    finally:
+        shutil.rmtree(state)
+
+
 def main():
     directory, suffix = postgres_bin()
-    with tempfile.TemporaryDirectory(prefix="monolith-pg-") as temporary:
-        state = Path(temporary)
+    with postgres_state() as state:
         data = state / "database"
         env = dict(os.environ)
         env["PATH"] = str(directory) + os.pathsep + env["PATH"]

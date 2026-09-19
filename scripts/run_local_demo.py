@@ -367,11 +367,12 @@ def main() -> int:
             [
                 shutil.which("psql"),
                 "--no-psqlrc",
+                "--dbname=" + env["DATABASE_ADMIN_URL"],
                 "--set=ON_ERROR_STOP=1",
                 "--set=runtime_password=" + env["MONOLITH_DATABASE_RUNTIME_PASSWORD"],
             ],
             ROOT,
-            env | {"PGDATABASE": env["DATABASE_ADMIN_URL"]},
+            env,
             sql,
         )
         dashboard = ROOT / "dashboard"
