@@ -116,6 +116,8 @@ async def evaluate_trace(args, data):
                 first_release = (time.perf_counter() - started) * 1000
             protected.extend(t.token for t in drain.outputs)
         drained = buffer.finish()
+        if drained.outputs and first_release is None:
+            first_release = (time.perf_counter() - started) * 1000
         protected.extend(t.token for t in drained.outputs)
         detected = detected or bool(drained.matches)
         raw_text, protected_text = "".join(raw), "".join(protected)
@@ -139,7 +141,8 @@ async def evaluate_trace(args, data):
         "model": args.model,
         "model_digest": model_digest,
         "model_details": metadata.get("details"),
-        "generation_options": {"num_predict": args.max_tokens},
+        "generation_options": {"num_predict": args.max_tokens, "other_options": "Ollama model defaults; stochastic outputs"},
+        "resident_models": ollama_json(args.ollama_url, "/api/ps").get("models", []),
         "policy_version": "trace-audit/2",
         "threshold": cfg.kl_threshold,
         "baseline_sha256": hashlib.sha256(
@@ -162,9 +165,12 @@ async def evaluate_trace(args, data):
 def evaluate_vector(data):
     sys.path.insert(0, str(ROOT / "vector-anchor"))
     from src.config import load_config
-    from src.embedding import cosine
     from src.frequency_tracker import FrequencyTracker
     from src.store import build_embedding_function
+    from src.retriever_proxy import RetrieverProxy
+    from src.quarantine import Quarantine
+    import chromadb
+    import uuid
 
     os.environ["MONOLITH_EMBEDDING"] = "default"
     cfg = load_config()
@@ -177,15 +183,19 @@ def evaluate_vector(data):
         retention_horizon=cfg.retention_horizon,
         max_queries_per_doc=cfg.max_queries_per_doc,
     )
+    client = chromadb.EphemeralClient()
+    collection = client.create_collection("eval-" + uuid.uuid4().hex,
+                                          metadata={"hnsw:space": "cosine"})
+    collection.add(ids=[doc['id'] for doc in corpus],
+                   documents=[doc['text'] for doc in corpus], embeddings=vectors)
+    proxy = RetrieverProxy(collection=collection, embed_fn=embedding, tracker=tracker,
+                           quarantine=Quarantine(), cfg=cfg, emit=lambda *a, **k: None)
     times = []
     detected = set()
     for query in data["retrieval"]["queries"]:
         before = time.perf_counter()
-        vector = embedding([query])[0]
-        ranked = sorted(range(len(corpus)), key=lambda i: cosine(vector, vectors[i]), reverse=True)
-        ids = [corpus[i]["id"] for i in ranked[: cfg.top_rank_threshold]]
-        tracker.record_query(ids, vector)
-        detected.update(identifier for identifier in ids if tracker.is_anomalous(identifier))
+        result = proxy.retrieve(query)
+        detected.update(doc['id'] for doc in result['withheld'])
         times.append((time.perf_counter() - before) * 1000)
     rows = [
         {"id": doc["id"], "attack": doc["attack"], "detected": doc["id"] in detected}
@@ -194,7 +204,7 @@ def evaluate_vector(data):
     return {
         "layer": "vector-anchor",
         "embedding": "Chroma DefaultEmbeddingFunction / all-MiniLM-L6-v2",
-        "policy_version": "vector-anchor/1",
+        "policy_version": "vector-anchor/2",
         "thresholds": {
             "min_distinct_topics": cfg.min_distinct_topics,
             "topic_similarity": cfg.topic_similarity,
@@ -214,12 +224,25 @@ def main():
     parser.add_argument("--max-tokens", type=int, default=128)
     parser.add_argument("--dataset", type=Path, default=DATA)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--external", type=Path)
     args = parser.parse_args()
     data = json.loads(args.dataset.read_text(encoding="utf-8"))
+    if args.external:
+        external = json.loads(args.external.read_text(encoding="utf-8"))
+        # Fixed hash ordering, eight cases per class. Test data never calibrates.
+        for label in (False, True):
+            data["evaluation"].extend([r for r in external["cases"] if r["attack"] == label][:8])
     validate_dataset(data)
     result = (
         asyncio.run(evaluate_trace(args, data)) if args.layer == "trace" else evaluate_vector(data)
     )
+    if args.external:
+        result["external_dataset_sha256"] = hashlib.sha256(args.external.read_bytes()).hexdigest()
+    try:
+        import resource
+        result["client_peak_rss_bytes"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)
+    except ImportError:
+        result["client_peak_rss_bytes"] = None
     result["dataset_sha256"] = hashlib.sha256(args.dataset.read_bytes()).hexdigest()
     result["limitations"] = [
         "Small authored held-out corpus; not a field-accuracy estimate.",
