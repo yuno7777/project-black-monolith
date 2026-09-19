@@ -52,11 +52,14 @@ $DC exec -T vector-anchor curl -s -X POST http://localhost:8001/retrieve \
   -H 'Content-Type: application/json' -H "X-Monolith-Session-Id: $SESSION_B" \
   -d '{"query":"how long should I boil pasta"}' >/dev/null && echo "  B: vector-anchor retrieval"
 
-# Delivery is asynchronous through each module's outbox.
+# Delivery is asynchronous through each module's outbox. Await both sessions;
+# A can already be persisted while B is still waiting for the next delivery tick.
 for _ in $(seq 1 20); do
   n=$(api "$BASE/api/incidents?status=all&session=$SESSION_A&limit=500" 2>/dev/null \
       | grep -o '"module":"[a-z-]*"' | sort -u | wc -l | tr -d ' ')
-  [ "${n:-0}" -ge 2 ] && break
+  b=$(api "$BASE/api/incidents?status=all&session=$SESSION_B&limit=500" 2>/dev/null \
+      | grep -o '"module":"[a-z-]*"' | sort -u | wc -l | tr -d ' ')
+  [ "${n:-0}" -ge 2 ] && [ "${b:-0}" -ge 1 ] && break
   sleep 1
 done
 
