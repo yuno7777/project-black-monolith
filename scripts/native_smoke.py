@@ -124,6 +124,17 @@ def main():
                                     tail = tail.replace(value, "<redacted>")
                             print(log.name, tail)
                 raise RuntimeError("Native full-stack smoke failed; see retained demo directory")
+            # The compatibility roles must stay inert on a plain database.
+            roles = subprocess.run(
+                [str(directory / ("psql" + suffix)), env["DATABASE_ADMIN_URL"],
+                 "-XAt", "-v", "ON_ERROR_STOP=1", "-c",
+                 "SELECT count(*) FROM pg_roles WHERE rolname IN ('anon', 'authenticated') "
+                 "AND NOT (rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole "
+                 "OR rolreplication OR rolbypassrls)"],
+                check=True, env=env, capture_output=True, text=True,
+            )
+            if roles.stdout.strip() != "2":
+                raise RuntimeError("Plain PostgreSQL compatibility roles are not inert")
             for port in (dash, vector, trace):
                 with socket.socket() as sock:
                     if sock.connect_ex(("127.0.0.1", port)) == 0:

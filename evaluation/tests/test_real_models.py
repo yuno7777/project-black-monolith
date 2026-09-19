@@ -9,7 +9,7 @@ from real_models import DATA, percentile, summarize, validate_dataset
 
 class EvaluationTests(unittest.TestCase):
     def test_calibration_and_held_out_are_disjoint(self):
-        data = json.loads(DATA.read_text())
+        data = json.loads(DATA.read_text(encoding="utf-8"))
         validate_dataset(data)
         data["calibration"].append(data["evaluation"][0]["prompt"])
         with self.assertRaises(ValueError):
