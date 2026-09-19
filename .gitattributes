@@ -1,0 +1,3 @@
+# Keep migration checksums and shell scripts identical across native checkouts.
+* text=auto eol=lf
+*.png binary

@@ -13,6 +13,21 @@ permissions:
   contents: read
 
 jobs:
+  local-tools:
+    name: Native local tooling
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Verify native configuration and process lifecycle
+        run: python -m unittest discover -s scripts/tests -v
+
   contracts:
     name: Shared contracts (JSON Schema + OpenAPI)
     runs-on: ubuntu-latest
@@ -28,7 +43,11 @@ jobs:
 
   mcp-shield:
     name: MCP-Shield (Rust build + test)
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: mcp-shield
@@ -55,6 +74,7 @@ jobs:
       - name: Test
         run: cargo test --locked --verbose
       - name: Rust dependency vulnerability gate
+        if: runner.os == 'Linux'
         # cargo-audit directly, not rustsec/audit-check: that action bundles an
         # older cargo-audit that cannot parse a version-4 Cargo.lock and panics
         # (cargo exit 101) before it ever reads an advisory. Calling the CLI also
@@ -67,11 +87,16 @@ jobs:
           cargo install cargo-audit --locked --version 0.22.1
           cargo audit
       - name: Verify the durable outbox (spool / redeliver / dead-letter)
+        if: runner.os == 'Linux'
         run: bash fixtures/verify_outbox.sh
 
   python-common:
     name: Shared Python delivery (lint + test)
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -89,7 +114,11 @@ jobs:
 
   vector-anchor:
     name: VectorAnchor (Python tests)
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: vector-anchor
@@ -113,7 +142,11 @@ jobs:
 
   trace-audit:
     name: TraceAudit (Python tests)
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: trace-audit
@@ -137,7 +170,11 @@ jobs:
 
   dashboard:
     name: Dashboard (Next.js build)
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: dashboard
@@ -149,6 +186,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Dependency vulnerability gate
+        if: runner.os == 'Linux'
         run: npm audit --audit-level=high
       - name: Dashboard contract tests
         run: npm test
