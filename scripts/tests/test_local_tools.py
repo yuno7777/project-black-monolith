@@ -4,6 +4,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -105,6 +106,32 @@ class LocalToolsTests(unittest.TestCase):
             finally:
                 unrelated.terminate()
                 unrelated.wait(timeout=5)
+
+    def test_cleanup_stops_spawned_descendant(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            listener_code = (
+                "import socket,time,pathlib; "
+                "s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen(); "
+                "pathlib.Path('ready').write_text(str(s.getsockname()[1])); time.sleep(60)"
+            )
+            parent_code = (
+                "import subprocess,sys; "
+                f"p=subprocess.Popen([sys.executable,'-c',{listener_code!r}]); p.wait()"
+            )
+            runner = Runner(state)
+            runner.start("parent", [sys.executable, "-c", parent_code], state, dict(os.environ))
+            try:
+                deadline = time.monotonic() + 10
+                while not (state / "ready").exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue((state / "ready").exists(), "descendant did not start")
+                port = int((state / "ready").read_text(encoding="utf-8"))
+                runner.close()
+                with socket.socket() as sock:
+                    self.assertNotEqual(sock.connect_ex(("127.0.0.1", port)), 0)
+            finally:
+                runner.close()
 
     def test_health_check_fails_immediately_for_dead_child(self):
         with tempfile.TemporaryDirectory() as directory:

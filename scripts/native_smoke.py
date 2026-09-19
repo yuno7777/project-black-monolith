@@ -82,6 +82,10 @@ def main():
             check=True,
             env=env,
         )
+        # Use TCP only: distro builds may default their Unix socket directory
+        # to /var/run/postgresql, which is owned by the system database account.
+        with (data / "postgresql.conf").open("a", encoding="utf-8") as config_file:
+            config_file.write("\nunix_socket_directories = ''\n")
         ctl = str(directory / ("pg_ctl" + suffix))
         started = False
         try:
@@ -152,6 +156,11 @@ def main():
                     if sock.connect_ex(("127.0.0.1", port)) == 0:
                         raise RuntimeError(f"Service on {port} survived launcher cleanup")
             print(json.dumps({"native_stack": "passed", "cleanup": "passed"}))
+        except Exception:
+            log = state / "postgres.log"
+            if log.exists():
+                print(log.read_text(encoding="utf-8", errors="replace")[-5000:])
+            raise
         finally:
             if started:
                 subprocess.run(

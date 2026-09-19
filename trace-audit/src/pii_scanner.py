@@ -6,9 +6,8 @@ anything is logged, and emits an event. Patterns are intentionally conservative
 to keep false positives low in a demo.
 
 **Scope — read this before trusting it.** `scan()` operates on one supplied
-string. `stream_proxy.PiiStreamBuffer` concatenates and delays up to 16 output
-tokens before calling it, so ordinary two- or few-token credential splits are
-redacted before any fragment is released. The stream uses a 512-character window independent of fragmentation.
+string. `stream_proxy.PiiStreamBuffer` uses a 512-character look-behind
+independent of fragment count and retains incomplete candidate matches.
 Overlong unbroken candidates are withheld, which can redact benign long IDs.
 This is a pattern detector, not a guarantee against arbitrary encodings.
 """
