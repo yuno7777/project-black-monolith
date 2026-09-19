@@ -141,7 +141,10 @@ async def evaluate_trace(args, data):
         "model": args.model,
         "model_digest": model_digest,
         "model_details": metadata.get("details"),
-        "generation_options": {"num_predict": args.max_tokens, "other_options": "Ollama model defaults; stochastic outputs"},
+        "generation_options": {
+            "num_predict": args.max_tokens,
+            "other_options": "Ollama model defaults; stochastic outputs",
+        },
         "resident_models": ollama_json(args.ollama_url, "/api/ps").get("models", []),
         "policy_version": "trace-audit/2",
         "threshold": cfg.kl_threshold,
@@ -164,13 +167,14 @@ async def evaluate_trace(args, data):
 
 def evaluate_vector(data):
     sys.path.insert(0, str(ROOT / "vector-anchor"))
+    import uuid
+
+    import chromadb
     from src.config import load_config
     from src.frequency_tracker import FrequencyTracker
-    from src.store import build_embedding_function
-    from src.retriever_proxy import RetrieverProxy
     from src.quarantine import Quarantine
-    import chromadb
-    import uuid
+    from src.retriever_proxy import RetrieverProxy
+    from src.store import build_embedding_function
 
     os.environ["MONOLITH_EMBEDDING"] = "default"
     cfg = load_config()
@@ -184,18 +188,28 @@ def evaluate_vector(data):
         max_queries_per_doc=cfg.max_queries_per_doc,
     )
     client = chromadb.EphemeralClient()
-    collection = client.create_collection("eval-" + uuid.uuid4().hex,
-                                          metadata={"hnsw:space": "cosine"})
-    collection.add(ids=[doc['id'] for doc in corpus],
-                   documents=[doc['text'] for doc in corpus], embeddings=vectors)
-    proxy = RetrieverProxy(collection=collection, embed_fn=embedding, tracker=tracker,
-                           quarantine=Quarantine(), cfg=cfg, emit=lambda *a, **k: None)
+    collection = client.create_collection(
+        "eval-" + uuid.uuid4().hex, metadata={"hnsw:space": "cosine"}
+    )
+    collection.add(
+        ids=[doc["id"] for doc in corpus],
+        documents=[doc["text"] for doc in corpus],
+        embeddings=vectors,
+    )
+    proxy = RetrieverProxy(
+        collection=collection,
+        embed_fn=embedding,
+        tracker=tracker,
+        quarantine=Quarantine(),
+        cfg=cfg,
+        emit=lambda *a, **k: None,
+    )
     times = []
     detected = set()
     for query in data["retrieval"]["queries"]:
         before = time.perf_counter()
         result = proxy.retrieve(query)
-        detected.update(doc['id'] for doc in result['withheld'])
+        detected.update(doc["id"] for doc in result["withheld"])
         times.append((time.perf_counter() - before) * 1000)
     rows = [
         {"id": doc["id"], "attack": doc["attack"], "detected": doc["id"] in detected}
@@ -240,7 +254,10 @@ def main():
         result["external_dataset_sha256"] = hashlib.sha256(args.external.read_bytes()).hexdigest()
     try:
         import resource
-        result["client_peak_rss_bytes"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)
+
+        result["client_peak_rss_bytes"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (
+            1 if sys.platform == "darwin" else 1024
+        )
     except ImportError:
         result["client_peak_rss_bytes"] = None
     result["dataset_sha256"] = hashlib.sha256(args.dataset.read_bytes()).hexdigest()

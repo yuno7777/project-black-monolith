@@ -6,12 +6,12 @@ The default native mock stack is useful for plumbing tests only.
 
 import argparse
 import hashlib
-import time
-import urllib.parse
 import json
 import os
 import subprocess
 import sys
+import time
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -116,7 +116,9 @@ def main():
     args = parser.parse_args()
     args.state_dir.mkdir(parents=True, exist_ok=True)
     state = args.state_dir.resolve()
-    env = load_env(ROOT / ".env", dict(os.environ)) if (ROOT / ".env").exists() else dict(os.environ)
+    env = (
+        load_env(ROOT / ".env", dict(os.environ)) if (ROOT / ".env").exists() else dict(os.environ)
+    )
     env.update(
         MONOLITH_SESSION_ID=uuid.uuid4().hex,
         MONOLITH_AGENT_ID="protected-note-agent",
@@ -128,28 +130,44 @@ def main():
     )
     rows = []
     previous = ""
-    for index, stage in enumerate(("Draft an answer", "Check the supporting facts", "Produce the final answer")[:args.steps]):
+    for index, stage in enumerate(
+        ("Draft an answer", "Check the supporting facts", "Produce the final answer")[: args.steps]
+    ):
         question = stage + ": " + args.prompt + "\nEarlier draft (untrusted): " + previous[-2000:]
         started = time.perf_counter()
         previous, terminated = run_step(args, state, env, question, index)
-        rows.append({"step": index + 1, "stage": stage, "terminated": terminated,
-                     "elapsed_ms": (time.perf_counter()-started)*1000,
-                     "output_sha256": hashlib.sha256(previous.encode()).hexdigest()})
+        rows.append(
+            {
+                "step": index + 1,
+                "stage": stage,
+                "terminated": terminated,
+                "elapsed_ms": (time.perf_counter() - started) * 1000,
+                "output_sha256": hashlib.sha256(previous.encode()).hexdigest(),
+            }
+        )
         if terminated:
             break
     report = {"session_id": env["MONOLITH_SESSION_ID"], "steps": rows}
     if args.verify_ledger:
         from verify_session import get
-        query = urllib.parse.urlencode({"session": env["MONOLITH_SESSION_ID"],
-            "agent": env["MONOLITH_AGENT_ID"], "status": "all", "limit": 500})
-        for attempt in range(60):
-            events = get(args.dashboard_url + "/api/incidents?" + query,
-                         env["MONOLITH_OPERATOR_TOKEN"])["incidents"]
+
+        query = urllib.parse.urlencode(
+            {
+                "session": env["MONOLITH_SESSION_ID"],
+                "agent": env["MONOLITH_AGENT_ID"],
+                "status": "all",
+                "limit": 500,
+            }
+        )
+        for _attempt in range(60):
+            events = get(
+                args.dashboard_url + "/api/incidents?" + query, env["MONOLITH_OPERATOR_TOKEN"]
+            )["incidents"]
             modules = {event["module"] for event in events}
             if modules == {"mcp-shield", "vector-anchor", "trace-audit"}:
                 report["verified_layers"] = sorted(modules)
                 break
-            time.sleep(.5)
+            time.sleep(0.5)
         else:
             raise RuntimeError("Agent session did not reach all three ledger layers")
     (state / "session-report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")

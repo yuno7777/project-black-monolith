@@ -67,7 +67,9 @@ class RetrieverProxy:
         # Using query_texts here would make Chroma invoke the embedding
         # function a second time and could even give the two decisions
         # different vectors for a non-deterministic remote embedder.
-        query_embedding = self.embed_fn([query])[0]
+        # Semantic embedding providers return NumPy arrays; normalize the public
+        # boundary for the tracker and Chroma alike.
+        query_embedding = [float(value) for value in self.embed_fn([query])[0]]
 
         # Query and scoring share the same lock as corpus mutations.
         with self._state_lock:
