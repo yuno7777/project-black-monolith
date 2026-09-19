@@ -68,16 +68,17 @@ class RetrieverProxy:
         # different vectors for a non-deterministic remote embedder.
         query_embedding = self.embed_fn([query])[0]
 
-        res = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=n,
-            include=["documents", "distances", "metadatas"],
-        )
-        ids = res["ids"][0]
-        docs = res["documents"][0]
-        dists = res["distances"][0]
-
+        # Query and scoring share the same lock as corpus mutations.
         with self._state_lock:
+            res = self.collection.query(
+                query_embeddings=[query_embedding],
+                n_results=n,
+                include=["documents", "distances", "metadatas"],
+            )
+            ids = res["ids"][0]
+            docs = res["documents"][0]
+            dists = res["distances"][0]
+
             # Record the top-ranked documents for this query so cross-query
             # frequency can be judged. Only the genuinely top-ranked results
             # are recorded (a doc buried at rank 8 is not "ranking highly").
@@ -131,9 +132,7 @@ class RetrieverProxy:
                     withheld.append({"id": doc_id, "reason": "quarantined_now"})
                     continue
 
-                clean.append(
-                    {"id": doc_id, "document": document, "distance": distance}
-                )
+                clean.append({"id": doc_id, "document": document, "distance": distance})
 
             served = clean[:k]
             quarantine_size = len(self.quarantine)
