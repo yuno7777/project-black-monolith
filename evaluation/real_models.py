@@ -146,7 +146,7 @@ async def evaluate_trace(args, data):
             "other_options": "Ollama model defaults; stochastic outputs",
         },
         "resident_models": ollama_json(args.ollama_url, "/api/ps").get("models", []),
-        "policy_version": "trace-audit/2",
+        "policy_version": "trace-audit/3",
         "threshold": cfg.kl_threshold,
         "baseline_sha256": hashlib.sha256(
             json.dumps(baseline, sort_keys=True).encode()

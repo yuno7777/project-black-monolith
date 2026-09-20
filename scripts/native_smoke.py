@@ -126,9 +126,9 @@ def main():
                 str(trace),
             ]
             if args.backend == "ollama":
-                command += ["--backend", "ollama", "--skip-attacks", "--agent-demo"]
+                command += ["--backend", "ollama", "--skip-attacks", "--agent-demo", "--agent-evaluation"]
             result = subprocess.run(
-                command, cwd=ROOT, env=env, text=True, capture_output=True, timeout=900
+                command, cwd=ROOT, env=env, text=True, capture_output=True, timeout=1800
             )
             print(result.stdout)
             print(result.stderr, file=sys.stderr)

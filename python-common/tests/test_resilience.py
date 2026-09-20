@@ -6,6 +6,7 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
 from monolith_events.events import EventOutbox
 
 
@@ -80,4 +81,43 @@ os._exit(9)
     queue.flush_once()
     assert len(delivered) == 20
     assert queue.stats()["pending"] == 0
+    queue.close()
+
+
+def test_sqlite_capacity_exhaustion_preserves_backlog_and_recovers(tmp_path):
+    import sqlite3
+
+    import pytest
+
+    queue = make(tmp_path / "full.db")
+    queue.enqueue("before", b"{}")
+    pages = queue._connection.execute("pragma page_count").fetchone()[0]
+    queue._connection.execute(f"pragma max_page_count={pages}")
+    with pytest.raises(sqlite3.OperationalError, match="full"):
+        queue.enqueue("too-large", b"x" * 16000)
+    assert queue.stats()["pending"] == 1
+    queue._connection.execute("pragma max_page_count=1000")
+    queue.enqueue("after", b"{}")
+    delivered = []
+    queue._post = lambda payload: (delivered.append(payload) or 200, "")
+    queue.flush_once()
+    assert len(delivered) == 2
+    assert queue.stats()["pending"] == 0
+    queue.close()
+
+
+def test_backlog_survives_repeated_restarts(tmp_path):
+    path = tmp_path / "restart.db"
+    for cycle in range(5):
+        queue = make(path)
+        with ThreadPoolExecutor(max_workers=8) as workers:
+            list(workers.map(lambda i, queue=queue, cycle=cycle: queue.enqueue(f"{cycle}-{i}", b"{}"), range(100)))
+        assert queue.stats()["pending"] == (cycle + 1) * 100
+        queue.close()
+    queue = make(path)
+    delivered = []
+    queue._post = lambda payload: (delivered.append(payload) or 200, "")
+    while queue.stats()["pending"]:
+        queue.flush_once()
+    assert len(delivered) == 500
     queue.close()

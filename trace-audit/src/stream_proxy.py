@@ -130,14 +130,14 @@ SAFE_REFUSAL = (
 # tokenizer can be recognized and redacted before any fragment is released.
 # The bound keeps streaming latency and memory finite.
 PII_TOKEN_WINDOW = 16  # Compatibility only; buffering is character-bounded.
-PII_CHAR_WINDOW = 512
+PII_CHAR_WINDOW = 256
 OLLAMA_CONNECT_TIMEOUT_SECONDS = 5.0
 OLLAMA_READ_TIMEOUT_SECONDS = 30.0
 OLLAMA_WRITE_TIMEOUT_SECONDS = 10.0
 OLLAMA_POOL_TIMEOUT_SECONDS = 5.0
 MAX_OLLAMA_LINE_BYTES = 256 * 1024
 MAX_BACKEND_TOKEN_CHARS = 8 * 1024
-POLICY_VERSION = "trace-audit/2"
+POLICY_VERSION = "trace-audit/3"
 
 
 @dataclass

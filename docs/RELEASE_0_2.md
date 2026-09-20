@@ -71,8 +71,9 @@ tuned on this test split. Real-model prompts include 16 hash-selected external
 test cases plus the authored evaluation; model outputs are stochastic, and attack
 prompt detection does not prove attack success or prevention.
 
-The fragmentation stress report measures Base64, hex, and percent encodings as
-known gaps. Plain, spaced, zero-width, and full-width AWS-key variants must not
+The fragmentation stress report gates contiguous single-layer Base64, hex, and
+percent-encoded secrets. Decoding is bounded to 4,096 characters per atom and
+never recursive; nested or arbitrarily separated encodings remain gaps. Plain, spaced, zero-width, and full-width AWS-key variants must not
 leak. Long benign identifiers may be withheld by the fail-closed length policy.
 
 Run faults only against a disposable Compose stack:
@@ -99,3 +100,29 @@ The ZIP contains committed source only, normalized ZIP timestamps/modes, and a
 per-file SHA-256 manifest. A sibling checksum verifies the entire archive.
 The release workflow builds it twice and requires identical bytes. It does not
 bundle runtimes, models, credentials, or claim reproducible compiled binaries.
+
+
+## Follow-up enforcement checks
+
+TraceAudit policy version 3 reduces the default look-behind from 512 to 256
+characters. Long candidates still fail closed, which can withhold benign long
+identifiers. Boundary tests exercise fragmented encodings around release points;
+this is a latency/false-positive tradeoff, not arbitrary secret detection.
+
+Run the authored adversarial agent development cases against a native stack:
+
+```text
+python scripts/run_local_demo.py --backend ollama --skip-attacks --agent-evaluation
+```
+
+Six cases measure literal canary leakage across all three stages and final-answer
+fact substrings, separately from detector flags. Reports contain hashes and
+outcomes, not generated text. This suite is development data, not independent
+held-out accuracy, and lacks an unprotected control. The existing independent
+test set remains unchanged and is not used to tune detection rules.
+
+The outbox tests now also exercise SQLite capacity exhaustion and five backlog
+reopens. SQLite's page limit models a full database, not every filesystem failure.
+Failed enqueue transactions roll back; events rejected during full storage cannot
+be promised durable. Signed installers still require platform signing identities;
+the current deliverable remains a reproducible source archive.

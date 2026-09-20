@@ -1,4 +1,4 @@
-"""Fragmentation sweep with explicit unsupported-encoding leak reporting."""
+"""Fragmentation sweep with bounded single-layer encoding coverage."""
 
 import base64
 import json
@@ -57,14 +57,14 @@ def run():
             output.extend(t.token for t in buffer.push(char, None).outputs)
         output.extend(t.token for t in buffer.finish().outputs)
         changed.append({"chars": len(text), "changed": "".join(output) != text})
-    supported = {"plain", "zero_width", "full_width", "spaced"}
+    supported = set(variants)
     failures = [r for r in rows if r["variant"] in supported and r["leaked"]]
     result = {
         "seed": 42,
         "supported_failures": len(failures),
         "cases": rows,
         "benign_cases": changed,
-        "limitations": "Base64, percent, and hex are measured gaps, not supported protections. Long identifiers intentionally fail closed.",
+        "limitations": "Single-layer contiguous Base64, percent, and hex atoms are covered; nested or arbitrarily separated encodings are not. Long identifiers intentionally fail closed.",
     }
     if failures:
         raise AssertionError(json.dumps(failures))

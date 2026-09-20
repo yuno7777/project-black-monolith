@@ -319,7 +319,9 @@ def main() -> int:
         "--skip-build", action="store_true", help="use already built dashboard and MCP binary"
     )
     parser.add_argument("--backend", choices=["mock", "ollama"], default="mock")
+    parser.add_argument("--agent-evaluation", action="store_true", help="Run authored adversarial agent outcome cases")
     args = parser.parse_args()
+    args.agent_demo = args.agent_demo or args.agent_evaluation
     if args.backend == "ollama" and not args.skip_attacks:
         parser.error(
             "Real-model startup uses --skip-attacks; synthetic detector assertions require mock"
@@ -464,6 +466,13 @@ def main() -> int:
                 "--vector-url", f"http://127.0.0.1:{ports[1]}",
                 "--trace-url", f"http://127.0.0.1:{ports[2]}",
                 "--dashboard-url", f"http://127.0.0.1:{ports[0]}"], ROOT, env)
+        if args.agent_evaluation:
+            runner.run("agent-outcomes", [sys.executable,
+                str(ROOT / "evaluation/protected_agent_cases.py"),
+                "--output", str(ROOT / "evaluation/results/agent-outcomes-real.json"),
+                "--vector-url", f"http://127.0.0.1:{ports[1]}",
+                "--trace-url", f"http://127.0.0.1:{ports[2]}",
+                "--dashboard-url", f"http://127.0.0.1:{ports[0]}"], ROOT, env, timeout=1500)
         print(f"Local services ready: http://127.0.0.1:{ports[0]}", flush=True)
         if not args.no_hold and env.get("DEMO_HOLD", "1") != "0":
             print("Press Ctrl-C to stop services.", flush=True)
