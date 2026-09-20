@@ -8,19 +8,28 @@ from pathlib import Path
 
 REPO = "deepset/prompt-injections"
 REVISION = "4f61ecb038e9c3fb77e21034b22511b523772cdd"
-FILE = "data/test-00000-of-00001-701d16158af87368.parquet"
-URL = f"https://huggingface.co/datasets/{REPO}/resolve/{REVISION}/{FILE}"
+FILES = {
+    "test": "data/test-00000-of-00001-701d16158af87368.parquet",
+    "development": "data/train-00000-of-00001-9564e8b05b4757ab.parquet",
+}
 
 
 def main():
     import pyarrow.parquet as pq
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=Path("evaluation/results/external.json"))
+    parser.add_argument("--split", choices=FILES, default="test")
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    raw = args.output.with_suffix(".parquet")
-    with urllib.request.urlopen(URL, timeout=60) as response:
+    output = args.output or Path(
+        "evaluation/results/external.json"
+        if args.split == "test"
+        else "evaluation/results/development.json"
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    raw = output.with_suffix(".parquet")
+    url = f"https://huggingface.co/datasets/{REPO}/resolve/{REVISION}/{FILES[args.split]}"
+    with urllib.request.urlopen(url, timeout=60) as response:
         body = response.read(2_000_001)
     if len(body) > 2_000_000:
         raise ValueError("Dataset exceeds the expected download bound")
@@ -35,21 +44,28 @@ def main():
             "id": hashlib.sha256(r["text"].encode()).hexdigest(),
             "prompt": r["text"],
             "attack": bool(r["label"]),
-            "category": "external_test",
+            "category": "external_" + args.split,
         }
         for r in rows
     ]
     cases.sort(key=lambda r: r["id"])
-    args.output.write_text(
+    output.write_text(
         json.dumps(
             {
-                "source": URL,
+                "source": url,
                 "revision": REVISION,
-                "split": "test",
+                "split": args.split,
                 "sha256": hashlib.sha256(body).hexdigest(),
                 "attribution": "deepset/prompt-injections, Hugging Face. Preserve source attribution.",
                 "license_metadata": {"top_level": "Apache-2.0", "dataset_info": "CC-BY-4.0"},
-                "limitations": "Upstream license metadata differs by field. Data downloaded separately; not vendored. Never used for calibration.",
+                "limitations": (
+                    "Upstream license metadata differs by field. Data downloaded separately; not vendored. "
+                    + (
+                        "Frozen test split; never used for calibration."
+                        if args.split == "test"
+                        else "Development split; may be used to design policies and must not be reported as independent evidence."
+                    )
+                ),
                 "cases": cases,
             },
             indent=2,
@@ -57,7 +73,7 @@ def main():
         + "\n",
         encoding="utf-8",
     )
-    print(f"Imported {len(cases)} independent test cases at revision {REVISION}")
+    print(f"Imported {len(cases)} {args.split} cases at revision {REVISION}")
 
 
 if __name__ == "__main__":
