@@ -1,0 +1,78 @@
+name: Real model evidence
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'evaluation/**'
+      - 'vector-anchor/src/**'
+      - 'trace-audit/src/**'
+      - 'examples/**'
+      - 'scripts/run_local_demo.py'
+      - 'scripts/native_smoke.py'
+      - '.github/workflows/evidence.yml'
+permissions:
+  contents: read
+jobs:
+  real-models:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --require-hashes -r vector-anchor/requirements.lock -r trace-audit/requirements.lock
+      - run: python -m pip install pyarrow==21.0.0
+      - name: Install checksum-verified Ollama
+        run: |
+          curl --fail --location --retry 3 https://github.com/ollama/ollama/releases/download/v0.34.2/ollama-linux-amd64.tar.zst -o /tmp/ollama.tar.zst
+          echo 'e155b83589986d2c581fdbf1381ea3ebdb16549883679cd5a0627f7cdc05b12b  /tmp/ollama.tar.zst' | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/ollama"
+          tar --zstd -xf /tmp/ollama.tar.zst -C "$RUNNER_TEMP/ollama"
+          echo "$RUNNER_TEMP/ollama/bin" >> "$GITHUB_PATH"
+      - name: Start real inference and pull two models
+        run: |
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:11434/api/tags; then break; fi
+            sleep 1
+          done
+          ollama pull llama3.2:1b
+          ollama pull qwen2.5:0.5b
+      - name: Import independent test split and evaluate content policy
+        run: |
+          python evaluation/import_external.py
+          python evaluation/content_benchmark.py --dataset evaluation/results/external.json --output evaluation/results/content-independent.json
+          python evaluation/redaction_stress.py
+      - name: Evaluate semantic retrieval and two real models
+        run: |
+          python evaluation/real_models.py vector --output evaluation/results/semantic-real.json
+          python evaluation/real_models.py trace --model llama3.2:1b --external evaluation/results/external.json --output evaluation/results/llama-real.json
+          python evaluation/real_models.py trace --model qwen2.5:0.5b --external evaluation/results/external.json --output evaluation/results/qwen-real.json
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: '1.86'
+      - name: Build the protected real-agent stack
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql
+          npm ci --prefix dashboard
+          npm run build --prefix dashboard
+          cargo build --locked --manifest-path mcp-shield/Cargo.toml
+      - name: Run a real-model protected agent and verify its ledger
+        env:
+          MONOLITH_OLLAMA_MODEL: qwen2.5:0.5b
+        run: python scripts/native_smoke.py --backend ollama
+      - name: Preserve reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: real-model-evidence
+          path: |
+            evaluation/results/*-real.json
+            evaluation/results/content-independent.json
+            evaluation/results/redaction-stress.json
+          if-no-files-found: error

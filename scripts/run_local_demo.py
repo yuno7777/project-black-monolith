@@ -309,6 +309,7 @@ def attacks(runner: Runner, env: dict[str, str], state: Path, ports: list[int]) 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--agent-demo", action="store_true", help="Run the protected multi-step agent")
     parser.add_argument("--dash-port", type=int)
     parser.add_argument("--va-port", type=int)
     parser.add_argument("--ta-port", type=int)
@@ -318,7 +319,9 @@ def main() -> int:
         "--skip-build", action="store_true", help="use already built dashboard and MCP binary"
     )
     parser.add_argument("--backend", choices=["mock", "ollama"], default="mock")
+    parser.add_argument("--agent-evaluation", action="store_true", help="Run authored adversarial agent outcome cases")
     args = parser.parse_args()
+    args.agent_demo = args.agent_demo or args.agent_evaluation
     if args.backend == "ollama" and not args.skip_attacks:
         parser.error(
             "Real-model startup uses --skip-attacks; synthetic detector assertions require mock"
@@ -338,7 +341,7 @@ def main() -> int:
         env = configure(env, ports)
         env.setdefault("MONOLITH_SESSION_ID", "demo-" + uuid.uuid4().hex)
         env.setdefault("MONOLITH_AGENT_ID", "native-demo-agent")
-        for executable in ("node", "psql") + (() if args.skip_attacks else ("cargo",)):
+        for executable in ("node", "psql") + (() if args.skip_attacks and not args.agent_demo else ("cargo",)):
             if not shutil.which(executable):
                 raise RuntimeError(f"Required executable missing from PATH: {executable}")
         next_cli = ROOT / "dashboard/node_modules/next/dist/bin/next"
@@ -388,7 +391,7 @@ def main() -> int:
         )
         if not args.skip_build:
             runner.run("build", [node, str(next_cli), "build"], dashboard, env, timeout=900)
-        if not args.skip_attacks and not args.skip_build:
+        if (not args.skip_attacks or args.agent_demo) and not args.skip_build:
             runner.run(
                 "cargo-build",
                 [shutil.which("cargo"), "build", "--locked"],
@@ -456,12 +459,20 @@ def main() -> int:
             )
             (state / "verification.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
             print("Verified all three layers in the PostgreSQL ledger", flush=True)
+        if not args.skip_attacks or args.agent_demo:
             runner.run("protected-agent", [sys.executable, str(ROOT / "examples/protected_agent.py"),
                 "Summarize the project note", "--note", str(ROOT / "examples/project-note.txt"),
-                "--state-dir", str(state / "protected-agent"),
+                "--state-dir", str(state / "protected-agent"), "--verify-ledger",
                 "--vector-url", f"http://127.0.0.1:{ports[1]}",
                 "--trace-url", f"http://127.0.0.1:{ports[2]}",
                 "--dashboard-url", f"http://127.0.0.1:{ports[0]}"], ROOT, env)
+        if args.agent_evaluation:
+            runner.run("agent-outcomes", [sys.executable,
+                str(ROOT / "evaluation/protected_agent_cases.py"),
+                "--output", str(ROOT / "evaluation/results/agent-outcomes-real.json"),
+                "--vector-url", f"http://127.0.0.1:{ports[1]}",
+                "--trace-url", f"http://127.0.0.1:{ports[2]}",
+                "--dashboard-url", f"http://127.0.0.1:{ports[0]}"], ROOT, env, timeout=1500)
         print(f"Local services ready: http://127.0.0.1:{ports[0]}", flush=True)
         if not args.no_hold and env.get("DEMO_HOLD", "1") != "0":
             print("Press Ctrl-C to stop services.", flush=True)

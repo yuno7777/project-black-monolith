@@ -1,5 +1,6 @@
 """CI-only disposable PostgreSQL + native three-layer integration smoke test."""
 
+import argparse
 import json
 import os
 import shutil
@@ -51,6 +52,9 @@ def postgres_state():
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--backend", choices=("mock", "ollama"), default="mock")
+    args = parser.parse_args()
     directory, suffix = postgres_bin()
     with postgres_state() as state:
         data = state / "database"
@@ -121,8 +125,10 @@ def main():
                 "--ta-port",
                 str(trace),
             ]
+            if args.backend == "ollama":
+                command += ["--backend", "ollama", "--skip-attacks", "--agent-demo", "--agent-evaluation"]
             result = subprocess.run(
-                command, cwd=ROOT, env=env, text=True, capture_output=True, timeout=300
+                command, cwd=ROOT, env=env, text=True, capture_output=True, timeout=1800
             )
             print(result.stdout)
             print(result.stderr, file=sys.stderr)
@@ -140,6 +146,14 @@ def main():
                                     tail = tail.replace(value, "<redacted>")
                             print(log.name, tail)
                 raise RuntimeError("Native full-stack smoke failed; see retained demo directory")
+            if args.backend == "ollama":
+                for line in result.stdout.splitlines():
+                    if line.startswith("Demo logs and state: "):
+                        report = Path(line.split(": ", 1)[1]) / "protected-agent/session-report.json"
+                        target = ROOT / "evaluation/results/agent-real.json"
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(report, target)
+                        print(target.read_text(encoding="utf-8"))
             # The compatibility roles must stay inert on a plain database.
             roles = subprocess.run(
                 [str(directory / ("psql" + suffix)), env["DATABASE_ADMIN_URL"],
