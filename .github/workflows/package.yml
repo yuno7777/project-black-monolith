@@ -1,0 +1,25 @@
+name: Reproducible source release
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Verify byte-identical release archives
+        run: |
+          python scripts/package_release.py --output /tmp/release-a
+          python scripts/package_release.py --output /tmp/release-b
+          cmp /tmp/release-a/black-monolith-0.2.0-rc.1-source.zip /tmp/release-b/black-monolith-0.2.0-rc.1-source.zip
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: black-monolith-source-release
+          path: /tmp/release-a/*

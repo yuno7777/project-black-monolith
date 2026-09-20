@@ -57,3 +57,5 @@ docker-compose.override.yml
 
 # Local protected-agent state and logs
 .agent-state/
+.venv-next/
+/dist/

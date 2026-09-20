@@ -158,15 +158,11 @@ class EventOutbox:
             self._worker.start()
 
     def _migrate_legacy_table(self) -> None:
-        columns = {
-            row[1] for row in self._connection.execute("pragma table_info(event_outbox)")
-        }
+        columns = {row[1] for row in self._connection.execute("pragma table_info(event_outbox)")}
         timestamp = now_ms()
         for name in ("created_ms", "updated_ms"):
             if name not in columns:
-                self._connection.execute(
-                    f"alter table event_outbox add column {name} integer"
-                )
+                self._connection.execute(f"alter table event_outbox add column {name} integer")
                 self._connection.execute(
                     f"update event_outbox set {name} = ? where {name} is null",
                     (timestamp,),
@@ -180,11 +176,9 @@ class EventOutbox:
         ):
             raise ValueError(f"event_id must be 1-{MAX_ID_LENGTH} printable characters")
         if not payload or len(payload) > MAX_EVENT_PAYLOAD_BYTES:
-            raise ValueError(
-                f"event payload must be 1-{MAX_EVENT_PAYLOAD_BYTES} bytes"
-            )
+            raise ValueError(f"event payload must be 1-{MAX_EVENT_PAYLOAD_BYTES} bytes")
         timestamp = now_ms()
-        with self._lock:
+        with self._lock, self._connection:
             self._connection.execute(
                 """insert or ignore into event_outbox
                    (event_id, payload, next_attempt_ms, created_ms, updated_ms)
@@ -192,7 +186,6 @@ class EventOutbox:
                 (event_id, payload, timestamp, timestamp, timestamp),
             )
             self._enforce_limits_locked(timestamp)
-            self._connection.commit()
         self._wake.set()
 
     def _run(self) -> None:

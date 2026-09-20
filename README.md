@@ -523,3 +523,8 @@ unchanged.
 
 See [real-model evaluation and the protected note agent](docs/EVALUATION_AND_AGENT.md)
 for the held-out benchmark profile, real-backend setup, and safe reset workflow.
+
+## Release candidate and evaluation
+
+See [0.2.0 release guide](docs/RELEASE_0_2.md) for cross-platform installation,
+independent evaluation, real-model CI, fault testing, and reproducible source packages.
