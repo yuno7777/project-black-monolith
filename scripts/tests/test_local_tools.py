@@ -165,3 +165,14 @@ class LocalToolsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlatformBundleTests(unittest.TestCase):
+    def test_platform_installers_do_not_require_cargo(self):
+        root = Path(__file__).resolve().parents[2]
+        shell = (root / "packaging/install.sh").read_text(encoding="utf-8")
+        powershell = (root / "packaging/install.ps1").read_text(encoding="utf-8")
+        self.assertNotIn("cargo", shell.casefold())
+        self.assertNotIn("cargo", powershell.casefold())
+        self.assertIn("--skip-build", shell)
+        self.assertIn("--skip-build", powershell)

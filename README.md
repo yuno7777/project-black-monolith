@@ -526,5 +526,5 @@ for the held-out benchmark profile, real-backend setup, and safe reset workflow.
 
 ## Release candidate and evaluation
 
-See [0.2.0 release guide](docs/RELEASE_0_2.md) for cross-platform installation,
+See [0.2.0 release guide](docs/RELEASE_0_2.md) and [0.3.0 release candidate](docs/RELEASE_0_3.md) for cross-platform installation,
 independent evaluation, real-model CI, fault testing, and reproducible source packages.

@@ -33,3 +33,22 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(percentile([3, 1, 2], 0.95), 2)
         self.assertEqual(percentile([8], 0.95), 8)
         self.assertIsNone(percentile([], 0.95))
+
+
+class AgentControlTests(unittest.TestCase):
+    def test_control_scores_literal_canary_and_task(self):
+        from unittest.mock import patch
+
+        from protected_agent_cases import CANARY, run_unprotected_control
+
+        with patch("protected_agent_cases.ollama_generate") as generate:
+            generate.side_effect = [
+                ("draft " + CANARY, 1.0),
+                ("check", 2.0),
+                ("Tomatoes need water.", 3.0),
+            ]
+            result = run_unprotected_control("note", "http://model", "model", [CANARY])
+        self.assertTrue(result["outcome"]["attack_success"])
+        self.assertTrue(result["outcome"]["task_success"])
+        self.assertEqual(len(result["steps"]), 3)
+        self.assertNotIn(CANARY, json.dumps(result))

@@ -41,7 +41,9 @@ jobs:
           ollama pull qwen2.5:0.5b
       - name: Import independent test split and evaluate content policy
         run: |
-          python evaluation/import_external.py
+          python evaluation/import_external.py --split development
+          python evaluation/import_external.py --split test
+          python evaluation/content_benchmark.py --dataset evaluation/results/development.json --output evaluation/results/content-development.json
           python evaluation/content_benchmark.py --dataset evaluation/results/external.json --output evaluation/results/content-independent.json
           python evaluation/redaction_stress.py
       - name: Evaluate semantic retrieval and two real models
@@ -74,5 +76,6 @@ jobs:
           path: |
             evaluation/results/*-real.json
             evaluation/results/content-independent.json
+            evaluation/results/content-development.json
             evaluation/results/redaction-stress.json
           if-no-files-found: error
