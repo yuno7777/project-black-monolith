@@ -30,7 +30,7 @@ report separately records whether detectable secrets appeared in the raw output
 and survived redaction. The dataset is small and authored, so results are
 exploratory. No threshold tuning occurs on held-out cases.
 
-The streaming scanner keeps a 512-character look-behind, independent of token
+The streaming scanner keeps a 256-character look-behind, independent of token
 fragment count. Its incomplete/overlong-candidate behavior trades some latency
 and false positives on long identifiers for preventing prefix leakage. Arbitrary
 encodings and all forms of obfuscation are not covered.
