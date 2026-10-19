@@ -54,6 +54,7 @@ export default function IncidentPanel({
   const [note, setNote] = useState("");
   const [resolution, setResolution] = useState<Resolution>("true_positive");
   const [busy, setBusy] = useState(false);
+  const [sessionBusy, setSessionBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [audit, setAudit] = useState<AuditEntry[] | null>(null);
   const [session, setSession] = useState<SessionView | null>(null);
@@ -110,6 +111,35 @@ export default function IncidentPanel({
     else setNote("");
   }
 
+  async function toggleSessionQuarantine() {
+    if (!session) return;
+    setSessionBusy(true);
+    setError(null);
+    try {
+      const method = session.revoked ? "DELETE" : "POST";
+      const response = await fetch(`/api/incidents/${incident.event_id}/session`, {
+        method,
+        headers: method === "POST" ? { "Content-Type": "application/json" } : undefined,
+        body:
+          method === "POST"
+            ? JSON.stringify({
+                reason: note.trim() || "Manual operator session quarantine",
+              })
+            : undefined,
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setError(payload.error ?? "could not update session quarantine state");
+      } else if (payload.session) {
+        setSession(payload.session);
+      }
+    } catch {
+      setError("could not reach the ledger");
+    } finally {
+      setSessionBusy(false);
+    }
+  }
+
   return (
     <div className="card panel-card">
       <div className="card-head">
@@ -158,6 +188,17 @@ export default function IncidentPanel({
         {session ? (
           <>
             <div className="panel-label">Agent session</div>
+            {session.revoked ? (
+              <div className="cross-layer">
+                <span className="cl-head">
+                  <IconAlert size={14} />
+                  Session quarantined ({session.revocation?.triggered_by ?? "circuit-breaker"})
+                </span>
+                <span className="cl-sub">
+                  {session.revocation?.reason ?? "Active cross-layer circuit breaker has revoked this session."}
+                </span>
+              </div>
+            ) : null}
             {session.cross_layer ? (
               // The finding no single module can make: one agent tripped more
               // than one layer of the defense.
@@ -195,14 +236,23 @@ export default function IncidentPanel({
             </div>
             <div className="session-foot">
               <span className="mono-id">{session.session_id}</span>
-              {onSelectSession ? (
+              <div className="panel-head-actions">
                 <button
                   className="ghost-btn"
-                  onClick={() => onSelectSession(session.session_id, session.agent_id)}
+                  disabled={!canTransition || sessionBusy}
+                  onClick={() => void toggleSessionQuarantine()}
                 >
-                  Show all {session.total}
+                  {session.revoked ? "Restore Session" : "Quarantine Session"}
                 </button>
-              ) : null}
+                {onSelectSession ? (
+                  <button
+                    className="ghost-btn"
+                    onClick={() => onSelectSession(session.session_id, session.agent_id)}
+                  >
+                    Show all {session.total}
+                  </button>
+                ) : null}
+              </div>
             </div>
           </>
         ) : null}

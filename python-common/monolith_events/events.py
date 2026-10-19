@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import random
 import sqlite3
 import sys
@@ -13,7 +14,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +42,16 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _poll_interval_ms() -> int:
+    """Revocation poll cadence; 0 (or a bad value) disables polling."""
+    raw = os.environ.get("MONOLITH_SESSION_POLL_MS", "15000")
+    try:
+        value = int(raw)
+    except ValueError:
+        return 0
+    return value if value > 0 else 0
 
 
 def _clean_id(value: Any) -> str | None:
@@ -104,6 +115,174 @@ def context_from_headers(headers: Mapping[str, str]) -> EventContext:
     )
 
 
+class RevokedSessionRegistry:
+    """Thread-safe mirror of the dashboard's revoked-session set.
+
+    A revocation does **not** expire locally: the dashboard is the authority,
+    and a module-local TTL would silently re-admit a quarantined session after
+    a fixed delay. The set is replaced wholesale by each authoritative update
+    (an ingest response or a poll of `/api/sessions/revoked`), and a failed
+    refresh leaves the previous set in place — fail closed, not open.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._sessions: frozenset[str] = frozenset()
+
+    def replace(self, session_ids: Iterable[Any]) -> int:
+        cleaned = frozenset(
+            value for value in (_clean_id(item) for item in session_ids) if value
+        )
+        with self._lock:
+            self._sessions = cleaned
+        return len(cleaned)
+
+    def add(self, session_id: Any) -> bool:
+        cleaned = _clean_id(session_id)
+        if not cleaned:
+            return False
+        with self._lock:
+            if cleaned in self._sessions:
+                return False
+            self._sessions = self._sessions | {cleaned}
+        return True
+
+    def is_revoked(self, session_id: Any) -> bool:
+        cleaned = _clean_id(session_id)
+        if not cleaned:
+            return False
+        with self._lock:
+            return cleaned in self._sessions
+
+    def snapshot(self) -> frozenset[str]:
+        with self._lock:
+            return self._sessions
+
+
+_REVOKED_SESSIONS = RevokedSessionRegistry()
+
+
+def revoked_session_registry() -> RevokedSessionRegistry:
+    return _REVOKED_SESSIONS
+
+
+def is_session_revoked(session_id: Any) -> bool:
+    return _REVOKED_SESSIONS.is_revoked(session_id)
+
+
+def update_revoked_sessions_from_ingest(body: bytes | str | Mapping[str, Any]) -> int:
+    """Adopt the `revoked_sessions` snapshot of an ingest response.
+
+    Only a payload that actually carries the field updates the registry; an
+    unparseable or empty body must not be read as "nothing is revoked".
+    Returns the number of revoked sessions now known, or -1 when the payload
+    carried no usable snapshot.
+    """
+    if isinstance(body, (bytes, bytearray)):
+        try:
+            payload: Any = json.loads(bytes(body).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return -1
+    elif isinstance(body, str):
+        try:
+            payload = json.loads(body)
+        except ValueError:
+            return -1
+    else:
+        payload = body
+    if not isinstance(payload, Mapping):
+        return -1
+    raw = payload.get("revoked_sessions")
+    if not isinstance(raw, (list, tuple)):
+        return -1
+    return _REVOKED_SESSIONS.replace(raw)
+
+
+def revocation_poll_url(dashboard_url: str) -> str | None:
+    """Derive the revocation-poll endpoint from the configured ingest URL."""
+    parsed = urllib.parse.urlsplit(dashboard_url)
+    path = parsed.path.rstrip("/")
+    if not path.endswith("/api/ingest"):
+        return None
+    poll_path = path[: -len("/api/ingest")] + "/api/sessions/revoked"
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, poll_path, "", ""))
+
+
+class RevokedSessionPoller:
+    """Periodically refresh the revoked-session set when no events flow."""
+
+    def __init__(
+        self,
+        url: str,
+        token: str,
+        *,
+        tenant_id: str,
+        module: str,
+        interval_ms: int = 15_000,
+        allow_insecure_http: bool = False,
+    ) -> None:
+        if interval_ms < 1_000:
+            raise ValueError("poll interval must be at least one second")
+        if not _safe_delivery_url(url, allow_insecure_http=allow_insecure_http):
+            raise ValueError("poll URL must use HTTPS (HTTP is loopback-only)")
+        if not _valid_bearer_token(token):
+            raise ValueError("poll token must be 16-512 header-safe characters")
+        clean_tenant = _clean_id(tenant_id)
+        clean_module = _clean_id(module)
+        if not clean_tenant or not clean_module:
+            raise ValueError("poll tenant and module must be printable")
+        self._url = url
+        self._token = token
+        self._tenant = clean_tenant
+        self._module = clean_module
+        self._interval_s = interval_ms / 1000.0
+        self._stop = threading.Event()
+        self._worker: threading.Thread | None = None
+        self.last_error: str | None = None
+
+    def start(self) -> None:
+        if self._worker is not None:
+            return
+        self._worker = threading.Thread(
+            target=self._run,
+            name="revoked-session-poller",
+            daemon=True,
+        )
+        self._worker.start()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self.refresh_once()
+            self._stop.wait(self._interval_s)
+
+    def refresh_once(self) -> int:
+        try:
+            request = urllib.request.Request(
+                self._url,
+                headers={
+                    "Authorization": f"Bearer {self._token}",
+                    TENANT_HEADER: self._tenant,
+                    "x-monolith-module": self._module,
+                },
+                method="GET",
+            )
+            opener = urllib.request.build_opener(_NoRedirect)
+            with opener.open(request, timeout=2) as response:
+                body = response.read(64 * 1024)
+            self.last_error = None
+            return update_revoked_sessions_from_ingest(body)
+        except urllib.error.HTTPError as error:
+            self.last_error = f"http {error.code}"
+        except Exception as error:  # a poll failure must never kill the thread
+            self.last_error = type(error).__name__
+        return -1
+
+    def close(self, timeout: float = 5.0) -> None:
+        self._stop.set()
+        if self._worker:
+            self._worker.join(timeout=timeout)
+
+
 class EventOutbox:
     """WAL-backed asynchronous delivery with bounded retry and retention."""
 
@@ -131,19 +310,7 @@ class EventOutbox:
         self._connection.execute("pragma journal_mode = wal")
         self._connection.execute("pragma synchronous = normal")
         self._connection.execute("pragma busy_timeout = 1000")
-        self._connection.execute(
-            """create table if not exists event_outbox (
-                event_id text primary key,
-                payload blob not null,
-                attempts integer not null default 0,
-                next_attempt_ms integer not null,
-                status text not null default 'pending',
-                last_error text,
-                created_ms integer not null,
-                updated_ms integer not null
-            )"""
-        )
-        self._migrate_legacy_table()
+        self._init_schema()
         self._connection.commit()
         self._lock = threading.Lock()
         self._url = url
@@ -163,6 +330,27 @@ class EventOutbox:
                 daemon=True,
             )
             self._worker.start()
+
+    def _init_schema(self) -> None:
+        self._connection.execute(
+            """create table if not exists event_outbox (
+                event_id text primary key,
+                payload blob not null,
+                attempts integer not null default 0,
+                next_attempt_ms integer not null,
+                status text not null default 'pending',
+                last_error text,
+                created_ms integer not null,
+                updated_ms integer not null
+            )"""
+        )
+        self._migrate_legacy_table()
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_event_outbox_status_next ON event_outbox (status, next_attempt_ms, created_ms)"
+        )
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_event_outbox_status_updated ON event_outbox (status, updated_ms)"
+        )
 
     def _migrate_legacy_table(self) -> None:
         columns = {row[1] for row in self._connection.execute("pragma table_info(event_outbox)")}
@@ -289,11 +477,19 @@ class EventOutbox:
             )
             opener = urllib.request.build_opener(_NoRedirect)
             with opener.open(request, timeout=2) as response:
-                return response.status, ""
+                status = response.status
+                try:
+                    body = response.read(64 * 1024)
+                except Exception:
+                    # A delivered event is delivered; never retry it because
+                    # the revocation snapshot could not be read back.
+                    body = b""
         except urllib.error.HTTPError as error:
             return error.code, f"http {error.code}"
         except Exception as error:
             return 0, type(error).__name__
+        update_revoked_sessions_from_ingest(body)
+        return status, ""
 
     def stats(self) -> dict[str, int | bool | str | None]:
         with self._lock:
@@ -308,6 +504,27 @@ class EventOutbox:
             "worker_alive": bool(self._worker and self._worker.is_alive()),
             "worker_error": self._worker_error,
         }
+
+    def replay_dead_letters(self) -> int:
+        timestamp = now_ms()
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                """update event_outbox
+                   set status = 'pending',
+                       attempts = 0,
+                       next_attempt_ms = 0,
+                       last_error = null,
+                       updated_ms = ?
+                   where status = 'dead'""",
+                (timestamp,),
+            )
+            replayed = int(
+                cursor.rowcount
+                if cursor.rowcount is not None and cursor.rowcount >= 0
+                else 0
+            )
+        self._wake.set()
+        return replayed
 
     def close(self, timeout: float = 5.0) -> None:
         self._stop.set()
@@ -347,6 +564,33 @@ class EventEmitter:
             if dashboard_url and event_token
             else None
         )
+        self.revocation_poller: RevokedSessionPoller | None = None
+        if (
+            self.outbox
+            and dashboard_url
+            and event_token
+            and _poll_interval_ms()
+            and (
+                (poll_url := os.environ.get("MONOLITH_SESSION_POLL_URL"))
+                or (poll_url := revocation_poll_url(dashboard_url))
+            )
+        ):
+                try:
+                    self.revocation_poller = RevokedSessionPoller(
+                        poll_url,
+                        event_token,
+                        tenant_id=self.default_tenant,
+                        module=module,
+                        interval_ms=_poll_interval_ms(),
+                        allow_insecure_http=allow_insecure_http,
+                    )
+                    self.revocation_poller.start()
+                except ValueError as error:
+                    print(
+                        f"revoked-session polling disabled: {error}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
 
     def __call__(
         self,
@@ -395,6 +639,8 @@ class EventEmitter:
                 )
 
     def close(self) -> None:
+        if self.revocation_poller:
+            self.revocation_poller.close()
         if self.outbox:
             self.outbox.close()
 
@@ -402,6 +648,17 @@ class EventEmitter:
         if not self.outbox:
             return {"pending": 0, "dead": 0, "worker_alive": False, "worker_error": None}
         return self.outbox.stats()
+
+    def replay_dead_letters(self) -> int:
+        if not self.outbox:
+            return 0
+        return self.outbox.replay_dead_letters()
+
+
+def replay_dead_letters(outbox: EventOutbox | EventEmitter | None = None) -> int:
+    if outbox is None:
+        return 0
+    return outbox.replay_dead_letters()
 
 
 def make_emitter(

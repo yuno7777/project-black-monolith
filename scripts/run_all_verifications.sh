@@ -6,7 +6,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 FAILED=0
-for script in verify_ingest verify_recovery verify_incidents verify_correlation verify_benchmarks; do
+for script in verify_ingest verify_recovery verify_incidents verify_correlation verify_circuit_breaker verify_benchmarks; do
     echo
     echo "############################################################"
     echo "# $script"

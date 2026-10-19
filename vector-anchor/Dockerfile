@@ -12,9 +12,11 @@ COPY python-common /app/python-common
 COPY vector-anchor/src ./src
 COPY vector-anchor/fixtures ./fixtures
 RUN useradd --system --uid 10001 --create-home monolith \
-    && mkdir -p /var/lib/monolith /app/chroma_store \
+    && mkdir -p /var/lib/monolith/cache /app/chroma_store \
     && chown -R monolith:monolith /app /var/lib/monolith
-ENV MONOLITH_CHROMA_PATH=/app/chroma_store \
+ENV HOME=/var/lib/monolith \
+    XDG_CACHE_HOME=/var/lib/monolith/cache \
+    MONOLITH_CHROMA_PATH=/app/chroma_store \
     MONOLITH_EMBEDDING=hash
 EXPOSE 8001
 USER monolith

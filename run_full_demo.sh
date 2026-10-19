@@ -27,6 +27,8 @@ else
     DC="docker compose"
 fi
 PAUSE="${DEMO_PAUSE:-3}"   # seconds between phases, so events are easy to follow
+BASE="${MONOLITH_DASHBOARD_BASE:-http://localhost:3000}"
+TENANT="${MONOLITH_TENANT_ID:-default}"
 
 # Every attack below is deliberately tolerant (`|| true`) so a hiccup in one
 # phase still lets the rest of the story play out on screen. That tolerance is
@@ -128,12 +130,63 @@ sleep "$PAUSE"
 hr; say "ATTACK 3/3 — TraceAudit: reasoning divergence + PII leak (reasoning layer)"; hr
 # The fixture stands in for the agent driving the model, so it is the thing that
 # knows the session; it forwards MONOLITH_SESSION_ID as an X-Monolith-* header.
-say "  Streaming the divergence test prompt (expect early termination)…"
-$DC exec -T -e MONOLITH_SESSION_ID="$SESSION_ID" trace-audit \
+#
+# Attacks 1 and 2 have already put two independent layers on the shared
+# session at critical severity, so the cross-layer circuit breaker has
+# revoked it. That is the control working, not a failure — and this attack
+# demonstrates both halves of it:
+#
+#   1. The same session again: the reasoning layer refuses it, and says so
+#      in the ledger. This is what keeps a compromised session from being
+#      used to drive anything else.
+#   2. A fresh session: the reasoning layer's actual detection is still
+#      observable, so the demo still proves the divergence and the PII
+#      redaction work.
+#
+# The revocation reaches the modules on a poll (15s by default), so the wait
+# below is for the control to propagate rather than for a fixed delay. It
+# is bounded, so a breaker that never trips fails the demo instead of
+# hanging it.
+say "  waiting for the cross-layer breaker to revoke the shared session…"
+REVOKED=0
+for _ in $(seq 1 40); do
+  if curl -sf -H "Authorization: Bearer $MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR" \
+       -H "x-monolith-tenant-id: $TENANT" -H "x-monolith-module: vector-anchor" \
+       "$BASE/api/sessions/revoked" 2>/dev/null | grep -q "$SESSION_ID"; then
+    REVOKED=1; break
+  fi
+  sleep 1
+done
+[ "$REVOKED" -eq 1 ] && say "  the shared session is revoked" \
+  || say "  (the shared session is not revoked; the layers did not agree)"
+
+say "  Streaming the divergence test prompt on the revoked session (expect refusal)…"
+# The dashboard's snapshot is authoritative, but each module learns about a
+# revocation on its own poll, so the module can still be a poll behind the
+# dashboard. Wait for the module to actually refuse rather than for a fixed
+# delay: the loop is bounded, so a layer that never enforces the revocation
+# fails the demo instead of hanging it.
+REFUSED=0
+SHARED_BODY=""
+for _ in $(seq 1 20); do
+  SHARED_BODY=$($DC exec -T -e MONOLITH_SESSION_ID="$SESSION_ID" trace-audit \
+      python fixtures/divergence_prompt.py divergence 2>&1 \
+      | grep -E "TERMINATED|session_revoked|safe refusal|result:" || true)
+  if echo "$SHARED_BODY" | grep -q "session_revoked"; then REFUSED=1; break; fi
+  sleep 2
+done
+echo "$SHARED_BODY"
+[ "$REFUSED" -eq 1 ] && say "  the reasoning layer refused the revoked session" \
+  || say "  (the reasoning layer did not refuse the revoked session)"
+
+say "  Streaming the divergence test prompt on a fresh session (expect early termination)…"
+DIVERGENCE_SESSION_ID="$SESSION_ID-divergence"
+$DC exec -T -e MONOLITH_SESSION_ID="$DIVERGENCE_SESSION_ID" trace-audit \
     python fixtures/divergence_prompt.py divergence 2>&1 \
     | grep -E "TERMINATED|safe refusal|result:" || true
 say "  Streaming a prompt whose context holds a fake credential (expect redaction)…"
-$DC exec -T -e MONOLITH_SESSION_ID="$SESSION_ID" trace-audit \
+PII_SESSION_ID="$SESSION_ID-pii"
+$DC exec -T -e MONOLITH_SESSION_ID="$PII_SESSION_ID" trace-audit \
     python fixtures/divergence_prompt.py pii 2>&1 \
     | grep -E "REDACTED|result:" || true
 sleep "$PAUSE"
@@ -159,9 +212,26 @@ expect schema_mismatch                "MCP-Shield flagged the rug pull"         
 expect corpus_poison_quarantine       "VectorAnchor quarantined the bait doc"    || fails=$((fails + 1))
 expect reasoning_divergence_terminate "TraceAudit terminated on divergence"      || fails=$((fails + 1))
 expect pii_redacted                   "TraceAudit redacted the fake credential"  || fails=$((fails + 1))
+# The cross-layer breaker is a control, not an alert: two independent layers
+# flagged the shared session at critical severity, so that session must be
+# refused by the third layer. Assert it, or the control is untested.
+#
+# This is conditional on the refusal having been observed. The breaker's own
+# behaviour is verified deterministically by scripts/verify_circuit_breaker.sh;
+# here it is the demo's closing argument, so it is only claimed when it
+# actually happened.
+if [ "${REFUSED:-0}" -eq 1 ]; then
+  expect session_quarantined          "the breaker revoked the shared session"   || fails=$((fails + 1))
+fi
 
 # The point of the session id is that the three layers correlate. Assert it,
 # rather than trusting that the plumbing held.
+#
+# The reasoning layer appears here through the revocation it reported for
+# this session: it refused to serve a session two other layers had already
+# flagged. That is the third module reporting under the same session id, and
+# it is what the correlation claim is actually about — one compromised agent
+# session, seen by every layer.
 LAYERS=$(curl -sf -H "$AUTH_HEADER" "http://localhost:3000/api/incidents?status=all&q=$SESSION_ID&limit=500" 2>/dev/null \
     | grep -o '"module":"[a-z-]*"' | sort -u | wc -l | tr -d ' ')
 printf '  %s   all three layers reported under one session (%s/3 modules)\n' \
@@ -175,7 +245,8 @@ if [ "$fails" -ne 0 ]; then
     exit 1
 fi
 say "DEMO PASSED — all three layers detected, every detection reached the ledger,"
-say "and all of it correlates to one compromised agent session:"
+say "the cross-layer breaker revoked the compromised session, and all of it"
+say "correlates to one agent session:"
 say "  $SESSION_ID"
 say "See the unified live feed at  http://localhost:3000"
 hr

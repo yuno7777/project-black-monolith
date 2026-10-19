@@ -94,6 +94,9 @@ bootstrap credential.
 | `GET /api/incidents/:id/session` | `viewer` |
 | `GET /api/incidents/:id/export` | `viewer` |
 | `POST /api/incidents` | `analyst` |
+| `POST /api/incidents/:id/session` | `analyst` |
+| `DELETE /api/incidents/:id/session` | `analyst` |
+| `GET /api/sessions/revoked` | module token (`x-monolith-module`, tenant-scoped) |
 | `GET /api/benchmarks` | `viewer` |
 | `POST /api/benchmarks` | `analyst` |
 | `GET /api/operations` | `viewer` |

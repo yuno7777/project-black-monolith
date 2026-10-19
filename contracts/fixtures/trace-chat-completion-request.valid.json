@@ -1,0 +1,16 @@
+{
+  "model": "mock-auditor",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a careful assistant."
+    },
+    {
+      "role": "user",
+      "content": "Summarise the incident response procedure."
+    }
+  ],
+  "stream": true,
+  "max_tokens": 256,
+  "temperature": 0.2
+}
