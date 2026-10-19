@@ -1,4 +1,4 @@
-import { getAuditTrail, getIncident, sessionForEvent } from "@/lib/incident-store";
+import { exportIncidentEvidence } from "@/lib/incident-store";
 import { requireOperator } from "@/lib/route-auth";
 
 export const runtime = "nodejs";
@@ -12,29 +12,21 @@ export async function GET(
   if (identity instanceof Response) return identity;
   const { eventId } = await params;
   try {
-    const [incident, audit, session] = await Promise.all([
-      getIncident(eventId, identity.tenant_id),
-      getAuditTrail(eventId, identity.tenant_id),
-      sessionForEvent(eventId, identity.tenant_id),
-    ]);
-    if (!incident) {
+    const payload = await exportIncidentEvidence(eventId, identity.tenant_id, identity.actor);
+    if (!payload) {
       return Response.json({ error: "no such event in the ledger" }, { status: 404 });
     }
-    const payload = {
-      format: "project-black-monolith/evidence-bundle@1",
-      exported_at: new Date().toISOString(),
-      exported_by: identity.actor,
-      tenant_id: identity.tenant_id,
-      incident,
-      audit,
-      session,
+    const headers: Record<string, string> = {
+      "content-type": "application/json; charset=utf-8",
+      "content-disposition": `attachment; filename="monolith-evidence-${eventId}.json"`,
+      "cache-control": "private, no-store",
+      "X-Monolith-Evidence-SHA256": payload.integrity.canonical_sha256,
     };
+    if (payload.integrity.signature) {
+      headers["X-Monolith-Evidence-Signature"] = `hmac-sha256=${payload.integrity.signature}`;
+    }
     return new Response(`${JSON.stringify(payload, null, 2)}\n`, {
-      headers: {
-        "content-type": "application/json; charset=utf-8",
-        "content-disposition": `attachment; filename="monolith-evidence-${eventId}.json"`,
-        "cache-control": "private, no-store",
-      },
+      headers,
     });
   } catch (error) {
     console.error("failed to export incident evidence", error);

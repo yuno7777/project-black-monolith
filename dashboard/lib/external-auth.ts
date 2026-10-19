@@ -8,6 +8,7 @@ import type { OperatorIdentity, OperatorRole } from "@/lib/operator-auth";
 
 const MAX_EXTERNAL_TOKEN_LENGTH = 8 * 1024;
 const keySets = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 export class ExternalAuthUnavailable extends Error {}
 
@@ -57,12 +58,23 @@ function externalConfig(): { issuer: string; audience: string; jwksUrl: string }
     );
   }
   try {
+    const issuerUrl = new URL(issuer);
+    const keyUrl = new URL(jwksUrl);
+    for (const [label, url] of [["issuer", issuerUrl], ["JWKS", keyUrl]] as const) {
+      if (url.username || url.password || url.hash) {
+        throw new ExternalAuthUnavailable(`operator OIDC ${label} URL must not contain credentials or a fragment.`);
+      }
+      if (url.protocol !== "https:" && !(url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname))) {
+        throw new ExternalAuthUnavailable(`operator OIDC ${label} URL must use HTTPS (HTTP is loopback-only).`);
+      }
+    }
     return {
-      issuer: new URL(issuer).toString().replace(/\/$/, ""),
+      issuer: issuerUrl.toString().replace(/\/$/, ""),
       audience,
-      jwksUrl: new URL(jwksUrl).toString(),
+      jwksUrl: keyUrl.toString(),
     };
-  } catch {
+  } catch (error) {
+    if (error instanceof ExternalAuthUnavailable) throw error;
     throw new ExternalAuthUnavailable("operator OIDC URLs are invalid.");
   }
 }
