@@ -232,10 +232,12 @@ impl Outbox {
         }))
     }
 
+    #[cfg(test)]
     pub fn spool_path(&self) -> &Path {
         &self.path
     }
 
+    #[cfg(test)]
     pub fn dead_letter_path(&self) -> &Path {
         &self.dead_path
     }

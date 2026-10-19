@@ -161,6 +161,7 @@ impl BaselineStore {
     }
 
     /// Whether the store has unsaved in-memory modifications.
+    #[cfg(test)]
     pub fn is_dirty(&self) -> bool {
         self.dirty
     }
@@ -342,6 +343,7 @@ impl BaselineStore {
     }
 
     /// Whether this tool has been seen and is awaiting approval.
+    #[cfg(test)]
     pub fn is_pending(&self, tool_name: &str) -> bool {
         self.pending.contains_key(tool_name)
     }
