@@ -14,6 +14,7 @@
 //! inbound responses can be routed through the fingerprint + sanitizer
 //! pipeline.
 
+use crate::http_transport::read_bounded_line;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -21,8 +22,9 @@ use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::Command;
+use tokio::time::{timeout, Duration};
 
 use crate::events::{self, Severity};
 use crate::fingerprint::{self, BaselineStore, FirstContact, Verdict};
@@ -80,6 +82,9 @@ pub struct ShieldConfig {
     pub baseline_path: PathBuf,
     pub mode: ShieldMode,
     pub first_contact: FirstContact,
+    /// The Secret Boundary, when one is configured.
+    ///
+    /// Populated on the proxy path only — see [`ShieldConfig::from_env`].
     pub boundary: Option<Arc<crate::secret_boundary::ShieldSecretBoundary>>,
 }
 
@@ -150,6 +155,18 @@ impl ShieldConfig {
     }
 }
 
+/// The analysis inputs the server-to-agent forwarding loop needs.
+///
+/// Grouped into a struct so the forwarding function's signature does not
+/// grow with every new analysis input, and so the set of things that
+/// determine "is this schema trusted" is stated in one place.
+struct AnalysisContext {
+    hmac_key: Vec<u8>,
+    mode: ShieldMode,
+    first_contact: FirstContact,
+    boundary: Option<Arc<crate::secret_boundary::ShieldSecretBoundary>>,
+}
+
 /// Spawn the real MCP server and run both forwarding directions until the
 /// agent closes stdin (or the server exits).
 pub async fn run(server_cmd: Vec<String>, config: ShieldConfig) -> Result<()> {
@@ -161,6 +178,7 @@ pub async fn run(server_cmd: Vec<String>, config: ShieldConfig) -> Result<()> {
         .stdout(Stdio::piped())
         // The server's own stderr passes straight through for debuggability.
         .stderr(Stdio::inherit())
+        .kill_on_drop(true)
         .spawn()
         .with_context(|| format!("failed to spawn MCP server: {server_cmd:?}"))?;
 
@@ -177,11 +195,16 @@ pub async fn run(server_cmd: Vec<String>, config: ShieldConfig) -> Result<()> {
     let pending_tools_list: Arc<Mutex<VecDeque<String>>> = Arc::default();
     let pending_inspections: Arc<Mutex<VecDeque<PendingInspection>>> = Arc::default();
 
+    // stdout is written by both directions, so it is shared behind one
+    // mutex. The Secret Boundary writes its intercepted responses to it
+    // directly, from the agent-to-server task, so without the shared lock a
+    // boundary response and a server response could interleave mid-line and
+    // corrupt the protocol stream.
     let stdout = Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
 
     // agent -> server runs as a background task so the main task can keep
     // draining server output even while stdin is idle.
-    let agent_task = tokio::spawn(forward_agent_to_server(
+    let mut agent_task = tokio::spawn(forward_agent_to_server(
         child_stdin,
         Arc::clone(&pending_tools_list),
         Arc::clone(&pending_inspections),
@@ -189,29 +212,59 @@ pub async fn run(server_cmd: Vec<String>, config: ShieldConfig) -> Result<()> {
         Arc::clone(&stdout),
     ));
 
-    // server -> agent runs in the foreground and owns the baseline store.
-    let analysis = AnalysisContext {
-        hmac_key: config.hmac_key,
-        mode: config.mode,
-        first_contact: config.first_contact,
-        boundary: config.boundary,
+    // Observe either direction failing. Agent EOF permits a bounded final drain;
+    // server EOF cannot leave an idle agent task or a hung child behind.
+    let server_result = {
+        let analysis = AnalysisContext {
+            hmac_key: config.hmac_key,
+            mode: config.mode,
+            first_contact: config.first_contact,
+            boundary: config.boundary,
+        };
+        let server = forward_server_to_agent(
+            child_stdout,
+            pending_tools_list,
+            pending_inspections,
+            store,
+            analysis,
+            stdout,
+        );
+        tokio::pin!(server);
+        tokio::select! {
+            result = &mut server => result,
+            result = &mut agent_task => {
+                match result {
+                    Ok(Ok(())) => timeout(Duration::from_secs(5), &mut server)
+                        .await.context("server did not drain within 5 seconds after agent EOF")
+                        .and_then(|result| result),
+                    Ok(Err(error)) => Err(error),
+                    Err(error) => Err(error.into()),
+                }
+            }
+        }
     };
-    let server_result = forward_server_to_agent(
-        child_stdout,
-        pending_tools_list,
-        pending_inspections,
-        store,
-        analysis,
-        stdout,
-    )
-    .await;
-
-    // Server stdout closed: the child is done (or dying). Reap it, then stop
-    // the stdin reader if it is still blocked waiting on the agent.
-    let status = child.wait().await.context("waiting for MCP server exit")?;
-    tracing::info!(exit_status = %status, "MCP server process exited");
     agent_task.abort();
-    let _ = agent_task.await;
+    // A completed JoinHandle must not be polled again.
+    if server_result.is_err() {
+        let _ = child.start_kill();
+    }
+    match timeout(Duration::from_secs(5), child.wait()).await {
+        Ok(status) => {
+            let status = status.context("waiting for MCP server exit")?;
+            if !status.success() && server_result.is_ok() {
+                anyhow::bail!("MCP server exited unsuccessfully: {status}");
+            }
+        }
+        Err(_) => {
+            child
+                .start_kill()
+                .context("terminating stalled MCP server")?;
+            timeout(Duration::from_secs(5), child.wait())
+                .await
+                .context("MCP server did not terminate")??;
+            anyhow::bail!("MCP server failed to exit within 5 seconds");
+        }
+    }
 
     server_result
 }
@@ -225,9 +278,8 @@ async fn forward_agent_to_server(
     boundary: Option<Arc<crate::secret_boundary::ShieldSecretBoundary>>,
     stdout: Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
 ) -> Result<()> {
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    while let Some(line) = lines
-        .next_line()
+    let mut lines = BufReader::new(tokio::io::stdin());
+    while let Some(line) = read_bounded_line(&mut lines)
         .await
         .context("reading from agent stdin")?
     {
@@ -347,15 +399,7 @@ async fn forward_agent_to_server(
                     }
                 }
             }
-            Err(e) => {
-                // Forward anyway: the proxy must stay transparent even for
-                // traffic it cannot parse — but say so loudly.
-                tracing::warn!(
-                    direction = "agent->server",
-                    error = %e,
-                    "unparseable line; forwarding unmodified"
-                );
-            }
+            Err(e) => return Err(e).context("invalid JSON-RPC from agent"),
         }
         child_stdin
             .write_all(line.as_bytes())
@@ -374,18 +418,6 @@ async fn forward_agent_to_server(
     Ok(())
 }
 
-/// The analysis inputs the server-to-agent forwarding loop needs.
-///
-/// Grouped into a struct so the forwarding function's signature does not
-/// grow with every new analysis input, and so the set of things that
-/// determine "is this schema trusted" is stated in one place.
-struct AnalysisContext {
-    hmac_key: Vec<u8>,
-    mode: ShieldMode,
-    first_contact: FirstContact,
-    boundary: Option<Arc<crate::secret_boundary::ShieldSecretBoundary>>,
-}
-
 /// Read lines from the server's stdout, log them, run detection on
 /// tools/list responses, and forward each line untouched to the agent.
 async fn forward_server_to_agent(
@@ -396,9 +428,8 @@ async fn forward_server_to_agent(
     analysis: AnalysisContext,
     stdout: Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
 ) -> Result<()> {
-    let mut lines = BufReader::new(child_stdout).lines();
-    while let Some(line) = lines
-        .next_line()
+    let mut lines = BufReader::new(child_stdout);
+    while let Some(line) = read_bounded_line(&mut lines)
         .await
         .context("reading from server stdout")?
     {
@@ -491,13 +522,7 @@ async fn forward_server_to_agent(
                     }
                 }
             }
-            Err(e) => {
-                tracing::warn!(
-                    direction = "server->agent",
-                    error = %e,
-                    "unparseable line; forwarding unmodified"
-                );
-            }
+            Err(e) => return Err(e).context("invalid JSON-RPC from server"),
         }
         let outgoing = rewritten_line.as_deref().unwrap_or(&line);
         {
@@ -777,6 +802,9 @@ fn validate_tool_entries(tools: &[Value]) -> Result<(), String> {
 /// the description sanitizer, then persist any newly registered baselines.
 /// In enforce mode, mismatched tools are swapped back to their trusted
 /// baseline schema in the returned rewritten response line.
+///
+/// This is the no-boundary entry point, kept for the unit tests. The
+/// production path is [`analyze_tools_list_with_boundary`].
 #[cfg(test)]
 fn analyze_tools_list(
     msg: &JsonRpcMessage,
@@ -862,6 +890,7 @@ pub(crate) fn analyze_tools_list_with_boundary(
                 continue;
             }
         }
+
         let description = tool
             .get("description")
             .and_then(Value::as_str)

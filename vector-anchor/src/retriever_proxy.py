@@ -14,12 +14,13 @@ import threading
 from typing import Any
 
 from .config import Config
+from .content_guard import inspect_document
 from .detector_state import DetectorStateStore
 from .events import EventContext, now_ms
 from .frequency_tracker import FrequencyTracker
 from .quarantine import Quarantine, QuarantinedDoc
 
-POLICY_VERSION = "vector-anchor/1"
+POLICY_VERSION = "vector-anchor/2"
 
 
 def _content_fingerprint(value: str) -> str:
@@ -66,18 +67,21 @@ class RetrieverProxy:
         # Using query_texts here would make Chroma invoke the embedding
         # function a second time and could even give the two decisions
         # different vectors for a non-deterministic remote embedder.
-        query_embedding = self.embed_fn([query])[0]
+        # Semantic embedding providers return NumPy arrays; normalize the public
+        # boundary for the tracker and Chroma alike.
+        query_embedding = [float(value) for value in self.embed_fn([query])[0]]
 
-        res = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=n,
-            include=["documents", "distances", "metadatas"],
-        )
-        ids = res["ids"][0]
-        docs = res["documents"][0]
-        dists = res["distances"][0]
-
+        # Query and scoring share the same lock as corpus mutations.
         with self._state_lock:
+            res = self.collection.query(
+                query_embeddings=[query_embedding],
+                n_results=n,
+                include=["documents", "distances", "metadatas"],
+            )
+            ids = res["ids"][0]
+            docs = res["documents"][0]
+            dists = res["distances"][0]
+
             # Record the top-ranked documents for this query so cross-query
             # frequency can be judged. Only the genuinely top-ranked results
             # are recorded (a doc buried at rank 8 is not "ranking highly").
@@ -90,6 +94,25 @@ class RetrieverProxy:
             for doc_id, document, distance in zip(ids, docs, dists, strict=True):
                 if self.quarantine.is_quarantined(doc_id):
                     withheld.append({"id": doc_id, "reason": "already_quarantined"})
+                    continue
+
+                indicators = inspect_document(document or "")
+                if indicators:
+                    self.quarantine.add(QuarantinedDoc(
+                        doc_id=doc_id, reason="retrieved_instruction_indicators",
+                        score=len(indicators), preview=(document or "")[:160],
+                        quarantined_at_ms=now_ms(),
+                    ))
+                    self.emit(
+                        "corpus_poison_quarantine", "critical",
+                        {"doc_id": doc_id, "indicators": indicators,
+                         "document_sha256": _content_fingerprint(document or ""),
+                         "document_chars": len(document or ""),
+                         "detection_latency_ms": now_ms() - start},
+                        ctx, resource_type="document", resource_id=doc_id,
+                        outcome="quarantined", policy_version=POLICY_VERSION,
+                    )
+                    withheld.append({"id": doc_id, "reason": "retrieved_instruction_indicators"})
                     continue
 
                 # Has this document now crossed the universal-bait threshold?
@@ -131,9 +154,7 @@ class RetrieverProxy:
                     withheld.append({"id": doc_id, "reason": "quarantined_now"})
                     continue
 
-                clean.append(
-                    {"id": doc_id, "document": document, "distance": distance}
-                )
+                clean.append({"id": doc_id, "document": document, "distance": distance})
 
             served = clean[:k]
             quarantine_size = len(self.quarantine)

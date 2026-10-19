@@ -7,19 +7,22 @@ import { IconUser } from "./Icons";
 type Identity = { actor: string; role: string; tenant_id: string };
 
 export default function OperatorBadge() {
-  const [identity, setIdentity] = useState<Identity | null>(null);
   const router = useRouter();
+  const [identity, setIdentity] = useState<Identity | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     fetch("/api/auth/session")
       .then(async (response) => {
         if (response.status === 401) {
-          // A client-side navigation, not a full page load: the live feed
-          // behind this badge holds an open event stream, and reloading the
-          // whole document would tear it down and re-run the initial fetch
-          // for data the operator is about to be redirected away from.
-          if (!cancelled) router.push("/login");
+          // `replace`, not `push`: the login page should not become a
+          // history entry the operator can navigate back to. The `cancelled`
+          // guard stops a redirect from firing after the component has
+          // already unmounted.
+          if (!cancelled) {
+            router.replace("/login");
+            router.refresh();
+          }
           return null;
         }
         return response.ok ? response.json() : null;
@@ -35,7 +38,11 @@ export default function OperatorBadge() {
 
   async function logout() {
     const response = await fetch("/api/auth/session", { method: "DELETE" });
-    if (response.ok) router.push("/login");
+    if (response.ok) {
+      setIdentity(null);
+      router.replace("/login");
+      router.refresh();
+    }
   }
 
   return (
