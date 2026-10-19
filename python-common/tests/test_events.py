@@ -9,6 +9,7 @@ from monolith_events.events import (
     EventOutbox,
     context_from_headers,
     make_emitter,
+    _NoRedirect,
 )
 
 
@@ -65,6 +66,10 @@ def test_plaintext_service_delivery_requires_explicit_opt_in(tmp_path):
         allow_insecure_http=True,
     )
     delivery.close()
+
+
+def test_delivery_never_forwards_bearer_credentials_across_redirects():
+    assert _NoRedirect().redirect_request(None, None, 307, "redirect", {}, "https://other.invalid") is None
 
 
 @pytest.mark.parametrize(
