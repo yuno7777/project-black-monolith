@@ -16,7 +16,7 @@ from typing import Any
 from .config import Config
 from .content_guard import inspect_document
 from .detector_state import DetectorStateStore
-from .events import EventContext, now_ms
+from .events import EventContext, is_session_revoked, now_ms
 from .frequency_tracker import FrequencyTracker
 from .quarantine import Quarantine, QuarantinedDoc
 
@@ -52,6 +52,9 @@ class RetrieverProxy:
         self._state_lock = threading.RLock()
         self._state_dirty = False
         self._last_state_flush_ms = 0
+        # Sessions already refused once, so the refusal event is emitted once
+        # per session instead of on every retrieval the agent retries.
+        self._refused_sessions: set[str] = set()
 
     def retrieve(
         self,
@@ -62,6 +65,13 @@ class RetrieverProxy:
         """`ctx` carries the caller's correlation identity for this one
         retrieval, so a quarantine here can be tied to detections the other
         layers made in the same agent session."""
+        # The cross-layer circuit breaker revoked this session: the agent's
+        # context is not trustworthy, so nothing from the corpus may be served
+        # into it. Refuse before embedding or touching detector state.
+        session_id = ctx.session_id if ctx else None
+        if session_id and is_session_revoked(session_id):
+            return self._refuse_revoked_session(query, session_id, ctx)
+
         start = now_ms()
         k = k or self.cfg.top_k
         # Embed once and pass the exact same vector to Chroma and the detector.
@@ -201,6 +211,42 @@ class RetrieverProxy:
             "results": served,
             "withheld": withheld,
             "quarantine_size": quarantine_size,
+        }
+
+    def _refuse_revoked_session(
+        self, query: str, session_id: str, ctx: EventContext | None
+    ) -> dict[str, Any]:
+        """Serve nothing to a session the circuit breaker revoked.
+
+        The caller still gets a well-formed response so an agent framework can
+        distinguish "revoked" from "no matches"; it just never gets corpus
+        text.
+        """
+        with self._state_lock:
+            already_reported = session_id in self._refused_sessions
+            self._refused_sessions.add(session_id)
+            quarantine_size = len(self.quarantine)
+        if not already_reported:
+            query_sha256 = _content_fingerprint(query)
+            self.emit(
+                "session_quarantined",
+                "critical",
+                {
+                    "session_id": session_id,
+                    "refusal": "retrieval",
+                },
+                ctx,
+                resource_type="retrieval_query",
+                resource_id=query_sha256,
+                outcome="refused",
+                policy_version=POLICY_VERSION,
+            )
+        return {
+            "query": query,
+            "results": [],
+            "withheld": [],
+            "quarantine_size": quarantine_size,
+            "session_quarantined": True,
         }
 
     def quarantine_snapshot(self) -> list[QuarantinedDoc]:

@@ -482,6 +482,8 @@ async def _openai_stream(
     base_url = getattr(cfg, "openai_base_url", None) or getattr(
         cfg, "ollama_base_url", "http://localhost:8000"
     )
+    if not isinstance(base_url, str) or not base_url:
+        base_url = "http://localhost:8000"
     url = _resolve_openai_url(base_url)
     resolved_model = (
         model

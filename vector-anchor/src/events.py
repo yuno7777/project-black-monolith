@@ -19,9 +19,11 @@ try:
         Severity,
         _clean_id,
         context_from_headers,
+        is_session_revoked,
         make_emitter,
         now_ms,
         replay_dead_letters,
+        revoked_session_registry,
     )
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python-common"))
@@ -38,9 +40,11 @@ except ModuleNotFoundError:
         Severity,
         _clean_id,
         context_from_headers,
+        is_session_revoked,
         make_emitter,
         now_ms,
         replay_dead_letters,
+        revoked_session_registry,
     )
 
 __all__ = [
@@ -56,7 +60,9 @@ __all__ = [
     "Severity",
     "_clean_id",
     "context_from_headers",
+    "is_session_revoked",
     "make_emitter",
     "now_ms",
     "replay_dead_letters",
+    "revoked_session_registry",
 ]

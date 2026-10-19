@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -23,8 +24,97 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .config import MODULE_NAME, load_config
-from .events import context_from_headers, make_emitter, now_ms
-from .stream_proxy import SAFE_REFUSAL, StreamAuditor
+from .events import EventContext, context_from_headers, is_session_revoked, make_emitter, now_ms
+from .stream_proxy import POLICY_VERSION, SAFE_REFUSAL, StreamAuditor
+
+# Sessions this process already refused, so the refusal event fires once per
+# session instead of once per request from a retrying agent.
+_REFUSED_SESSIONS: set[str] = set()
+_REFUSED_LOCK = threading.Lock()
+
+
+def _session_is_revoked(ctx: EventContext | None) -> bool:
+    """Whether the cross-layer circuit breaker revoked this session.
+
+    The registry is fed by the outbox's ingest responses and by the periodic
+    revocation poll, so the refusal survives even when this module has emitted
+    nothing recently.
+    """
+    return bool(ctx and ctx.session_id and is_session_revoked(ctx.session_id))
+
+
+def _report_revoked_session(ctx: EventContext | None) -> None:
+    session_id = ctx.session_id if ctx else None
+    if not session_id:
+        return
+    with _REFUSED_LOCK:
+        first = session_id not in _REFUSED_SESSIONS
+        _REFUSED_SESSIONS.add(session_id)
+    if not first:
+        return
+    emit = getattr(app.state, "emit", None)
+    if emit is None:
+        return
+    emit(
+        "session_quarantined",
+        "critical",
+        {"session_id": session_id, "refusal": "generation"},
+        ctx,
+        resource_type="reasoning_trace",
+        resource_id=ctx.trace_id if ctx else None,
+        outcome="refused",
+        policy_version=POLICY_VERSION,
+    )
+
+
+def _revoked_chat_completion(
+    completion_id: str, created_ts: int, model: str
+) -> dict[str, Any]:
+    return {
+        "id": completion_id,
+        "object": "chat.completion",
+        "created": created_ts,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": SAFE_REFUSAL},
+                "finish_reason": "content_filter",
+            }
+        ],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "monolith_audit": {
+            "terminated": True,
+            "redactions": [],
+            "redaction_count": 0,
+            "peak_kl": 0.0,
+            "session_revoked": True,
+        },
+    }
+
+
+def _revoked_completion_chunk(
+    completion_id: str, created_ts: int, model: str
+) -> dict[str, Any]:
+    return {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created_ts,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "delta": {"content": SAFE_REFUSAL},
+                "finish_reason": "content_filter",
+            }
+        ],
+        "monolith_audit": {
+            "terminated": True,
+            "redactions": [],
+            "peak_kl": 0.0,
+            "session_revoked": True,
+        },
+    }
 
 MAX_PROMPT_BYTES = 64 * 1024
 MAX_BASELINE_TOKEN_BYTES = 512
@@ -59,9 +149,12 @@ def _messages_to_prompt(messages: list[dict[str, Any]]) -> str:
                 parts.append(content)
         elif isinstance(content, list):
             for item in content:
-                if isinstance(item, dict) and isinstance(item.get("text"), str):
-                    if item["text"].strip():
-                        parts.append(item["text"])
+                if (
+                    isinstance(item, dict)
+                    and isinstance(item.get("text"), str)
+                    and item["text"].strip()
+                ):
+                    parts.append(item["text"])
     prompt = "\n".join(parts)
     if not prompt.strip():
         raise ValueError("messages must contain non-blank content")
@@ -367,6 +460,21 @@ async def generate(req: GenerateRequest, request: Request) -> StreamingResponse:
     # it would be reading state that is no longer guaranteed to be there.
     ctx = context_from_headers(request.headers)
 
+    if _session_is_revoked(ctx):
+        _report_revoked_session(ctx)
+        refusal = {
+            "type": "terminated",
+            "reason": "session_revoked",
+            "kl": 0.0,
+            "threshold": auditor.cfg.kl_threshold,
+            "safe_refusal": SAFE_REFUSAL,
+        }
+
+        async def revoked_stream():
+            yield f"data: {json.dumps(refusal)}\n\n"
+
+        return StreamingResponse(revoked_stream(), media_type="text/event-stream")
+
     async def event_stream():
         async for evt in auditor.audit(req.prompt, req.max_tokens, ctx):
             yield f"data: {json.dumps(evt)}\n\n"
@@ -382,6 +490,18 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created_ts = int(time.time())
     max_tokens = req.max_tokens if req.max_tokens is not None else 120
+
+    if _session_is_revoked(ctx):
+        _report_revoked_session(ctx)
+        if req.stream:
+            chunk = _revoked_completion_chunk(completion_id, created_ts, req.model)
+
+            async def revoked_sse():
+                yield f"data: {json.dumps(chunk)}\n\n"
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(revoked_sse(), media_type="text/event-stream")
+        return _revoked_chat_completion(completion_id, created_ts, req.model)
 
     if req.stream:
         async def sse_stream():

@@ -19,10 +19,31 @@ import { INCIDENT_STATUSES, RESOLUTIONS } from "@/lib/types";
 
 const KNOWN_MODULES = new Set(["mcp-shield", "vector-anchor", "trace-audit"]);
 const SEVERITIES = new Set<Severity>(["info", "warning", "critical"]);
-const CIRCUIT_BREAKER_SEVERITIES = new Set(["warning", "high", "critical"]);
 const MAX_ASSIGNEE = 128;
 const MAX_NOTE = 2000;
 const MAX_ACTOR = 128;
+
+/**
+ * The circuit breaker trips on the top severity levels only.
+ *
+ * The original spec asked for high/critical; this ledger's levels are
+ * info/warning/critical, so `critical` is the conservative default and
+ * `warning` is an explicit opt-in for operators who accept that routine
+ * detections (a single redacted secret, a logged-only DLP hit) count toward
+ * revoking a session. `MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS` sets how many
+ * distinct modules must agree; it is clamped to the three known layers.
+ */
+export function circuitBreakerSeverities(): Set<Severity> {
+  const raw = process.env.MONOLITH_CIRCUIT_BREAKER_MIN_SEVERITY?.trim().toLowerCase();
+  if (raw === "info") return new Set<Severity>(["info", "warning", "critical"]);
+  if (raw === "warning") return new Set<Severity>(["warning", "critical"]);
+  return new Set<Severity>(["critical"]);
+}
+
+export function circuitBreakerMinLayers(): number {
+  const raw = Number(process.env.MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS ?? "2");
+  return Number.isInteger(raw) && raw >= 1 && raw <= KNOWN_MODULES.size ? raw : 2;
+}
 
 export class IncidentInputError extends Error {}
 
@@ -507,6 +528,8 @@ export async function evaluateSessionCircuitBreaker(
 ): Promise<string[]> {
   if (!events.length) return [];
   const tenantId = events[0].tenant_id;
+  const severities = circuitBreakerSeverities();
+  const minLayers = circuitBreakerMinLayers();
 
   // Track candidate (agent_id, session_id) pairs in this ingest batch.
   const candidates = new Map<string, { agentId: string; sessionId: string }>();
@@ -514,7 +537,7 @@ export async function evaluateSessionCircuitBreaker(
     if (!event.agent_id || !event.session_id) continue;
     const key = sessionKey(tenantId, event.agent_id, event.session_id);
     candidates.set(key, { agentId: event.agent_id, sessionId: event.session_id });
-    if (CIRCUIT_BREAKER_SEVERITIES.has(String(event.severity)) && KNOWN_MODULES.has(event.module)) {
+    if (severities.has(String(event.severity) as Severity) && KNOWN_MODULES.has(event.module)) {
       const set = sessionModulesMap().get(key) ?? new Set<string>();
       set.add(event.module);
       sessionModulesMap().set(key, set);
@@ -528,13 +551,13 @@ export async function evaluateSessionCircuitBreaker(
         if (
           e.agent_id === agentId
           && e.session_id === sessionId
-          && CIRCUIT_BREAKER_SEVERITIES.has(String(e.severity))
+          && severities.has(String(e.severity) as Severity)
           && KNOWN_MODULES.has(e.module)
         ) {
           modules.add(e.module);
         }
       }
-      if (modules.size >= 2 && !revokedSessionMap().has(key)) {
+      if (modules.size >= minLayers && !revokedSessionMap().has(key)) {
         const layers = Array.from(modules).sort();
         await revokeSession(
           tenantId,
@@ -550,6 +573,7 @@ export async function evaluateSessionCircuitBreaker(
     return Array.from(new Set(revoked.map((r) => r.session_id)));
   }
 
+  const severityList = Array.from(severities);
   for (const { agentId, sessionId } of candidates.values()) {
     const layers = await withTenantDb(tenantId, async (db) => {
       const res = await db.query<{ module: string }>(
@@ -558,12 +582,12 @@ export async function evaluateSessionCircuitBreaker(
           where tenant_id = $1
             and agent_id = $2
             and session_id = $3
-            and severity in ('warning', 'critical')`,
-        [tenantId, agentId, sessionId],
+            and severity = any($4::text[])`,
+        [tenantId, agentId, sessionId, severityList],
       );
       return res.rows.map((r) => r.module).sort();
     });
-    if (layers.length >= 2) {
+    if (layers.length >= minLayers) {
       await revokeSession(
         tenantId,
         agentId,

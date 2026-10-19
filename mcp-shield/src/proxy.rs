@@ -261,6 +261,92 @@ pub(crate) fn inspect_outbound_tool_call(msg: &JsonRpcMessage, mode: ShieldMode)
     }
 }
 
+/// The agent session this proxy instance serves, if configured.
+fn configured_session_id() -> Option<String> {
+    std::env::var("MONOLITH_SESSION_ID")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty() && value.len() <= 128)
+}
+
+/// Refuse `tools/call` when the dashboard's cross-layer circuit breaker has
+/// revoked this proxy's agent session.
+///
+/// The revocation set is fed by ingest responses (`outbox::post`); a session
+/// is revoked because the tool, memory, and reasoning layers agree the agent
+/// is compromised, so continuing to execute tool calls from it is exactly the
+/// behaviour the breaker exists to stop. In monitor mode the refusal is
+/// logged and emitted, but the call is forwarded.
+pub(crate) fn inspect_revoked_session_tool_call(
+    msg: &JsonRpcMessage,
+    mode: ShieldMode,
+) -> Option<String> {
+    if !msg.is_jsonrpc_2() || msg.method.as_deref() != Some("tools/call") {
+        return None;
+    }
+    let session_id = configured_session_id()?;
+    if !crate::outbox::is_session_revoked(&session_id) {
+        return None;
+    }
+    // Report the refusal once per session instead of on every retried call.
+    static REPORTED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+    let first_report = {
+        let mut guard = REPORTED.lock().unwrap_or_else(|e| e.into_inner());
+        let reported = guard.get_or_insert_with(HashSet::new);
+        reported.insert(session_id.clone())
+    };
+    let tool_name = msg
+        .params
+        .as_ref()
+        .and_then(Value::as_object)
+        .and_then(|params| params.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or("<unnamed>")
+        .to_string();
+    let action_taken = if mode == ShieldMode::Enforce {
+        "blocked"
+    } else {
+        "logged"
+    };
+    if first_report {
+        tracing::warn!(
+            session_id = %session_id,
+            tool = %tool_name,
+            mode = ?mode,
+            action_taken,
+            "agent session revoked by the cross-layer circuit breaker"
+        );
+        events::emit(
+            "session_quarantined",
+            Severity::Critical,
+            json!({
+                "session_id": session_id,
+                "tool": tool_name,
+                "refusal": "tool_call",
+                "action_taken": action_taken,
+            }),
+        );
+    }
+    if mode == ShieldMode::Monitor {
+        return None;
+    }
+    let req_id = msg.id.clone().unwrap_or(Value::Null);
+    let blocked_resp = json!({
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": {
+            "content": [
+                {
+                    "type": "text",
+                    "text": "[MCP-Shield] Agent session revoked by the cross-layer circuit breaker"
+                }
+            ],
+            "isError": true
+        }
+    });
+    serde_json::to_string(&blocked_resp).ok()
+}
+
 /// Spawn the real MCP server and run both forwarding directions until the
 /// agent closes stdin (or the server exits).
 pub async fn run(server_cmd: Vec<String>, config: ShieldConfig) -> Result<()> {
@@ -431,6 +517,20 @@ async fn forward_agent_to_server(
                             }
                         }
                     }
+                }
+
+                // A revoked session may not execute tools at all, so this
+                // check runs before the argument DLP scan.
+                if let Some(blocked_resp_line) = inspect_revoked_session_tool_call(&msg, mode) {
+                    let mut out = stdout.lock().await;
+                    out.write_all(blocked_resp_line.as_bytes())
+                        .await
+                        .context("writing revoked-session response to stdout")?;
+                    out.write_all(b"\n")
+                        .await
+                        .context("writing newline to stdout")?;
+                    out.flush().await.context("flushing stdout")?;
+                    continue;
                 }
 
                 // Outbound `tools/call` argument DLP & exfiltration scan.
@@ -1948,6 +2048,61 @@ mod tests {
             matches!(outcome, AnalysisOutcome::Analyzed { rewritten: None }),
             "monitor mode must forward the response unmodified"
         );
+    }
+
+    #[test]
+    fn revoked_session_blocks_tool_calls_in_enforce_mode_and_forwards_in_monitor_mode() {
+        let session_id = "feedface-0000-4000-8000-000000000001";
+        std::env::set_var("MONOLITH_SESSION_ID", session_id);
+        let snapshot = json!({ "revoked_sessions": [session_id] }).to_string();
+        assert_eq!(
+            crate::outbox::observe_revoked_sessions(&snapshot),
+            Some(1),
+            "the ingest snapshot must be adopted"
+        );
+
+        let call = JsonRpcMessage::parse(
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 91,
+                "method": "tools/call",
+                "params": {
+                    "name": "read_file",
+                    "arguments": { "path": "notes.txt" }
+                }
+            })
+            .to_string(),
+        )
+        .expect("valid tools/call message");
+
+        let blocked_line = inspect_revoked_session_tool_call(&call, ShieldMode::Enforce)
+            .expect("enforce mode must block tools/call from a revoked session");
+        let parsed: Value = serde_json::from_str(&blocked_line).unwrap();
+        assert_eq!(parsed["id"], 91);
+        assert_eq!(parsed["result"]["isError"], true);
+        assert!(parsed["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("circuit breaker"));
+
+        assert!(
+            inspect_revoked_session_tool_call(&call, ShieldMode::Monitor).is_none(),
+            "monitor mode must log but forward"
+        );
+
+        let other = JsonRpcMessage::parse(
+            &json!({ "jsonrpc": "2.0", "id": 92, "method": "tools/list" }).to_string(),
+        )
+        .unwrap();
+        assert!(inspect_revoked_session_tool_call(&other, ShieldMode::Enforce).is_none());
+
+        // An empty snapshot lifts the revocation again.
+        assert_eq!(
+            crate::outbox::observe_revoked_sessions(r#"{"revoked_sessions":[]}"#),
+            Some(0)
+        );
+        assert!(!crate::outbox::is_session_revoked(session_id));
+        std::env::remove_var("MONOLITH_SESSION_ID");
     }
 
     #[test]
