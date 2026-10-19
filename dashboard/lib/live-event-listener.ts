@@ -1,7 +1,7 @@
 import type { PoolClient } from "pg";
 import { getDb } from "@/lib/db";
 import { getBroker } from "@/lib/event-ingest";
-import { findEventById } from "@/lib/event-store";
+import { findEventsByIds } from "@/lib/event-store";
 
 const CHANNEL = "monolith_security_events";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -30,7 +30,7 @@ export function parseEventNotification(payload: string | undefined): EventNotifi
   }
 }
 
-class LiveEventListener {
+export class LiveEventListener {
   private client?: PoolClient;
   private starting?: Promise<void>;
   private retry?: ReturnType<typeof setTimeout>;
@@ -94,23 +94,36 @@ class LiveEventListener {
     this.retry.unref?.();
   }
 
-  private enqueue(notification: EventNotification) {
+  enqueue(notification: EventNotification) {
+    if (getBroker().hasSeen(notification.event_id)) return;
     this.pending.set(`${notification.tenant_id}/${notification.event_id}`, notification);
     void this.drain();
   }
 
-  private async drain() {
+  async drain() {
     if (this.draining) return;
     this.draining = true;
     try {
       while (this.pending.size) {
-        const [key, notification] = this.pending.entries().next().value!;
-        this.pending.delete(key);
-        try {
-          const event = await findEventById(notification.tenant_id, notification.event_id);
-          if (event) getBroker().ingest(event);
-        } catch (error) {
-          console.error("failed to load a notified security event", error);
+        // Coalesce all currently queued notifications per tenant into a single
+        // batched lookup so bursty ingest does not fan out N round-trips.
+        const batchByTenant = new Map<string, string[]>();
+        for (const [key, notification] of Array.from(this.pending.entries())) {
+          this.pending.delete(key);
+          if (getBroker().hasSeen(notification.event_id)) continue;
+          const list = batchByTenant.get(notification.tenant_id) ?? [];
+          list.push(notification.event_id);
+          batchByTenant.set(notification.tenant_id, list);
+        }
+        for (const [tenantId, eventIds] of batchByTenant) {
+          try {
+            const events = await findEventsByIds(tenantId, eventIds);
+            for (const event of events) {
+              getBroker().ingest(event);
+            }
+          } catch (error) {
+            console.error("failed to load notified security events", error);
+          }
         }
       }
     } finally {

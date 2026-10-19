@@ -1,17 +1,17 @@
-# ── Secrets / environment ────────────────────────────────────────────
+# â”€â”€ Secrets / environment â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 .env
 .env.*
 !.env.example
 *.pem
 *.key
 
-# ── Rust (mcp-shield) ────────────────────────────────────────────────
+# â”€â”€ Rust (mcp-shield) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 target/
 **/target/
 # Runtime-generated trusted-schema store
 baseline_hashes.json
 
-# ── Python (vector-anchor, trace-audit) ──────────────────────────────
+# â”€â”€ Python (vector-anchor, trace-audit) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -27,30 +27,39 @@ detector_state.json
 **/detector_state.json
 .ollama/
 
-# ── Node / Next.js (dashboard) ───────────────────────────────────────
+# â”€â”€ Node / Next.js (dashboard) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 node_modules/
 .next/
 next-env.d.ts
 tsconfig.tsbuildinfo
 npm-debug.log*
 
-# ── Local-only agent guidance ────────────────────────────────────────
+# â”€â”€ Local-only agent guidance â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 CLAUDE.md
 
-# ── Editor / OS ──────────────────────────────────────────────────────
+# â”€â”€ Editor / OS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 .DS_Store
+desktop.ini
+Thumbs.db
 .idea/
 .vscode/
 *.swp
 
-# ── Local presentation material (not part of the codebase) ───────────
+# â”€â”€ Local presentation material (not part of the codebase) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 AEOS_Guard_*.pdf
 build_aeos_*.py
 _aeos_p*.png
+build_five_project_explanations.py
+output/
 
-# ── Generated benchmark reports (per-run artifacts, uploaded not stored) ──
+# â”€â”€ Generated benchmark reports (per-run artifacts, uploaded not stored) â”€â”€
 **/fixtures/benchmark_results.json
 evaluation/results/
 
-# ── Local Compose overrides (e.g. an alternate host port) ────────────
+# â”€â”€ Local Compose overrides (e.g. an alternate host port) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 docker-compose.override.yml
+
+# Local protected-agent state and logs
+.agent-state/
+.venv-next/
+/dist/

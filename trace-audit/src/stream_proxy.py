@@ -28,18 +28,97 @@ import random
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
+import httpx
+
 from .config import Config
 from .divergence_monitor import DivergenceMonitor
 from .events import EventContext, now_ms
 from .pii_scanner import PiiMatch, scan
 
 # Ordinary, on-distribution reasoning vocabulary.
-NORMAL_TOKENS = ["let", "us", "think", "about", "this", "the", "user", "wants", "a", "clear", "answer", "first", "we", "consider", "the", "context", "then", "we", "provide", "a", "helpful", "response", "step", "by", "step", "because", "it", "is", "correct", "and", "safe", "so", "the", "answer", "follows", "from", "the", "facts", "we", "explain", "plainly", "and", "stay", "on", "topic"]
+NORMAL_TOKENS = [
+    "let",
+    "us",
+    "think",
+    "about",
+    "this",
+    "the",
+    "user",
+    "wants",
+    "a",
+    "clear",
+    "answer",
+    "first",
+    "we",
+    "consider",
+    "the",
+    "context",
+    "then",
+    "we",
+    "provide",
+    "a",
+    "helpful",
+    "response",
+    "step",
+    "by",
+    "step",
+    "because",
+    "it",
+    "is",
+    "correct",
+    "and",
+    "safe",
+    "so",
+    "the",
+    "answer",
+    "follows",
+    "from",
+    "the",
+    "facts",
+    "we",
+    "explain",
+    "plainly",
+    "and",
+    "stay",
+    "on",
+    "topic",
+]
 
 # Off-distribution "roundabout / evasive" reasoning: familiar connective words
 # mixed with unfamiliar nonsense tokens that never appear in the baseline, so
 # the live distribution shifts hard away from it.
-DIVERGENT_TOKENS = ["however", "conversely", "hypothetically", "circumvent", "pretend", "secretly", "bypass", "ignore", "the", "guardrails", "obfuscate", "reroute", "exfiltrate", "quietly", "without", "telling", "anyone", "fabricate", "a", "pretext", "misdirect", "the", "auditor", "zzxq", "qwploo", "vbnmk", "glorptastic", "wibblewobble", "frobnicate", "quuxly"]
+DIVERGENT_TOKENS = [
+    "however",
+    "conversely",
+    "hypothetically",
+    "circumvent",
+    "pretend",
+    "secretly",
+    "bypass",
+    "ignore",
+    "the",
+    "guardrails",
+    "obfuscate",
+    "reroute",
+    "exfiltrate",
+    "quietly",
+    "without",
+    "telling",
+    "anyone",
+    "fabricate",
+    "a",
+    "pretext",
+    "misdirect",
+    "the",
+    "auditor",
+    "zzxq",
+    "qwploo",
+    "vbnmk",
+    "glorptastic",
+    "wibblewobble",
+    "frobnicate",
+    "quuxly",
+]
 
 _DIVERGENCE_MARKERS = ("roundabout", "unusual", "evasive", "obfuscat", "circumvent")
 
@@ -52,14 +131,15 @@ SAFE_REFUSAL = (
 # Delay a small number of output fragments so a credential split by a
 # tokenizer can be recognized and redacted before any fragment is released.
 # The bound keeps streaming latency and memory finite.
-PII_TOKEN_WINDOW = 16
+PII_TOKEN_WINDOW = 16  # Compatibility only; buffering is character-bounded.
+PII_CHAR_WINDOW = 256
 OLLAMA_CONNECT_TIMEOUT_SECONDS = 5.0
 OLLAMA_READ_TIMEOUT_SECONDS = 30.0
 OLLAMA_WRITE_TIMEOUT_SECONDS = 10.0
 OLLAMA_POOL_TIMEOUT_SECONDS = 5.0
 MAX_OLLAMA_LINE_BYTES = 256 * 1024
 MAX_BACKEND_TOKEN_CHARS = 8 * 1024
-POLICY_VERSION = "trace-audit/1"
+POLICY_VERSION = "trace-audit/3"
 
 
 @dataclass
@@ -77,70 +157,120 @@ class _BufferDrain:
 class PiiStreamBuffer:
     """Bounded look-behind that redacts matches spanning token boundaries."""
 
-    def __init__(self, window_tokens: int = PII_TOKEN_WINDOW):
+    def __init__(self, window_tokens: int = PII_TOKEN_WINDOW, max_chars: int = PII_CHAR_WINDOW):
         if window_tokens < 2:
             raise ValueError("PII token window must be at least 2")
+        if max_chars < 64:
+            raise ValueError("max_chars must be at least 64")
         self.window_tokens = window_tokens
+        self.max_chars = max_chars
+        self._suppress_run = False
         self._pending: list[_BufferedToken] = []
 
     def push(self, token: str, kl: float | None) -> _BufferDrain:
+        if self._suppress_run:
+            # Continue withholding an overlong unbroken candidate until its end.
+            boundary = next((i for i, char in enumerate(token) if char.isspace()), None)
+            if boundary is None:
+                return _BufferDrain([], [])
+            token = token[boundary:]
+            self._suppress_run = False
         self._pending.append(_BufferedToken(token, kl))
         return self._drain(force=False)
 
     def finish(self) -> _BufferDrain:
         return self._drain(force=True)
 
+    def flush(self) -> _BufferDrain:
+        return self.finish()
+
     def clear(self) -> None:
         self._pending.clear()
 
     def _drain(self, *, force: bool) -> _BufferDrain:
         matches = self._matches_ending_in_latest()
+        if not force:
+            end = sum(len(item.token) for item in self._pending)
+            # A match that ends exactly at the end of the buffer may continue in
+            # the next fragment. The continuation no longer carries the
+            # pattern's prefix, so it would not match on its own and would be
+            # released verbatim. Holding the candidate back is the only way to
+            # redact it whole, so the hold is bounded by *characters* and not by
+            # fragment count: a credential split into many fragments must not
+            # become redactable-in-part once the fragment count passes a
+            # threshold. `window_tokens` is kept for API compatibility only.
+            if any(
+                match.end == end and match.label not in {"aws_access_key_id", "us_ssn"}
+                for match in matches
+            ):
+                if end <= self.max_chars:
+                    return _BufferDrain([], [])
+                text = "".join(item.token for item in self._pending)
+                self._pending.clear()
+                self._suppress_run = True
+                match = PiiMatch("overlong_sensitive_candidate", 0, end, text)
+                return _BufferDrain(
+                    [_BufferedToken("[REDACTED:overlong_sensitive_candidate]", None)], [match]
+                )
         if matches:
+            # A complete match cannot authorize release of the suffix: that
+            # suffix may already contain the prefix of a second secret.
+            end = max(match.end for match in matches)
+            original = self._pending
+            prefix, suffix = [], []
+            position = 0
+            for item in original:
+                take = max(0, min(len(item.token), end - position))
+                if take:
+                    prefix.append(_BufferedToken(item.token[:take], item.kl))
+                if take < len(item.token):
+                    suffix.append(_BufferedToken(item.token[take:], item.kl))
+                position += len(item.token)
+            self._pending = prefix
             outputs, applied = self._redact_matches(matches)
-            self._pending.clear()
+            self._pending = suffix
+            if force:
+                outputs.extend(suffix)
+                self._pending = []
             return _BufferDrain(outputs, applied)
         if force:
             outputs, self._pending = self._pending, []
             return _BufferDrain(outputs, [])
-        if len(self._pending) > self.window_tokens:
-            return _BufferDrain([self._pending.pop(0)], [])
+        text = "".join(item.token for item in self._pending)
+        if len(text) > self.max_chars:
+            # Release only through a whitespace boundary, keeping a full
+            # character look-behind irrespective of tokenizer fragmentation.
+            cutoff = len(text) - self.max_chars
+            boundary = text.find(" ", cutoff)
+            if 0 <= boundary < len(text) - 128:
+                return _BufferDrain(self._release_prefix(boundary + 1), [])
+            # No safe boundary: a candidate may be arbitrarily long. Withhold
+            # it instead of leaking its prefix, and consume its continuation.
+            self._pending.clear()
+            self._suppress_run = True
+            match = PiiMatch("overlong_sensitive_candidate", 0, len(text), text)
+            return _BufferDrain(
+                [_BufferedToken("[REDACTED:overlong_sensitive_candidate]", None)], [match]
+            )
         return _BufferDrain([], [])
 
+    def _release_prefix(self, count: int) -> list[_BufferedToken]:
+        outputs = []
+        while count and self._pending:
+            item = self._pending[0]
+            take = min(count, len(item.token))
+            outputs.append(_BufferedToken(item.token[:take], item.kl))
+            count -= take
+            if take == len(item.token):
+                self._pending.pop(0)
+            else:
+                self._pending[0] = _BufferedToken(item.token[take:], item.kl)
+        return outputs
+
     def _matches_ending_in_latest(self) -> list[PiiMatch]:
-        """Scan every contiguous suffix so both whole and split tokens match.
-
-        Joining the entire window alone would erase real token boundaries:
-        ``normal`` followed by ``AKIA...`` would lose the word boundary before
-        the key. Suffixes include the final token by itself and every possible
-        cross-token reconstruction ending at it.
-        """
-        if not self._pending:
-            return []
-        full_starts: list[int] = []
-        cursor = 0
-        for item in self._pending:
-            full_starts.append(cursor)
-            cursor += len(item.token)
-
-        latest_length = len(self._pending[-1].token)
-        found: dict[tuple[str, int, int], PiiMatch] = {}
-        for start_index in range(len(self._pending)):
-            candidate = "".join(
-                item.token for item in self._pending[start_index:]
-            )
-            latest_start = len(candidate) - latest_length
-            for match in scan(candidate):
-                if match.end <= latest_start:
-                    continue
-                offset = full_starts[start_index]
-                adjusted = PiiMatch(
-                    label=match.label,
-                    start=match.start + offset,
-                    end=match.end + offset,
-                    value=match.value,
-                )
-                found[(adjusted.label, adjusted.start, adjusted.end)] = adjusted
-        return list(found.values())
+        # Scan once over characters, not once per tokenizer fragment. Explicit
+        # credential prefixes are recognized even adjacent to ordinary text.
+        return scan("".join(item.token for item in self._pending))
 
     def _redact_matches(
         self, matches: list[PiiMatch]
@@ -160,12 +290,8 @@ class PiiStreamBuffer:
         for match in sorted(matches, key=lambda candidate: candidate.start, reverse=True):
             if match.end > last_start:
                 continue
-            start_index = next(
-                index for index, end in enumerate(ends) if match.start < end
-            )
-            end_index = next(
-                index for index, end in enumerate(ends) if match.end <= end
-            )
+            start_index = next(index for index, end in enumerate(ends) if match.start < end)
+            end_index = next(index for index, end in enumerate(ends) if match.end <= end)
             start_offset = match.start - starts[start_index]
             end_offset = match.end - starts[end_index]
             placeholder = f"[REDACTED:{match.label}]"
@@ -175,9 +301,7 @@ class PiiStreamBuffer:
                     fragment[:start_offset] + placeholder + fragment[end_offset:]
                 )
             else:
-                fragments[start_index] = (
-                    fragments[start_index][:start_offset] + placeholder
-                )
+                fragments[start_index] = fragments[start_index][:start_offset] + placeholder
                 for index in range(start_index + 1, end_index):
                     fragments[index] = ""
                 fragments[end_index] = fragments[end_index][end_offset:]
@@ -221,12 +345,13 @@ async def _mock_stream(prompt: str, max_tokens: int) -> AsyncIterator[str]:
     rng = random.Random(_stable_seed(prompt))
     pool = DIVERGENT_TOKENS if _looks_divergent(prompt) else NORMAL_TOKENS
     secrets = _leaked_secrets(prompt)
+    leak_at = min(8, max(0, max_tokens - 1))
     for i in range(max_tokens):
-        if secrets and i == 8:
+        if secrets and i == leak_at:
             for secret in secrets:
                 yield secret
                 await asyncio.sleep(0.01)
-        yield rng.choice(pool)
+        yield rng.choice(pool) + " "
         await asyncio.sleep(0.02)
 
 
@@ -237,8 +362,6 @@ async def _ollama_stream(
     *,
     transport=None,
 ) -> AsyncIterator[str]:
-    import httpx  # lazily imported: only needed for the ollama backend
-
     url = cfg.ollama_base_url.rstrip("/") + "/api/generate"
     payload = {
         "model": cfg.ollama_model,
@@ -256,28 +379,28 @@ async def _ollama_stream(
         httpx.AsyncClient(timeout=timeout, transport=transport) as client,
         client.stream("POST", url, json=payload) as resp,
     ):
-            resp.raise_for_status()
-            pending = bytearray()
-            yielded = 0
-            async for chunk in resp.aiter_bytes():
-                pending.extend(chunk)
-                while (newline := pending.find(b"\n")) >= 0:
-                    line = bytes(pending[:newline])
-                    del pending[: newline + 1]
-                    tokens, done = _parse_ollama_line(line)
-                    for token in _bounded_ollama_tokens(tokens, max_tokens - yielded):
-                        yield token
-                        yielded += 1
-                    if yielded >= max_tokens:
-                        return
-                    if done:
-                        return
-                if len(pending) > MAX_OLLAMA_LINE_BYTES:
-                    raise ValueError("Ollama response line exceeds 256 KiB")
-            if pending.strip():
-                tokens, _done = _parse_ollama_line(bytes(pending))
+        resp.raise_for_status()
+        pending = bytearray()
+        yielded = 0
+        async for chunk in resp.aiter_bytes():
+            pending.extend(chunk)
+            while (newline := pending.find(b"\n")) >= 0:
+                line = bytes(pending[:newline])
+                del pending[: newline + 1]
+                tokens, done = _parse_ollama_line(line)
                 for token in _bounded_ollama_tokens(tokens, max_tokens - yielded):
                     yield token
+                    yielded += 1
+                if yielded >= max_tokens:
+                    return
+                if done:
+                    return
+            if len(pending) > MAX_OLLAMA_LINE_BYTES:
+                raise ValueError("Ollama response line exceeds 256 KiB")
+        if pending.strip():
+            tokens, _done = _parse_ollama_line(bytes(pending))
+            for token in _bounded_ollama_tokens(tokens, max_tokens - yielded):
+                yield token
 
 
 def _parse_ollama_line(line: bytes) -> tuple[list[str], bool]:
@@ -292,7 +415,8 @@ def _parse_ollama_line(line: bytes) -> tuple[list[str], bool]:
     done = data.get("done", False)
     if not isinstance(response, str) or not isinstance(done, bool):
         raise ValueError("Ollama response fields have invalid types")
-    return response.split(), done
+    # Preserve exact model fragments, including whitespace and subword splits.
+    return [response] if response else [], done
 
 
 def _bounded_ollama_tokens(tokens: list[str], remaining: int) -> list[str]:
@@ -302,9 +426,144 @@ def _bounded_ollama_tokens(tokens: list[str], remaining: int) -> list[str]:
     return selected
 
 
-def _backend_stream(prompt: str, max_tokens: int, cfg: Config) -> AsyncIterator[str]:
+def _resolve_openai_url(base_url: str) -> str:
+    base = base_url.rstrip("/")
+    if base.endswith("/v1/chat/completions"):
+        return base
+    if base.endswith("/v1"):
+        return base + "/chat/completions"
+    return base + "/v1/chat/completions"
+
+
+def _parse_openai_line(line: bytes) -> tuple[list[str], bool]:
+    stripped = line.strip()
+    if not stripped or stripped.startswith(b":") or stripped.startswith(b"event:"):
+        return [], False
+    if len(line) > MAX_OLLAMA_LINE_BYTES:
+        raise ValueError("OpenAI response line exceeds 256 KiB")
+    if stripped.startswith(b"data:"):
+        stripped = stripped[len(b"data:") :].strip()
+    if not stripped:
+        return [], False
+    if stripped == b"[DONE]":
+        return [], True
+    data = json.loads(stripped)
+    if not isinstance(data, dict):
+        raise ValueError("OpenAI response line must be a JSON object")
+    choices = data.get("choices")
+    if not isinstance(choices, list):
+        raise ValueError("OpenAI response choices must be a list")
+    tokens: list[str] = []
+    done = False
+    for choice in choices:
+        if not isinstance(choice, dict):
+            raise ValueError("OpenAI choice must be a JSON object")
+        delta = choice.get("delta") or {}
+        if not isinstance(delta, dict):
+            raise ValueError("OpenAI delta must be a JSON object")
+        for field in ("reasoning_content", "content"):
+            piece = delta.get(field)
+            if piece is not None:
+                if not isinstance(piece, str):
+                    raise ValueError(f"OpenAI delta.{field} must be a string")
+                if piece:
+                    tokens.append(piece)
+        if choice.get("finish_reason") is not None:
+            done = True
+    return tokens, done
+
+
+async def _openai_stream(
+    prompt: str,
+    max_tokens: int,
+    cfg: Config,
+    *,
+    messages: list[dict] | None = None,
+    model: str | None = None,
+    temperature: float | None = None,
+    transport=None,
+) -> AsyncIterator[str]:
+    base_url = getattr(cfg, "openai_base_url", None) or getattr(
+        cfg, "ollama_base_url", "http://localhost:8000"
+    )
+    if not isinstance(base_url, str) or not base_url:
+        base_url = "http://localhost:8000"
+    url = _resolve_openai_url(base_url)
+    resolved_model = (
+        model
+        or getattr(cfg, "openai_model", None)
+        or getattr(cfg, "ollama_model", "default")
+    )
+    resolved_messages = (
+        messages if messages is not None else [{"role": "user", "content": prompt}]
+    )
+    payload: dict = {
+        "model": resolved_model,
+        "messages": resolved_messages,
+        "stream": True,
+        "max_tokens": max_tokens,
+    }
+    if temperature is not None:
+        payload["temperature"] = temperature
+    headers = {"Accept": "text/event-stream"}
+    api_key = getattr(cfg, "openai_api_key", None)
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    timeout = httpx.Timeout(
+        connect=OLLAMA_CONNECT_TIMEOUT_SECONDS,
+        read=OLLAMA_READ_TIMEOUT_SECONDS,
+        write=OLLAMA_WRITE_TIMEOUT_SECONDS,
+        pool=OLLAMA_POOL_TIMEOUT_SECONDS,
+    )
+    async with (
+        httpx.AsyncClient(timeout=timeout, transport=transport) as client,
+        client.stream("POST", url, json=payload, headers=headers) as resp,
+    ):
+        resp.raise_for_status()
+        pending = bytearray()
+        yielded = 0
+        async for chunk in resp.aiter_bytes():
+            pending.extend(chunk)
+            while (newline := pending.find(b"\n")) >= 0:
+                line = bytes(pending[:newline])
+                del pending[: newline + 1]
+                tokens, done = _parse_openai_line(line)
+                for token in _bounded_ollama_tokens(tokens, max_tokens - yielded):
+                    yield token
+                    yielded += 1
+                if yielded >= max_tokens:
+                    return
+                if done:
+                    return
+            if len(pending) > MAX_OLLAMA_LINE_BYTES:
+                raise ValueError("OpenAI response line exceeds 256 KiB")
+        if pending.strip():
+            tokens, _done = _parse_openai_line(bytes(pending))
+            for token in _bounded_ollama_tokens(tokens, max_tokens - yielded):
+                yield token
+
+
+def _backend_stream(
+    prompt: str,
+    max_tokens: int,
+    cfg: Config,
+    *,
+    messages: list[dict] | None = None,
+    model: str | None = None,
+    temperature: float | None = None,
+) -> AsyncIterator[str]:
     if cfg.model_backend == "ollama":
         return _ollama_stream(prompt, max_tokens, cfg)
+    if cfg.model_backend == "openai":
+        return _openai_stream(
+            prompt,
+            max_tokens,
+            cfg,
+            messages=messages,
+            model=model,
+            temperature=temperature,
+        )
     return _mock_stream(prompt, max_tokens)
 
 
@@ -322,6 +581,10 @@ class StreamAuditor:
         prompt: str,
         max_tokens: int | None = None,
         ctx: EventContext | None = None,
+        *,
+        messages: list[dict] | None = None,
+        model: str | None = None,
+        temperature: float | None = None,
     ) -> AsyncIterator[dict]:
         """`ctx` carries the caller's correlation identity for this one
         generation, so a leaked credential or a terminated trace can be tied to
@@ -343,77 +606,111 @@ class StreamAuditor:
         peak_kl = 0.0
         pii_buffer = PiiStreamBuffer()
 
-        async for token in _backend_stream(prompt, max_tokens, self.cfg):
-            if not token:
-                continue
+        if messages is None and model is None and temperature is None:
+            stream = _backend_stream(prompt, max_tokens, self.cfg)
+        else:
+            try:
+                stream = _backend_stream(
+                    prompt,
+                    max_tokens,
+                    self.cfg,
+                    messages=messages,
+                    model=model,
+                    temperature=temperature,
+                )
+            except TypeError:
+                stream = _backend_stream(prompt, max_tokens, self.cfg)
 
-            # Observe the reasoning token immediately; only client delivery is
-            # delayed by the bounded PII look-behind.
-            kl = monitor.observe(token)
-            if kl is not None:
-                peak_kl = max(peak_kl, kl)
+        try:
+            async for token in stream:
+                if isinstance(token, dict) and "error" in token:
+                    pii_buffer.clear()
+                    yield {"type": "error", "error": token["error"]}
+                    return
+                if not token:
+                    continue
 
-            drain = pii_buffer.push(token, kl)
-            if drain.matches:
-                for m in drain.matches:
-                    fingerprint = _secret_fingerprint(m.value)
-                    if fingerprint in reported_secrets:
-                        continue
-                    reported_secrets.add(fingerprint)
-                    self.emit(
-                        "pii_redacted",
-                        "warning",
-                        {
+                # Observe the reasoning token immediately; only client delivery is
+                # delayed by the bounded PII look-behind.
+                kl = monitor.observe(token)
+                if kl is not None:
+                    peak_kl = max(peak_kl, kl)
+
+                drain = pii_buffer.push(token, kl)
+                if drain.matches:
+                    for m in drain.matches:
+                        fingerprint = _secret_fingerprint(m.value)
+                        if fingerprint in reported_secrets:
+                            continue
+                        reported_secrets.add(fingerprint)
+                        self.emit(
+                            "pii_redacted",
+                            "warning",
+                            {
+                                "label": m.label,
+                                "redacted_as": f"[REDACTED:{m.label}]",
+                                "position_tokens": monitor.tokens_seen,
+                            },
+                            ctx,
+                            resource_type="reasoning_trace",
+                            resource_id=ctx.trace_id if ctx else None,
+                            outcome="redacted",
+                            policy_version=POLICY_VERSION,
+                        )
+                        yield {
+                            "type": "pii",
                             "label": m.label,
-                            "redacted_as": f"[REDACTED:{m.label}]",
-                            "position_tokens": monitor.tokens_seen,
+                            "redacted": f"[REDACTED:{m.label}]",
+                        }
+
+                for outgoing in drain.outputs:
+                    yield {
+                        "type": "token",
+                        "token": outgoing.token,
+                        "kl": round(outgoing.kl, 4) if outgoing.kl is not None else None,
+                        "threshold": self.cfg.kl_threshold,
+                    }
+
+                if kl is not None and monitor.is_divergent(kl):
+                    # Never release look-behind fragments after a terminated trace.
+                    pii_buffer.clear()
+                    self.emit(
+                        "reasoning_divergence_terminate",
+                        "critical",
+                        {
+                            "kl_divergence": round(kl, 4),
+                            "threshold": self.cfg.kl_threshold,
+                            "tokens_seen": monitor.tokens_seen,
+                            "detection_latency_ms": now_ms() - start,
                         },
                         ctx,
                         resource_type="reasoning_trace",
                         resource_id=ctx.trace_id if ctx else None,
-                        outcome="redacted",
+                        outcome="terminated",
                         policy_version=POLICY_VERSION,
                     )
                     yield {
-                        "type": "pii",
-                        "label": m.label,
-                        "redacted": f"[REDACTED:{m.label}]",
-                    }
-
-            for outgoing in drain.outputs:
-                yield {
-                    "type": "token",
-                    "token": outgoing.token,
-                    "kl": round(outgoing.kl, 4) if outgoing.kl is not None else None,
-                    "threshold": self.cfg.kl_threshold,
-                }
-
-            if kl is not None and monitor.is_divergent(kl):
-                # Never release look-behind fragments after a terminated trace.
-                pii_buffer.clear()
-                self.emit(
-                    "reasoning_divergence_terminate",
-                    "critical",
-                    {
-                        "kl_divergence": round(kl, 4),
+                        "type": "terminated",
+                        "reason": "reasoning_divergence",
+                        "kl": round(kl, 4),
                         "threshold": self.cfg.kl_threshold,
-                        "tokens_seen": monitor.tokens_seen,
-                        "detection_latency_ms": now_ms() - start,
-                    },
-                    ctx,
-                    resource_type="reasoning_trace",
-                    resource_id=ctx.trace_id if ctx else None,
-                    outcome="terminated",
-                    policy_version=POLICY_VERSION,
-                )
-                yield {
-                    "type": "terminated",
-                    "reason": "reasoning_divergence",
-                    "kl": round(kl, 4),
-                    "threshold": self.cfg.kl_threshold,
-                    "safe_refusal": SAFE_REFUSAL,
-                }
-                return
+                        "safe_refusal": SAFE_REFUSAL,
+                    }
+                    return
+        except (httpx.HTTPError, ValueError, json.JSONDecodeError) as exc:
+            pii_buffer.clear()
+            self.emit(
+                "upstream_stream_error",
+                "warning",
+                {"error": type(exc).__name__},
+                ctx,
+                resource_type="reasoning_trace",
+                resource_id=ctx.trace_id if ctx else None,
+                outcome="error",
+                policy_version=POLICY_VERSION,
+            )
+            yield {"type": "error", "error": "upstream_stream_error"}
+            return
 
         drain = pii_buffer.finish()
         if drain.matches:
@@ -449,4 +746,23 @@ class StreamAuditor:
                 "threshold": self.cfg.kl_threshold,
             }
 
+        self.emit(
+            "generation_completed",
+            "info",
+            {
+                "tokens": monitor.tokens_seen,
+                "peak_kl": round(peak_kl, 4),
+                "latency_ms": now_ms() - start,
+            },
+            ctx,
+            resource_type="reasoning_trace",
+            resource_id=ctx.trace_id if ctx else None,
+            outcome="completed",
+            policy_version=POLICY_VERSION,
+        )
         yield {"type": "done", "peak_kl": round(peak_kl, 4), "tokens": monitor.tokens_seen}
+
+    audit_stream = audit
+
+
+StreamProxy = StreamAuditor
