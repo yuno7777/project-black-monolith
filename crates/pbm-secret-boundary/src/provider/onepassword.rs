@@ -495,8 +495,22 @@ impl SubprocessRunner for StandardSubprocessRunner {
             // Deadline expired: terminate child process and clean up
             let _ = child.kill();
             let _ = child.wait();
-            let _ = stdout_handle.join();
-            let _ = stderr_handle.join();
+            // The reader threads are DETACHED rather than joined.
+            //
+            // Killing the direct child does not necessarily close its
+            // pipes: a shell that forked a grandchild (`sh -c "sleep 5"`)
+            // leaves the grandchild holding the inherited stdout, so the
+            // reader thread does not see EOF until the *grandchild* exits.
+            // Joining here would therefore hold the caller for the
+            // grandchild's entire lifetime — a timeout that does not time
+            // out, which is exactly the failure mode a deadline exists to
+            // prevent.
+            //
+            // Dropping the handles detaches the threads. They finish on
+            // their own when the pipe closes, and nothing they read is
+            // needed on this path: the operation has already failed.
+            drop(stdout_handle);
+            drop(stderr_handle);
 
             return Err(BoundaryError::ProviderError(format!(
                 "1Password CLI command timed out after {} seconds and was terminated",

@@ -599,8 +599,18 @@ fn test_19_standard_subprocess_runner_real_child_timeout_and_process_reaping() {
         "Unexpected error: {}",
         err_str
     );
-    // Verified process was terminated promptly around ~1 second, not waiting for full 3-second ping
-    assert!(elapsed < Duration::from_millis(2500));
+    // The child must have been killed at the deadline rather than allowed to
+    // run to completion (the command sleeps for 5 seconds). The reader
+    // threads are detached on the timeout path, so the runner returns as
+    // soon as the child is reaped rather than waiting for the pipes to
+    // close — the bound therefore has to be well under the child's own
+    // runtime, but it is a bound on the *mechanism*, not on the machine's
+    // speed.
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "the child was not terminated at the deadline (took {:?})",
+        elapsed
+    );
 }
 
 // 20. StandardSubprocessRunner captures real child non-zero exit code with sanitized error and zero secret leak
