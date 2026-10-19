@@ -904,6 +904,237 @@ test("cross-layer session circuit breaker trips automatically on >= 2 modules an
   assert.equal((await listRevokedSessions("tenant-cb")).length, 1);
 });
 
+test("circuit-breaker thresholds are configurable, clamped, and default to critical", async () => {
+  const { circuitBreakerMinLayers, circuitBreakerSeverities } = await import(
+    "../lib/incident-store"
+  );
+  const previousSeverity = process.env.MONOLITH_CIRCUIT_BREAKER_MIN_SEVERITY;
+  const previousLayers = process.env.MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS;
+  try {
+    delete process.env.MONOLITH_CIRCUIT_BREAKER_MIN_SEVERITY;
+    delete process.env.MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS;
+    assert.deepEqual([...circuitBreakerSeverities()], ["critical"]);
+    assert.equal(circuitBreakerMinLayers(), 2);
+
+    process.env.MONOLITH_CIRCUIT_BREAKER_MIN_SEVERITY = " WARNING ";
+    assert.deepEqual([...circuitBreakerSeverities()], ["warning", "critical"]);
+    process.env.MONOLITH_CIRCUIT_BREAKER_MIN_SEVERITY = "info";
+    assert.deepEqual([...circuitBreakerSeverities()], ["info", "warning", "critical"]);
+    process.env.MONOLITH_CIRCUIT_BREAKER_MIN_SEVERITY = "high";
+    assert.deepEqual([...circuitBreakerSeverities()], ["critical"]);
+
+    process.env.MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS = "1";
+    assert.equal(circuitBreakerMinLayers(), 1);
+    process.env.MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS = "3";
+    assert.equal(circuitBreakerMinLayers(), 3);
+    for (const invalid of ["0", "4", "2.5", "many"]) {
+      process.env.MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS = invalid;
+      assert.equal(circuitBreakerMinLayers(), 2, `layers ${invalid} must clamp to the default`);
+    }
+  } finally {
+    if (previousSeverity === undefined) delete process.env.MONOLITH_CIRCUIT_BREAKER_MIN_SEVERITY;
+    else process.env.MONOLITH_CIRCUIT_BREAKER_MIN_SEVERITY = previousSeverity;
+    if (previousLayers === undefined) delete process.env.MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS;
+    else process.env.MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS = previousLayers;
+  }
+});
+
+test("circuit-breaker severity and layer thresholds gate the automatic trip", async () => {
+  const { clearMemoryRevocations, listRevokedSessions } = await import("../lib/incident-store");
+  const { POST: ingestPost } = await import("../app/api/ingest/route");
+
+  delete process.env.DATABASE_URL;
+  process.env.EVENT_INGEST_TOKENS_JSON = JSON.stringify({
+    "tenant-thresh": {
+      "mcp-shield": "mcp-shield-threshold-token-01",
+      "vector-anchor": "vector-anchor-threshold-token-02",
+      "trace-audit": "trace-audit-threshold-token-03",
+    },
+  });
+
+  const ingest = async (module: string, token: string, eventId: string, severity: string) => {
+    const res = await ingestPost(
+      new Request("http://localhost/api/ingest", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          event_id: eventId,
+          module,
+          event_type: "threshold_probe",
+          severity,
+          tenant_id: "tenant-thresh",
+          agent_id: "agent-threshold",
+          session_id: "sess-threshold",
+        }),
+      }),
+    );
+    assert.equal(res.status, 201);
+    return (await res.json()) as { revoked_sessions: string[] };
+  };
+
+  const tokens = {
+    "mcp-shield": "mcp-shield-threshold-token-01",
+    "vector-anchor": "vector-anchor-threshold-token-02",
+    "trace-audit": "trace-audit-threshold-token-03",
+  };
+  const ids = (n: number, suffix: string) =>
+    `${n}0000000-0000-4000-8000-${suffix.padStart(12, "0")}`;
+
+  try {
+    // Default: warnings do not count toward revocation.
+    clearMemoryRevocations();
+    delete process.env.MONOLITH_CIRCUIT_BREAKER_MIN_SEVERITY;
+    delete process.env.MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS;
+    assert.deepEqual(
+      (await ingest("mcp-shield", tokens["mcp-shield"], ids(1, "101"), "warning")).revoked_sessions,
+      [],
+    );
+    assert.deepEqual(
+      (await ingest("vector-anchor", tokens["vector-anchor"], ids(1, "102"), "warning"))
+        .revoked_sessions,
+      [],
+      "two warning-severity layers must not trip the breaker by default",
+    );
+    assert.deepEqual(await listRevokedSessions("tenant-thresh"), []);
+
+    // Opt-in: warnings count once the minimum severity is lowered.
+    clearMemoryRevocations();
+    process.env.MONOLITH_CIRCUIT_BREAKER_MIN_SEVERITY = "warning";
+    (await ingest("mcp-shield", tokens["mcp-shield"], ids(2, "101"), "warning"));
+    assert.deepEqual(
+      (await ingest("vector-anchor", tokens["vector-anchor"], ids(2, "102"), "warning"))
+        .revoked_sessions,
+      ["sess-threshold"],
+    );
+
+    // Opt-in is per-run; the default layer requirement is still two, so a
+    // third layer only matters when min-layers is raised.
+    clearMemoryRevocations();
+    delete process.env.MONOLITH_CIRCUIT_BREAKER_MIN_SEVERITY;
+    process.env.MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS = "3";
+    assert.deepEqual(
+      (await ingest("mcp-shield", tokens["mcp-shield"], ids(3, "101"), "critical"))
+        .revoked_sessions,
+      [],
+    );
+    assert.deepEqual(
+      (await ingest("vector-anchor", tokens["vector-anchor"], ids(3, "102"), "critical"))
+        .revoked_sessions,
+      [],
+      "two critical layers must not trip a three-layer requirement",
+    );
+    assert.deepEqual(
+      (await ingest("trace-audit", tokens["trace-audit"], ids(3, "103"), "critical"))
+        .revoked_sessions,
+      ["sess-threshold"],
+    );
+    const listed = await listRevokedSessions("tenant-thresh");
+    assert.deepEqual(listed[0].layers.slice().sort(), [
+      "mcp-shield",
+      "trace-audit",
+      "vector-anchor",
+    ]);
+  } finally {
+    delete process.env.MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS;
+    clearMemoryRevocations();
+  }
+});
+
+test("revocation snapshot endpoint serves module-scoped session ids over module credentials", async () => {
+  const { clearMemoryRevocations, revokeSession } = await import("../lib/incident-store");
+  const { GET: revokedGet } = await import("../app/api/sessions/revoked/route");
+
+  delete process.env.DATABASE_URL;
+  clearMemoryRevocations();
+  process.env.EVENT_INGEST_TOKENS_JSON = JSON.stringify({
+    "tenant-snap": {
+      "mcp-shield": "mcp-shield-snapshot-token-0001",
+      "vector-anchor": "vector-anchor-snapshot-token-01",
+      "trace-audit": "trace-audit-snapshot-token-001",
+    },
+    "tenant-other": {
+      "vector-anchor": "vector-anchor-other-token-0001",
+    },
+  });
+
+  await revokeSession(
+    "tenant-snap",
+    "agent-snap",
+    "sess-snap-a",
+    "auto trip",
+    "auto-circuit-breaker",
+    ["mcp-shield", "vector-anchor"],
+  );
+  await revokeSession(
+    "tenant-snap",
+    "agent-snap",
+    "sess-snap-b",
+    "manual",
+    "analyst",
+    ["trace-audit"],
+  );
+  await revokeSession(
+    "tenant-other",
+    "agent-other",
+    "sess-other",
+    "auto trip",
+    "auto-circuit-breaker",
+    ["mcp-shield", "vector-anchor"],
+  );
+
+  const snapshot = await revokedGet(
+    new Request("http://localhost/api/sessions/revoked", {
+      headers: {
+        authorization: "Bearer vector-anchor-snapshot-token-01",
+        "x-monolith-tenant-id": "tenant-snap",
+        "x-monolith-module": "vector-anchor",
+      },
+    }),
+  );
+  assert.equal(snapshot.status, 200);
+  const body = await snapshot.json();
+  assert.equal(body.tenant_id, "tenant-snap");
+  assert.equal(typeof body.generated_at_ms, "number");
+  assert.deepEqual(body.revoked_sessions.slice().sort(), ["sess-snap-a", "sess-snap-b"]);
+
+  const deniedHeaderCases: Record<string, string>[] = [
+    {},
+    { "x-monolith-tenant-id": "tenant-snap", "x-monolith-module": "untrusted-layer" },
+    {
+      "x-monolith-tenant-id": "tenant-snap",
+      "x-monolith-module": "vector-anchor",
+      authorization: "Bearer vector-anchor-other-token-0001",
+    },
+    {
+      "x-monolith-tenant-id": "tenant-other",
+      "x-monolith-module": "vector-anchor",
+      authorization: "Bearer vector-anchor-snapshot-token-01",
+    },
+  ];
+  for (const headers of deniedHeaderCases) {
+    const denied = await revokedGet(
+      new Request("http://localhost/api/sessions/revoked", { headers }),
+    );
+    assert.equal(denied.status, 401);
+  }
+
+  clearMemoryRevocations();
+  const empty = await revokedGet(
+    new Request("http://localhost/api/sessions/revoked", {
+      headers: {
+        authorization: "Bearer vector-anchor-snapshot-token-01",
+        "x-monolith-tenant-id": "tenant-snap",
+        "x-monolith-module": "vector-anchor",
+      },
+    }),
+  );
+  assert.equal(empty.status, 200);
+  assert.deepEqual((await empty.json()).revoked_sessions, []);
+});
+
 test("forensic evidence export computes canonical SHA-256 and HMAC-SHA256 signatures", async () => {
   const { exportIncidentEvidence } = await import("../lib/incident-store");
   const { GET: exportGet } = await import("../app/api/incidents/[eventId]/export/route");

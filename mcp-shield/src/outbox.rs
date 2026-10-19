@@ -39,7 +39,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 /// Attempts after which an event is moved to the dead-letter file. Attempts
@@ -72,6 +72,70 @@ fn valid_event_token(token: &str) -> bool {
             byte.is_ascii_alphanumeric()
                 || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'+' | b'/' | b'=')
         })
+}
+
+/// Upper bound on the ingest response body read back for the revocation
+/// snapshot. The real response (ids plus a session list) is a few kilobytes.
+const MAX_INGEST_RESPONSE_BYTES: usize = 64 * 1024;
+
+/// Sessions the dashboard's cross-layer circuit breaker revoked.
+///
+/// The dashboard is the authority and does not expire revocations, so neither
+/// does this mirror: `observe_revoked_sessions` replaces the whole set with
+/// each authoritative snapshot, and a missing or unparseable snapshot leaves
+/// the previous set in place. Fail closed, not open.
+fn revoked_session_store() -> &'static RwLock<HashSet<String>> {
+    static REVOKED_SESSIONS: OnceLock<RwLock<HashSet<String>>> = OnceLock::new();
+    REVOKED_SESSIONS.get_or_init(|| RwLock::new(HashSet::new()))
+}
+
+/// Whether `session_id` is currently revoked; an empty id is never revoked.
+pub(crate) fn is_session_revoked(session_id: &str) -> bool {
+    let session_id = session_id.trim();
+    if session_id.is_empty() || session_id.len() > 128 {
+        return false;
+    }
+    revoked_session_store()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(session_id)
+}
+
+/// Read a response body with a hard byte cap; the revocation snapshot is
+/// small, and a compromised or misconfigured target must not be able to make
+/// the proxy buffer an unbounded body.
+async fn read_bounded_response(mut response: reqwest::Response) -> String {
+    let mut body: Vec<u8> = Vec::new();
+    while let Ok(Some(chunk)) = response.chunk().await {
+        if body.len() + chunk.len() > MAX_INGEST_RESPONSE_BYTES {
+            break;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8_lossy(&body).into_owned()
+}
+
+/// Adopt the `revoked_sessions` snapshot of an ingest response.
+///
+/// Returns `Some(count)` when the body carried a usable snapshot (possibly
+/// empty, which correctly lifts local revocations), and `None` when it did
+/// not — in which case the previous snapshot stands.
+pub(crate) fn observe_revoked_sessions(body: &str) -> Option<usize> {
+    let value: Value = serde_json::from_str(body).ok()?;
+    let ids = value.get("revoked_sessions")?.as_array()?;
+    let cleaned: HashSet<String> = ids
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty() && id.len() <= 128 && id.chars().all(|c| !c.is_control()))
+        .map(str::to_string)
+        .collect();
+    let count = cleaned.len();
+    let mut store = revoked_session_store()
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
+    *store = cleaned;
+    Some(count)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -309,16 +373,28 @@ impl Outbox {
         }
     }
 
-    async fn post(&self, body: &str) -> Result<u16, String> {
-        self.client
+    async fn post(&self, body: &str) -> Result<(u16, String), String> {
+        let response = self
+            .client
             .post(self.target.clone())
             .bearer_auth(&self.token)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body.to_owned())
             .send()
             .await
-            .map(|response| response.status().as_u16())
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        let status = response.status().as_u16();
+        let text = read_bounded_response(response).await;
+        if (200..300).contains(&status) {
+            // The ingest response is where the circuit breaker's revocations
+            // reach this short-lived process; nothing else polls for them.
+            if let Some(count) = observe_revoked_sessions(&text) {
+                if count > 0 {
+                    tracing::warn!(revoked_sessions = count, "dashboard revoked sessions");
+                }
+            }
+        }
+        Ok((status, text))
     }
 
     /// Attempt delivery of spooled records within `budget`.
@@ -352,11 +428,11 @@ impl Outbox {
                 continue;
             }
             match self.post(&record.payload).await {
-                Ok(status) if (200..300).contains(&status) => {
+                Ok((status, _)) if (200..300).contains(&status) => {
                     delivered.insert(record.event_id);
                     continue;
                 }
-                Ok(status) if is_permanent(status) => {
+                Ok((status, _)) if is_permanent(status) => {
                     record.last_error = Some(format!("http {status}"));
                     tracing::error!(
                         event_id = %record.event_id,
@@ -366,7 +442,7 @@ impl Outbox {
                     dead.push(record);
                     continue;
                 }
-                Ok(status) => record.defer(format!("http {status}")),
+                Ok((status, _)) => record.defer(format!("http {status}")),
                 Err(e) => record.defer(e),
             }
             if record.attempts >= MAX_ATTEMPTS {
@@ -917,6 +993,35 @@ mod tests {
         assert!(!valid_event_token("valid-length-token\r\nInjected: yes"));
         assert!(!valid_event_token("valid length token with spaces"));
         assert!(!valid_event_token(&"x".repeat(MAX_EVENT_TOKEN_LENGTH + 1)));
+    }
+
+    #[test]
+    fn revoked_session_snapshot_replaces_wholesale_and_missing_snapshots_do_not_clear() {
+        let session = "cafebabe-0000-4000-8000-000000000002";
+        let snapshot = json!({ "revoked_sessions": [session] }).to_string();
+        assert_eq!(observe_revoked_sessions(&snapshot), Some(1));
+        assert!(is_session_revoked(session));
+
+        // An ingest response without the field must not read as "nothing is
+        // revoked" — the previous snapshot stands.
+        assert_eq!(observe_revoked_sessions(r#"{"accepted":1}"#), None);
+        assert!(is_session_revoked(session));
+
+        // Malformed values are dropped, not admitted.
+        assert_eq!(
+            observe_revoked_sessions(r#"{"revoked_sessions":["", 7, {"id":"x"}]}"#),
+            Some(0)
+        );
+        assert!(!is_session_revoked(session));
+
+        // A real empty snapshot is authoritative and lifts the revocation.
+        assert_eq!(observe_revoked_sessions(&snapshot), Some(1));
+        assert_eq!(
+            observe_revoked_sessions(r#"{"revoked_sessions":[]}"#),
+            Some(0)
+        );
+        assert!(!is_session_revoked(session));
+        assert!(!is_session_revoked(""));
     }
 
     #[test]

@@ -39,7 +39,7 @@
       "required": ["type", "reason", "kl", "threshold", "safe_refusal"],
       "properties": {
         "type": { "const": "terminated" },
-        "reason": { "const": "reasoning_divergence" },
+        "reason": { "enum": ["reasoning_divergence", "session_revoked"] },
         "kl": { "type": "number", "minimum": 0 },
         "threshold": { "type": "number", "minimum": 0 },
         "safe_refusal": { "type": "string", "minLength": 1 }
@@ -116,7 +116,8 @@
         "terminated": { "type": "boolean" },
         "redactions": { "type": "array", "items": { "type": "string" } },
         "redaction_count": { "type": "integer", "minimum": 0 },
-        "peak_kl": { "type": "number", "minimum": 0 }
+        "peak_kl": { "type": "number", "minimum": 0 },
+        "session_revoked": { "type": "boolean" }
       }
     },
     "chatCompletionResponse": {
