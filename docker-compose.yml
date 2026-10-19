@@ -22,6 +22,12 @@ x-service-hardening: &service-hardening
 services:
   database:
     image: supabase/postgres:17.6.1.136
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       # The ledger lives in the `monolith` SCHEMA of the `postgres` database,
       # not in a database of its own. This image bootstraps as the superuser
@@ -92,11 +98,15 @@ services:
     <<: *service-hardening
     mem_limit: 512m
     pids_limit: 200
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     build:
       context: .
       dockerfile: dashboard/Dockerfile
-      args:
-        MONOLITH_DISABLE_AUTH: ${MONOLITH_DISABLE_AUTH:-false}
     ports:
       - "127.0.0.1:3000:3000"
     environment:
@@ -113,6 +123,7 @@ services:
       OPERATOR_TOKENS_JSON: >-
         {"${MONOLITH_OPERATOR_NAME:-operator}":{"token":"${MONOLITH_OPERATOR_TOKEN:?set MONOLITH_OPERATOR_TOKEN in .env — run scripts/generate_secrets.sh}","role":"admin","tenant_id":"${MONOLITH_TENANT_ID:-default}"}}
       MONOLITH_MODULE_ADMIN_TOKEN: ${MONOLITH_ADMIN_TOKEN:?set MONOLITH_ADMIN_TOKEN in .env}
+      MCP_SHIELD_INTERNAL_URL: "http://mcp-shield:8003"
       VECTOR_ANCHOR_INTERNAL_URL: http://vector-anchor:8001
       TRACE_AUDIT_INTERNAL_URL: http://trace-audit:8002
       MONOLITH_ALLOW_INSECURE_MODULE_HEALTH: "true"
@@ -132,6 +143,12 @@ services:
     <<: *service-hardening
     mem_limit: 256m
     pids_limit: 100
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     build:
       context: .
       dockerfile: dashboard/Dockerfile
@@ -143,7 +160,6 @@ services:
       MONOLITH_ALERT_WEBHOOK_URL: ${MONOLITH_ALERT_WEBHOOK_URL:-}
       MONOLITH_ALERT_WEBHOOK_SECRET: ${MONOLITH_ALERT_WEBHOOK_SECRET:-}
     command: ["node", "scripts/dispatch-alerts.mjs"]
-    restart: unless-stopped
     depends_on:
       dashboard-migrator:
         condition: service_completed_successfully
@@ -152,6 +168,12 @@ services:
     <<: *service-hardening
     mem_limit: 1g
     pids_limit: 256
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     build:
       context: .
       dockerfile: vector-anchor/Dockerfile
@@ -188,6 +210,12 @@ services:
     <<: *service-hardening
     mem_limit: 512m
     pids_limit: 256
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     build:
       context: .
       dockerfile: trace-audit/Dockerfile
@@ -224,6 +252,12 @@ services:
     <<: *service-hardening
     mem_limit: 256m
     pids_limit: 128
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     # The context is the repository root because the Secret Boundary is a
     # path dependency that lives outside mcp-shield/; the Dockerfile copies
     # it to the sibling path Cargo.toml names.
@@ -242,6 +276,8 @@ services:
       # closes, so one invocation is one session — run_full_demo.sh passes
       # MONOLITH_SESSION_ID in at exec time rather than baking one here.
       MONOLITH_AGENT_ID: ${MONOLITH_AGENT_ID:-demo-agent}
+      MONOLITH_ADMIN_TOKEN: ${MONOLITH_ADMIN_TOKEN:?set MONOLITH_ADMIN_TOKEN in .env}
+      MCP_SHIELD_STATUS_BIND: "0.0.0.0:8003"
       MCP_SHIELD_MODE: "enforce"
       MCP_SHIELD_KEY: ${MCP_SHIELD_KEY:?set MCP_SHIELD_KEY in .env}
       MCP_SHIELD_BASELINE: "/var/lib/monolith/baseline_hashes.json"

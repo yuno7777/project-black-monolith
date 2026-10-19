@@ -162,6 +162,9 @@ export async function createOperatorSession(identity: OperatorIdentity): Promise
 }> {
   const token = randomBytes(32).toString("base64url");
   const maxAge = sessionTtlSeconds();
+  if (!process.env.DATABASE_URL) {
+    return { token, maxAge };
+  }
   await withTenantDb(
     identity.tenant_id,
     async (db) => {
