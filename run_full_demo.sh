@@ -133,7 +133,12 @@ $DC exec -T -e MONOLITH_SESSION_ID="$SESSION_ID" trace-audit \
     python fixtures/divergence_prompt.py divergence 2>&1 \
     | grep -E "TERMINATED|safe refusal|result:" || true
 say "  Streaming a prompt whose context holds a fake credential (expect redaction)…"
-$DC exec -T -e MONOLITH_SESSION_ID="$SESSION_ID" trace-audit \
+# The rug pull and the divergence are both critical, so the cross-layer breaker
+# may have revoked $SESSION_ID by now — that is the control working, not a
+# failure. The PII probe is a separate agent interaction, so it gets a fresh
+# session and proves redaction independently of the revocation.
+PII_SESSION_ID="$SESSION_ID-pii"
+$DC exec -T -e MONOLITH_SESSION_ID="$PII_SESSION_ID" trace-audit \
     python fixtures/divergence_prompt.py pii 2>&1 \
     | grep -E "REDACTED|result:" || true
 sleep "$PAUSE"

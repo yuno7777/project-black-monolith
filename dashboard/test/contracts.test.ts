@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1038,6 +1039,104 @@ test("circuit-breaker severity and layer thresholds gate the automatic trip", as
       "vector-anchor",
     ]);
   } finally {
+    delete process.env.MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS;
+    clearMemoryRevocations();
+  }
+});
+
+test("session restore baseline migration keeps a restore watermark", () => {
+  const sql = readFileSync(
+    new URL(
+      "../../supabase/migrations/20260805120000_session_restore_baseline.sql",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(sql, /add column if not exists restored_at timestamptz/i);
+  assert.match(sql, /where restored_at is null/i);
+});
+
+test("an analyst restore settles the history that tripped the breaker", async () => {
+  const { clearMemoryRevocations, listRevokedSessions, restoreSession } = await import(
+    "../lib/incident-store"
+  );
+  const { POST: ingestPost } = await import("../app/api/ingest/route");
+
+  delete process.env.DATABASE_URL;
+  delete process.env.MONOLITH_CIRCUIT_BREAKER_MIN_SEVERITY;
+  delete process.env.MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS;
+  clearMemoryRevocations();
+  process.env.EVENT_INGEST_TOKENS_JSON = JSON.stringify({
+    "tenant-restore": {
+      "mcp-shield": "mcp-shield-restore-token-0001",
+      "vector-anchor": "vector-anchor-restore-token-01",
+      "trace-audit": "trace-audit-restore-token-001",
+    },
+  });
+
+  const tokens: Record<string, string> = {
+    "mcp-shield": "mcp-shield-restore-token-0001",
+    "vector-anchor": "vector-anchor-restore-token-01",
+    "trace-audit": "trace-audit-restore-token-001",
+  };
+  const ingest = async (module: string, eventType: string, severity: string) => {
+    const res = await ingestPost(
+      new Request("http://localhost/api/ingest", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${tokens[module]}`,
+        },
+        body: JSON.stringify({
+          event_id: randomUUID(),
+          module,
+          event_type: eventType,
+          severity,
+          tenant_id: "tenant-restore",
+          agent_id: "agent-restore",
+          session_id: "sess-restore",
+        }),
+      }),
+    );
+    assert.equal(res.status, 201);
+    return (await res.json()) as { revoked_sessions: string[] };
+  };
+
+  try {
+    // Two critical layers trip the breaker, as usual.
+    assert.deepEqual(
+      (await ingest("mcp-shield", "tool_poisoning", "critical")).revoked_sessions,
+      [],
+    );
+    assert.deepEqual(
+      (await ingest("trace-audit", "divergence_breach", "critical")).revoked_sessions,
+      ["sess-restore"],
+    );
+
+    assert.equal(await restoreSession("tenant-restore", "agent-restore", "sess-restore"), true);
+    assert.deepEqual(await listRevokedSessions("tenant-restore"), []);
+    // Keep the post-restore events unambiguous even on a coarse clock.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    // A refusal caused by the revocation is a consequence, not evidence: a
+    // delayed delivery of it must not re-trip the restore.
+    assert.deepEqual(
+      (await ingest("vector-anchor", "session_quarantined", "critical")).revoked_sessions,
+      [],
+    );
+    // One fresh layer is still not enough, now that the pre-restore history is
+    // settled.
+    assert.deepEqual(
+      (await ingest("mcp-shield", "tool_poisoning", "critical")).revoked_sessions,
+      [],
+    );
+    // Two fresh layers after the restore do trip it again.
+    assert.deepEqual(
+      (await ingest("trace-audit", "divergence_breach", "critical")).revoked_sessions,
+      ["sess-restore"],
+    );
+  } finally {
+    delete process.env.MONOLITH_CIRCUIT_BREAKER_MIN_SEVERITY;
     delete process.env.MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS;
     clearMemoryRevocations();
   }

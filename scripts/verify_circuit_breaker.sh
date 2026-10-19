@@ -88,7 +88,12 @@ check "vector-anchor refuses the revoked session" "0" "$VA_REFUSED"
 check "the refused retrieval returns no documents" "0" \
   "$(echo "$VA_BODY" | python -c 'import sys,json;print(len(json.load(sys.stdin).get("results",[])))')"
 
-TA_BODY=$($DC exec -T -e VERIFY_SESSION="$SESSION" trace-audit python -c '
+# Separate pollers mean each layer can learn at a different moment; give
+# trace-audit the same window vector-anchor got instead of assuming both have
+# polled by now.
+TA_REFUSED=0
+for _ in $(seq 1 40); do
+  TA_BODY=$($DC exec -T -e VERIFY_SESSION="$SESSION" trace-audit python -c '
 import json, os, urllib.request
 req = urllib.request.Request(
     "http://localhost:8002/generate",
@@ -100,11 +105,15 @@ req = urllib.request.Request(
 )
 print(urllib.request.urlopen(req, timeout=15).read().decode())
 ' 2>/dev/null)
-check "trace-audit terminates with session_revoked" "1" \
-  "$(echo "$TA_BODY" | grep -c 'session_revoked' || true)"
+  if echo "$TA_BODY" | grep -q 'session_revoked'; then TA_REFUSED=1; break; fi
+  sleep 1
+done
+check "trace-audit terminates with session_revoked" "1" "$TA_REFUSED"
 
 # A fresh MCP-Shield process polls on startup before the delayed tool call.
-MCP_BODY=$($DC exec -T -e VERIFY_SESSION="$SESSION" mcp-shield sh -c '
+# MONOLITH_SESSION_ID is how the proxy learns which session it is serving; the
+# `exec` environment is inherited by both the proxy and its fixture server.
+MCP_BODY=$($DC exec -T -e MONOLITH_SESSION_ID="$SESSION" mcp-shield sh -c '
   { sleep 2; printf "%s\n" "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"read_file\",\"arguments\":{}}}"; } \
     | mcp-shield python fixtures/fake_mcp_server.py' 2>/dev/null)
 check "mcp-shield blocks the tool call" "1" \

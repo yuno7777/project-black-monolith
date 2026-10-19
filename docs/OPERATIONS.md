@@ -99,8 +99,17 @@ is a finding; agreement across layers is treated as an active compromise.
   `DELETE` restores; both require the `analyst` role. The same actions are
   available from the investigation queue. Restores propagate on the next
   ingest response or poll.
+- **Restore is a watermark.** The ledger is append-only, so the detections
+  that tripped the breaker stay on record. A restore therefore settles
+  everything the session did up to that moment (kept as `restored_at` on the
+  revocation row) instead of deleting the evidence: the old history cannot
+  immediately re-revoke the session, but detections received after the restore
+  can trip it again. The session drops out of `/api/sessions/revoked`
+  immediately.
 - **Visibility.** Each refusal emits one `session_quarantined` critical event
-  per session, so repeated retries do not flood the ledger.
+  per session, so repeated retries do not flood the ledger. Refusal events are
+  consequences of a revocation, not evidence, so the breaker never counts them
+  toward a new trip.
 
 ## Retention and cleanup
 

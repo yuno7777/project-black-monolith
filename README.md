@@ -192,7 +192,9 @@ module itself — MCP-Shield returns a tool error, VectorAnchor serves no
 documents, and TraceAudit terminates with `session_revoked` — and is mirrored
 locally from ingest responses plus a 15-second poll, so a session with no
 traffic is still cut off. An analyst with the `analyst` role can restore a
-session from the investigation queue; revocations never expire on a timer.
+session from the investigation queue; a restore settles everything received
+before it, so the history that tripped the breaker cannot immediately re-trip
+it, while fresh detections still can. Revocations never expire on a timer.
 
 See the [dashboard guide](dashboard/README.md) and
 [identity and access model](docs/IDENTITY_AND_ACCESS.md) for the full
