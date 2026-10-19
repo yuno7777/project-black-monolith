@@ -150,6 +150,21 @@ pub fn scan_description(description: &str) -> Vec<Finding> {
     findings
 }
 
+/// Scan for the injection families only: instruction-override phrases and
+/// invisible Unicode.
+///
+/// The shell-command family is deliberately excluded here. A tool description
+/// has no legitimate reason to contain one, but an error message legitimately
+/// quotes the command that failed (`sh: curl: command not found`), so
+/// treating that family as an injection marker there would neutralize
+/// ordinary failures.
+pub fn scan_injection(text: &str) -> Vec<Finding> {
+    scan_description(text)
+        .into_iter()
+        .filter(|finding| finding.kind != "shell_command")
+        .collect()
+}
+
 const PEM_PRIVATE_KEY_HEADERS: &[&str] = &[
     "-----BEGIN PRIVATE KEY-----",
     "-----BEGIN RSA PRIVATE KEY-----",
@@ -277,8 +292,14 @@ fn collect_argument_findings(value: &Value, findings: &mut Vec<Finding>) {
 }
 
 /// Recursively inspect all string values inside a `tools/call` `params.arguments`
-/// JSON value for prompt-injection, shell injection, invisible Unicode, and
-/// outbound credential/secret exfiltration patterns.
+/// JSON value for prompt-injection, invisible Unicode, and outbound
+/// credential/secret exfiltration patterns.
+///
+/// The shell-command family is reported but is not a blocking finding: it
+/// exists because a tool *description* has no legitimate reason to contain a
+/// shell command, while argument values routinely do — "curl tutorial",
+/// "eval(x)", or the command the agent was actually asked to run. The
+/// caller decides which families block a call.
 pub fn scan_tool_arguments(args: &Value) -> ScanResult {
     let mut findings = Vec::new();
     collect_argument_findings(args, &mut findings);

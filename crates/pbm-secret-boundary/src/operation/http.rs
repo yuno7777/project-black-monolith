@@ -247,6 +247,22 @@ impl HttpTransport for StdTcpHttpTransport {
         );
 
         for (k, v) in &req.headers {
+            // Defence in depth: the caller of this transport is checked
+            // before the request reaches it, but this is the code that writes
+            // the raw wire format, so it refuses to emit a header that would
+            // terminate the header block early.
+            if k.is_empty()
+                || k.contains('\r')
+                || k.contains('\n')
+                || v.contains('\r')
+                || v.contains('\n')
+                || v.contains('\0')
+            {
+                return Err(BoundaryError::InvalidRequest(format!(
+                    "Header '{}' cannot be represented in an HTTP request",
+                    k
+                )));
+            }
             wire.push_str(&format!("{}: {}\r\n", k, v));
         }
 
@@ -714,10 +730,23 @@ impl OperationExecutor for HttpOperationAdapter {
         }
 
         // 3. Inject policy-mandated credential internally
-        request_headers.insert(
-            "Authorization".to_string(),
-            format!("Bearer {}", secret.expose_secret()),
-        );
+        //
+        // The composed value must be a valid HTTP header value. The CRLF guard
+        // above only covers caller-supplied headers, so a secret carrying a
+        // newline would otherwise terminate this header early and inject
+        // further headers into the outbound request. The secret is validated
+        // here rather than at the provider so that every provider is covered.
+        let authorization = format!("Bearer {}", secret.expose_secret());
+        if authorization
+            .bytes()
+            .any(|byte| byte == b'\r' || byte == b'\n' || byte == 0)
+        {
+            return Err(BoundaryError::InvalidRequest(
+                "Resolved secret contains characters that are not valid in an HTTP header value"
+                    .to_string(),
+            ));
+        }
+        request_headers.insert("Authorization".to_string(), authorization);
 
         let details = HttpRequestDetails {
             url: parsed_url.clone(),
@@ -976,6 +1005,44 @@ mod tests {
             result,
             Err(BoundaryError::DestinationViolation(_))
         ));
+    }
+
+    /// A secret that carries a newline would terminate the `Authorization`
+    /// header early and inject a header of its own choosing into the request
+    /// to the approved destination. The request must never be sent.
+    #[test]
+    fn test_secret_with_crlf_is_rejected_before_the_request_is_sent() {
+        let mock_resolver = Arc::new(MockDnsResolver::new());
+        let mock_transport = Arc::new(MockHttpTransport::new());
+
+        mock_resolver.insert(
+            "api.service.example.com",
+            443,
+            vec![SocketAddr::from(([93, 184, 216, 34], 443))],
+        );
+
+        let adapter = HttpOperationAdapter::with_resolver_and_transport(
+            HttpAdapterConfig::default(),
+            mock_resolver,
+            mock_transport.clone(),
+        );
+
+        let req = OperationRequest {
+            agent_id: "agent-01".to_string(),
+            operation_id: "op-test".to_string(),
+            destination_url: "https://api.service.example.com/v1/data".to_string(),
+            method: "GET".to_string(),
+            headers: HashMap::new(),
+            body: None,
+        };
+        let secret = SecretString::new("token-1234\r\nX-Injected: yes");
+
+        let result = adapter.execute(&req, &secret);
+        assert!(matches!(result, Err(BoundaryError::InvalidRequest(_))));
+        assert!(
+            mock_transport.get_recorded_requests().is_empty(),
+            "the request must not reach the transport"
+        );
     }
 
     #[test]

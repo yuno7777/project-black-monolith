@@ -191,11 +191,15 @@ class PiiStreamBuffer:
         matches = self._matches_ending_in_latest()
         if not force:
             end = sum(len(item.token) for item in self._pending)
-            can_hold_tokens = (
-                len(self._pending) < self.window_tokens
-                or all(len(item.token) == 1 for item in self._pending)
-            )
-            if can_hold_tokens and any(
+            # A match that ends exactly at the end of the buffer may continue in
+            # the next fragment. The continuation no longer carries the
+            # pattern's prefix, so it would not match on its own and would be
+            # released verbatim. Holding the candidate back is the only way to
+            # redact it whole, so the hold is bounded by *characters* and not by
+            # fragment count: a credential split into many fragments must not
+            # become redactable-in-part once the fragment count passes a
+            # threshold. `window_tokens` is kept for API compatibility only.
+            if any(
                 match.end == end and match.label not in {"aws_access_key_id", "us_ssn"}
                 for match in matches
             ):

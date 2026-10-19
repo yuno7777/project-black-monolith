@@ -143,7 +143,10 @@ async fn main() -> Result<()> {
             );
         }
         store.save_if_dirty()?;
-        eprintln!("revoked {tool:?}; moved back to pending approval");
+        eprintln!(
+            "revoked {tool:?}; it is withheld from the agent until you approve it again \
+             (mcp-shield --approve {tool})"
+        );
         return Ok(());
     }
 

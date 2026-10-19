@@ -10,7 +10,10 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 export function isAuthDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const key = "MONOLITH_DISABLE_AUTH";
-  return env[key]?.trim().toLowerCase() === "true";
+  // Exact match only. Accepting "True", "TRUE" or " true " would turn a
+  // configuration that means nothing on the secure path into one that
+  // disables every operator check and grants every requester admin.
+  return env[key] === "true";
 }
 
 /**

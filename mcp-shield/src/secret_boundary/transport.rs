@@ -208,12 +208,24 @@ impl HttpTransport for ReqwestHttpsTransport {
             };
 
             for (k, v) in &req.headers {
-                if let (Ok(hname), Ok(hval)) = (
-                    reqwest::header::HeaderName::from_bytes(k.as_bytes()),
-                    reqwest::header::HeaderValue::from_str(v),
-                ) {
-                    req_builder = req_builder.header(hname, hval);
-                }
+                // A header that cannot be represented is a failure, not
+                // something to skip: dropping the Authorization header would
+                // send the credential-less request to the approved
+                // destination and surface as an unrelated upstream error.
+                let hname =
+                    reqwest::header::HeaderName::from_bytes(k.as_bytes()).map_err(|_| {
+                        BoundaryError::InvalidRequest(format!(
+                            "Header name '{}' is not a valid HTTP header name",
+                            k
+                        ))
+                    })?;
+                let hval = reqwest::header::HeaderValue::from_str(v).map_err(|_| {
+                    BoundaryError::InvalidRequest(format!(
+                        "Header '{}' has a value that is not a valid HTTP header value",
+                        k
+                    ))
+                })?;
+                req_builder = req_builder.header(hname, hval);
             }
 
             if let Some(body) = &req.body {
