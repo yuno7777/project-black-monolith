@@ -8,6 +8,14 @@ import {
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
+export function isAuthDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const key = "MONOLITH_DISABLE_AUTH";
+  // Exact match only. Accepting "True", "TRUE" or " true " would turn a
+  // configuration that means nothing on the secure path into one that
+  // disables every operator check and grants every requester admin.
+  return env[key] === "true";
+}
+
 /**
  * Demo escape hatch: skip operator sign-in entirely.
  *
@@ -20,14 +28,16 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
  * a person's name — the audit trail should not imply someone signed in when
  * nobody did.
  */
-export const AUTH_DISABLED = process.env.MONOLITH_DISABLE_AUTH === "true";
+export const AUTH_DISABLED = isAuthDisabled();
 
-const DEMO_IDENTITY: OperatorIdentity = {
-  actor: "auth-disabled",
-  role: "admin",
-  tenant_id: process.env.MONOLITH_TENANT_ID || "default",
-  auth_type: "bearer",
-};
+function demoIdentity(): OperatorIdentity {
+  return {
+    actor: "auth-disabled",
+    role: "admin",
+    tenant_id: process.env.MONOLITH_TENANT_ID || "default",
+    auth_type: "bearer",
+  };
+}
 
 if (AUTH_DISABLED) {
   console.warn(
@@ -60,7 +70,7 @@ export async function requireOperator(
   req: Request,
   minimum: OperatorRole = "viewer",
 ): Promise<OperatorIdentity | Response> {
-  if (AUTH_DISABLED) return DEMO_IDENTITY;
+  if (isAuthDisabled()) return demoIdentity();
   try {
     const identity = await authenticateOperator(req);
     if (!identity) {

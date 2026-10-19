@@ -113,6 +113,49 @@ def test_expired_document_records_are_swept():
     assert "old-doc" not in t._docs
 
 
+def test_prune_retains_quarantined_docs_and_reset_doc_clears_both():
+    t = FrequencyTracker(
+        min_distinct_topics=2,
+        topic_similarity=0.30,
+        retention_horizon=1,
+        max_queries_per_doc=64,
+    )
+    t.record_query(["quarantined-doc", "clean-doc"], emb("garden soil"))
+    t._quarantined.add("quarantined-doc")
+    t.record_query(["later-doc"], emb("galaxy star"))
+    t._prune()
+
+    assert "clean-doc" not in t._docs
+    assert "quarantined-doc" in t._docs
+
+    t.reset_doc("quarantined-doc")
+    assert "quarantined-doc" not in t._docs
+    assert "quarantined-doc" not in t._quarantined
+
+
+def test_max_tracked_docs_evicts_oldest_non_quarantined_entries():
+    t = FrequencyTracker(
+        min_distinct_topics=2,
+        topic_similarity=0.30,
+        retention_horizon=500,
+        max_queries_per_doc=64,
+        max_tracked_docs=3,
+    )
+    t.record_query(["doc-1"], [1.0, 0.0, 0.0, 0.0])
+    t._quarantined.add("doc-1")
+    t.record_query(["doc-2"], [0.0, 1.0, 0.0, 0.0])
+    t.record_query(["doc-3"], [0.0, 0.0, 1.0, 0.0])
+    # Touch doc-2 so doc-3 becomes the oldest non-quarantined entry.
+    t.record_query(["doc-2"], [0.0, 1.0, 0.0, 0.0])
+    t.record_query(["doc-4"], [0.0, 0.0, 0.0, 1.0])
+
+    assert len(t._docs) == 3
+    assert "doc-1" in t._docs
+    assert "doc-2" in t._docs
+    assert "doc-4" in t._docs
+    assert "doc-3" not in t._docs
+
+
 def test_replaced_documents_lose_old_frequency_history():
     t = make_tracker()
     for query in [
@@ -150,12 +193,20 @@ def test_topic_score_is_independent_of_query_arrival_order():
     assert scores == [2, 2, 2]
 
 
-@pytest.mark.parametrize("vector", [[], [float("nan")], [float("inf")]])
+@pytest.mark.parametrize("vector", [[], [float("nan")], [float("inf")], [True]])
 def test_invalid_embeddings_cannot_enter_detector_state(vector):
     tracker = make_tracker()
-    with pytest.raises(ValueError, match="non-empty and finite"):
+    with pytest.raises(ValueError, match="non-empty, numeric, and finite"):
         tracker.record_query(["doc"], vector)
     assert tracker._docs == {}
+
+
+def test_embedding_dimensions_cannot_change_midstream():
+    tracker = make_tracker()
+    tracker.record_query(["doc"], [1.0, 0.0])
+    with pytest.raises(ValueError, match="dimensions must remain consistent"):
+        tracker.record_query(["doc"], [1.0])
+    assert tracker.evaluate("doc").total_queries == 1
 
 
 def test_recorded_embeddings_are_not_mutated_by_the_caller():

@@ -1,9 +1,8 @@
 import pathlib
 
 import pytest
-
-from src.embedding import HashingEmbeddingFunction
 from src.detector_state import DetectorStateStore
+from src.embedding import HashingEmbeddingFunction
 from src.frequency_tracker import FrequencyTracker
 from src.quarantine import Quarantine, QuarantinedDoc
 
@@ -50,6 +49,22 @@ def test_tracker_rejects_state_referring_to_queries_that_never_happened():
             topic_similarity=0.2,
             retention_horizon=500,
         max_queries_per_doc=64,
+        )
+
+
+def test_tracker_rejects_mixed_persisted_embedding_dimensions():
+    state = {
+        "version": 2,
+        "next_query_id": 2,
+        "documents": {"doc": {"0": [1.0], "1": [1.0, 0.0]}},
+    }
+    with pytest.raises(ValueError, match="dimensions are inconsistent"):
+        FrequencyTracker.from_snapshot(
+            state,
+            min_distinct_topics=2,
+            topic_similarity=0.2,
+            retention_horizon=500,
+            max_queries_per_doc=64,
         )
 
 
@@ -169,3 +184,9 @@ def test_unreadable_state_is_set_aside_not_deleted(tmp_path):
 
     assert not path.exists()
     assert "stale" in pathlib.Path(moved).read_text(encoding="utf-8")
+
+    path.write_text('{"version": 1, "newer": true}', encoding="utf-8")
+    moved_again = store.quarantine_unreadable()
+    assert moved_again != moved
+    assert "stale" in pathlib.Path(moved).read_text(encoding="utf-8")
+    assert "newer" in pathlib.Path(moved_again).read_text(encoding="utf-8")

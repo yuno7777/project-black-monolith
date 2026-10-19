@@ -17,6 +17,16 @@ else
 fi
 
 psql "${psql_args[@]}" <<'SQL'
+-- Plain PostgreSQL lacks Supabase's API roles. Create inert compatibility
+-- roles for migration REVOKEs; existing Supabase roles remain untouched.
+select format(
+  'create role %I nologin nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls',
+  required.name
+)
+from (values ('anon'), ('authenticated')) as required(name)
+where not exists (select 1 from pg_roles where rolname = required.name)
+\gexec
+
 select 'create role monolith_app nologin nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls'
 where not exists (select 1 from pg_roles where rolname = 'monolith_app')
 \gexec

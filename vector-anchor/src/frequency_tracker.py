@@ -57,6 +57,10 @@ class _DocRecord:
     # query_id -> query embedding, for queries where this doc ranked highly
     queries: dict[int, list[float]] = field(default_factory=dict)
 
+    @property
+    def hits(self) -> dict[int, list[float]]:
+        return self.queries
+
 
 @dataclass
 class AnomalyResult:
@@ -72,15 +76,21 @@ class FrequencyTracker:
         *,
         min_distinct_topics: int,
         topic_similarity: float,
-        retention_horizon: int,
-        max_queries_per_doc: int,
+        retention_horizon: int = 500,
+        max_queries_per_doc: int = 8,
+        max_tracked_docs: int = 50_000,
     ):
+        if max_tracked_docs < 1:
+            raise ValueError("max_tracked_docs must be positive")
         self.min_distinct_topics = min_distinct_topics
         self.topic_similarity = topic_similarity
         self.retention_horizon = retention_horizon
         self.max_queries_per_doc = max_queries_per_doc
+        self.max_tracked_docs = max_tracked_docs
         self._docs: dict[str, _DocRecord] = {}
+        self._quarantined: set[str] = set()
         self._next_query_id = 0
+        self._embedding_dim: int | None = None
 
     # -- recording ---------------------------------------------------------
 
@@ -90,20 +100,28 @@ class FrequencyTracker:
         """Record that ``ranked_doc_ids`` (already limited to the top ranks)
         were returned for a query with ``query_embedding``."""
         if not query_embedding or not all(
-            math.isfinite(value) for value in query_embedding
+            not isinstance(value, bool)
+            and isinstance(value, (int, float))
+            and math.isfinite(value)
+            for value in query_embedding
         ):
-            raise ValueError("query embedding must be non-empty and finite")
+            raise ValueError("query embedding must be non-empty, numeric, and finite")
+        if self._embedding_dim is None:
+            self._embedding_dim = len(query_embedding)
+        elif len(query_embedding) != self._embedding_dim:
+            raise ValueError("query embedding dimensions must remain consistent")
         # Do not retain a caller-owned mutable list as detector state, and
         # normalize once here so every later comparison is a dot product.
-        query_embedding = normalize(query_embedding)
+        query_embedding = normalize([float(value) for value in query_embedding])
         qid = self._next_query_id
         self._next_query_id += 1
         for doc_id in ranked_doc_ids:
-            rec = self._docs.setdefault(doc_id, _DocRecord())
+            rec = self._docs.pop(doc_id, None) or _DocRecord()
+            self._docs[doc_id] = rec
             self._prune_expired(rec)
             self._admit(rec, qid, query_embedding)
-        if qid % SWEEP_INTERVAL == 0:
-            self._sweep()
+        if qid % SWEEP_INTERVAL == 0 or len(self._docs) > self.max_tracked_docs:
+            self._prune()
 
     def _admit(self, rec: _DocRecord, qid: int, embedding: list[float]) -> None:
         rec.queries[qid] = embedding
@@ -149,13 +167,28 @@ class FrequencyTracker:
         for qid in [qid for qid in rec.queries if qid < cutoff]:
             del rec.queries[qid]
 
-    def _sweep(self) -> None:
-        """Drop records whose every hit has expired. High-cardinality clean
-        traffic should not leave one empty record per document forever."""
+    def _prune(self) -> None:
+        """Drop records whose every hit has expired (unless quarantined) and
+        enforce max_tracked_docs by evicting the oldest non-quarantined docs."""
         for doc_id in list(self._docs):
             rec = self._docs[doc_id]
             self._prune_expired(rec)
-            if not rec.queries:
+            if not rec.queries and doc_id not in self._quarantined:
+                del self._docs[doc_id]
+        self._enforce_max_tracked_docs()
+
+    def _sweep(self) -> None:
+        """Drop records whose every hit has expired. High-cardinality clean
+        traffic should not leave one empty record per document forever."""
+        self._prune()
+
+    def _enforce_max_tracked_docs(self) -> None:
+        if len(self._docs) <= self.max_tracked_docs:
+            return
+        for doc_id in list(self._docs):
+            if len(self._docs) <= self.max_tracked_docs:
+                break
+            if doc_id not in self._quarantined:
                 del self._docs[doc_id]
 
     # -- scoring -----------------------------------------------------------
@@ -194,12 +227,20 @@ class FrequencyTracker:
         )
 
     def is_anomalous(self, doc_id: str) -> bool:
-        return self.distinct_topic_count(doc_id) >= self.min_distinct_topics
+        anomalous = self.distinct_topic_count(doc_id) >= self.min_distinct_topics
+        if anomalous:
+            self._quarantined.add(doc_id)
+        return anomalous
+
+    def reset_doc(self, doc_id: str) -> None:
+        """Remove a single document from frequency tracking and quarantine."""
+        self._docs.pop(doc_id, None)
+        self._quarantined.discard(doc_id)
 
     def forget_documents(self, doc_ids: list[str]) -> None:
         """Discard history for documents whose corpus content was replaced."""
         for doc_id in doc_ids:
-            self._docs.pop(doc_id, None)
+            self.reset_doc(doc_id)
 
     # -- persistence -------------------------------------------------------
 
@@ -225,6 +266,7 @@ class FrequencyTracker:
         topic_similarity: float,
         retention_horizon: int,
         max_queries_per_doc: int,
+        max_tracked_docs: int = 50_000,
     ) -> FrequencyTracker:
         # Version 1 held a global query window whose semantics no longer exist.
         # Refusing it is deliberate: silently reinterpreting old state under new
@@ -247,8 +289,10 @@ class FrequencyTracker:
             topic_similarity=topic_similarity,
             retention_horizon=retention_horizon,
             max_queries_per_doc=max_queries_per_doc,
+            max_tracked_docs=max_tracked_docs,
         )
         tracker._next_query_id = next_query_id
+        loaded_docs: list[tuple[int, str, dict[int, list[float]]]] = []
         for raw_doc_id, raw_queries in raw_documents.items():
             if (
                 not isinstance(raw_doc_id, str)
@@ -276,7 +320,14 @@ class FrequencyTracker:
                     )
                 ):
                     raise ValueError("invalid persisted query embedding")
+                if tracker._embedding_dim is None:
+                    tracker._embedding_dim = len(raw_embedding)
+                elif len(raw_embedding) != tracker._embedding_dim:
+                    raise ValueError("persisted query embedding dimensions are inconsistent")
                 queries[query_id] = normalize([float(value) for value in raw_embedding])
             if queries:
-                tracker._docs[raw_doc_id] = _DocRecord(queries=queries)
+                loaded_docs.append((max(queries), raw_doc_id, queries))
+        for _, doc_id, queries in sorted(loaded_docs, key=lambda item: item[0]):
+            tracker._docs[doc_id] = _DocRecord(queries=queries)
+        tracker._enforce_max_tracked_docs()
         return tracker

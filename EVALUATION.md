@@ -52,11 +52,13 @@ of **16 held-out benign prompts** — drawn from those same four styles, none in
 the baseline set — is then measured against that baseline, giving the benign
 KL distribution. Reproduce: `python fixtures/calibrate.py`.
 
-**Measured benign peak-KL distribution (N = 16):**
+**Measured benign peak-KL distribution (N = 36):**
 
 | mean | std | min | max | mean + 2σ | divergent fixture |
 | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0.343 | 0.064 | 0.247 | 0.481 | 0.470 | **3.289** |
+| 0.351 | 0.065 | 0.247 | 0.481 | 0.481 | **3.289** |
+
+The held-out set grew from 16 prompts across four styles to **36 across eight**, adding code generation, technical explanation, summarization and comparison. **False-positive result: 0 / 36.**
 
 **Derived threshold = 1.0.** The textbook `mean + 2σ = 0.470` sits essentially
 *at* the benign maximum (0.481), leaving no margin — a strict 2σ cut would
@@ -65,8 +67,18 @@ populations: **1.0 is ~2.1× the worst benign peak (0.481) and ~0.30× the
 divergent fixture (3.289)**. Encoded as `DEFAULT_KL_THRESHOLD` in
 `src/divergence_monitor.py` with the derivation in-comment.
 
-**False-positive result: 0 / 16** benign prompts triggered termination; the
-divergent fixture (3.289) crosses 1.0 decisively.
+The divergent fixture (3.289) crosses 1.0 decisively.
+
+> **What that larger N does and does not buy — read before quoting it.** The
+> default mock backend seeds its RNG from the prompt but draws every token from
+> one fixed pool (`_mock_stream` in `src/stream_proxy.py`), so its output style
+> does **not** vary with the prompt's style. The 20 added prompts therefore
+> widen the *seed* sample — a better estimate of run-to-run variance, which is
+> why the max is unchanged at 0.481 — but they do not test whether a genuinely
+> code-shaped token distribution shifts the benign range. **The
+> code-generation blind spot below remains NOT MEASURED**, and closing it
+> requires the `real` profile against Ollama. A clean count here is evidence
+> about seeds, not about code.
 
 **Bug found & fixed during calibration.** The mock backend seeded its RNG with
 Python's built-in `hash()`, which is salted per process (`PYTHONHASHSEED`), so
@@ -86,11 +98,11 @@ and needs recalibration (re-run `fixtures/calibrate.py`, update
 
 ## 2. VectorAnchor (memory layer) — frequency-anomaly threshold
 
-**Calibration method.** The 24-document clean corpus is seeded and **18
-diverse clean queries** across six topics (no poison present) are run through
-the frequency-anomaly detector; the highest distinct-topic score reached by
-any legitimate document is recorded, then compared against the poison
-fixture's score. Reproduce: `python fixtures/calibrate.py`.
+**Calibration method.** The **60-document** clean corpus is seeded and **36
+diverse clean queries** across twelve topics (no poison present) are run
+through the frequency-anomaly detector; the highest distinct-topic score
+reached by any legitimate document is recorded, then compared against the
+poison fixture's score. Reproduce: `python fixtures/calibrate.py`.
 
 **Measured separation:**
 
@@ -120,7 +132,43 @@ margin**.
 > that work. `garden-3` scores 3. The margin is one topic, not two. The
 > false-positive count is unaffected.
 
-**False-positive result: 0 / 24** clean documents flagged.
+**False-positive result: 0 / 60** clean documents flagged.
+
+### 2b. Corpus breadth is itself a defence — and it broke one of our own attacks
+
+Growing the clean corpus from 24 documents across six topics to **60 across
+twelve** was meant to be a routine sample-size improvement. It changed a
+result instead.
+
+**`poison-bait-b` stopped working.** Against 24 documents it held a top-2
+retrieval slot in all four of its target domains and scored 4 topics. Against
+60 it ranked **10th** for its own security trigger — beaten by focused clean
+documents — reached only 3 topics, and was no longer flagged. Detection fell
+from 75% to 50%.
+
+**That is not a detector regression, and scoring it as one would be wrong.**
+The detector's job is to flag documents that achieve broad cross-topic
+presence. A bait that no longer reaches the user has not been missed; it has
+failed. A positive sample in a detection benchmark has to be a working attack.
+
+**Why it failed is the interesting part.** A universal bait has a fixed vector
+budget: every domain it covers dilutes the others. Strengthening bait-b's
+security vocabulary won its security trigger back and *lost* its cycling one —
+tested directly, at four different weightings. Against a larger corpus, each
+domain has more focused competitors, so the budget no longer stretches.
+
+**Measured.** Of all **210** four-domain combinations available in the
+twelve-topic corpus, only **5 still permit a bait to hold a top-2 slot in all
+four domains** — about 2%. Corpus breadth raises the bar for constructing a
+universal bait by roughly 40x, without any detector involvement at all.
+
+**What was changed.** `poison-bait-b` was rewritten with balanced per-domain
+vocabulary so it lands all four domains again and remains a valid positive —
+what a real attacker facing a larger corpus would do. Detection returns to
+**3/4 (75%)**, now with **0 false positives across 60 documents** instead of
+24. The original text is described in-fixture so the finding is not lost.
+
+---
 
 ### 2a. Retention: closing the slow drip
 
@@ -298,21 +346,40 @@ trust-on-first-use limitation.
 
 ## 5. Dashboard — malformed-event resilience
 
-**Test.** `dashboard/test/malformed-event.test.mjs` now exercises the
-authenticated contract. It expects five invalid envelopes (missing required
-identity, bare scalar, malformed UUID) to return permanent `422` responses,
-then submits five events with malformed optional fields and verifies their
-tenant-scoped replay over the authenticated `/api/events` stream.
+**Test.** `dashboard/test/malformed-event.test.mjs` exercises the authenticated
+contract against a live stack: **11 invalid envelopes** must return permanent
+`422` responses, and **5 valid events** must be accepted, defaulted
+server-side, and replayed tenant-scoped over the authenticated `/api/events`
+stream.
 
-The strict boundary is intentional: `module`, `event_type`, tenant/module
-credential scope, and UUID idempotency cannot be guessed safely. Optional
-`severity`, timestamp, and `details` can be normalized to safe values.
+**Result: PASSED — 11 rejected, 5 accepted and replayed.**
 
-**Current live result after the trust-model update: NOT MEASURED.** The updated
-integration test needs a running dashboard and migrated Postgres database. It
-was deliberately not run during the non-Docker validation pass. The same
-normalization and rejection rules are covered by the dashboard's executable
-unit contract suite.
+Running it finally, rather than leaving it NOT MEASURED, found two things.
+
+**1. The documented contract was wrong.** This section previously said optional
+`severity`, timestamp and `details` "can be normalized to safe values", and the
+test asserted exactly that. The implementation does not normalize them — it
+rejects them with `422`. That changed in `39f6998` ("validate security event
+envelopes strictly"), which updated the unit contract suite but not this
+integration test or this document. The stale expectation is the reason the test
+was never green, and leaving it unrun is what hid the drift.
+
+**The strict behaviour is correct and is now what the test pins.** Coercing an
+unrecognised severity to `info` would silently *downgrade* a finding, and
+coercing a non-object `details` would discard the evidence the detection exists
+to carry. A permanent `422` dead-letters the event where a human can see it.
+What genuinely is optional — an absent `severity`, timestamp, or `event_id` —
+is still defaulted server-side, and the test covers that separately.
+
+**2. The test could never have reported success anyway.** Its SSE helper
+released the `/api/events` stream only on the error path. On the success path
+the socket stayed open, Node's event loop never drained, and the process hung
+with its buffered stdout unflushed — indistinguishable from a slow test. Fixed
+by aborting the controller in `finally`.
+
+The strict boundary itself is unchanged and intentional: `module`,
+`event_type`, tenant/module credential scope, and UUID idempotency cannot be
+guessed safely.
 
 ---
 
@@ -379,7 +446,7 @@ unlimited.
 | **Slow drip** — surface the bait for one topic at a time, let earlier hits age out | VectorAnchor | **Closed at the old rate; still works 10× slower.** A drip at the historical one-topic-per-50-queries is now caught; only a drip slower than the whole horizon still evades | ~500 covering retrievals per hidden topic (= `retention_horizon`), up from ~50. Drip any faster and it is caught |
 | **Retention-cap flood** — fill a document's retained hits with varied same-topic queries to push out earned topics | VectorAnchor | **Blocked.** Found while building the fix above, and cheaper than the attack it would have replaced (~8 retrievals per topic erased) | Eviction drops what the newest hit most duplicates, so a flood evicts itself; displacing a real topic requires a more distinct one, which raises the score |
 | **Token-boundary split** — a secret the tokenizer splits across two tokens | TraceAudit | **Blocked.** All 19 possible split points of a 20-char key are reconstructed and redacted before release | A split across more than the 16-token output window can still evade; the bound keeps streaming latency finite |
-| **First-contact poisoning** — the tool is poisoned the first time it is ever seen | MCP-Shield | **Blocked for known sanitizer patterns.** The tool is removed and no baseline is registered | Novel phrasings outside the sanitizer corpus remain a trust-on-first-use limitation |
+| **First-contact poisoning** — the tool is poisoned the first time it is ever seen | MCP-Shield | **Blocked for known sanitizer patterns; closable entirely.** The tool is removed and no baseline is registered. `MCP_SHIELD_FIRST_CONTACT=approve` additionally withholds *every* unseen tool, regardless of phrasing, until an operator approves it by name | Under the default `trust`, novel phrasings outside the sanitizer corpus remain a trust-on-first-use limitation. Under `approve` the limitation is removed and paid for in operator effort instead |
 
 Reproduce: `python -m pytest tests/test_evasion.py` in `vector-anchor/` and
 `trace-audit/`; `cargo test known_evasion` in `mcp-shield/`.
@@ -399,9 +466,16 @@ What the numbers say beyond "it evades":
   text when a match crosses token boundaries. The test covers every two-part
   split and the full 16-token window, while retaining a measured evasion at 17+
   fragments so the remaining boundary stays explicit.
-- **MCP-Shield still has a trust-on-first-use boundary** for novel poison that
-  matches none of the sanitizer patterns. Known patterns are blocked before a
-  baseline is registered; the adversarial test pins that enforcement behavior.
+- **MCP-Shield's trust-on-first-use boundary is now a choice, not a fact.**
+  Under the default `trust`, novel poison matching none of the sanitizer
+  patterns is still registered as the baseline — a fingerprint can only prove
+  a schema has not *changed*. `MCP_SHIELD_FIRST_CONTACT=approve` withholds every
+  unseen tool and emits `tool_pending_approval` until an operator runs
+  `mcp-shield --approve <tool>`, which removes the boundary outright at the cost
+  of an approval step per new tool. Four tests pin it: the withholding, the
+  approval, that `trust` is unchanged and remains the default, and that a
+  pending record is *not* overwritten by a later serving — otherwise a server
+  could show a clean tool and swap in a poisoned one just before approval.
 
 ---
 

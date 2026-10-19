@@ -1,0 +1,27 @@
+{
+  "id": "chatcmpl-0123456789abcdef01234567",
+  "object": "chat.completion",
+  "created": 1785715200,
+  "model": "mock-auditor",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Escalate the incident to the security on-call."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 12,
+    "completion_tokens": 8,
+    "total_tokens": 20
+  },
+  "monolith_audit": {
+    "terminated": false,
+    "redactions": [],
+    "redaction_count": 0,
+    "peak_kl": 0.42
+  }
+}

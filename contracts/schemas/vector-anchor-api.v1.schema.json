@@ -55,7 +55,53 @@
           "type": "array",
           "items": { "$ref": "#/$defs/withheldResult" }
         },
-        "quarantine_size": { "type": "integer", "minimum": 0 }
+        "quarantine_size": { "type": "integer", "minimum": 0 },
+        "session_quarantined": {
+          "type": "boolean",
+          "description": "Present and true when the caller's revoked session was refused retrieval."
+        }
+      }
+    },
+    "quarantineEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["doc_id", "reason", "score", "preview", "quarantined_at_ms"],
+      "properties": {
+        "doc_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "score": { "type": "number", "minimum": 0 },
+        "preview": { "type": "string", "maxLength": 512 },
+        "quarantined_at_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "quarantineResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "documents"],
+      "properties": {
+        "count": { "type": "integer", "minimum": 0 },
+        "documents": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/quarantineEntry" }
+        }
+      }
+    },
+    "releaseQuarantineResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["doc_id", "released", "quarantined_count"],
+      "properties": {
+        "doc_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "released": { "type": "boolean" },
+        "quarantined_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "replayDeadLettersResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["replayed"],
+      "properties": {
+        "replayed": { "type": "integer", "minimum": 0 }
       }
     },
     "document": {
