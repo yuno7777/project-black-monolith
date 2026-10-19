@@ -31,8 +31,9 @@ pub use operation::{
 pub use policy::{path_contains_traversal, path_matches_prefix, PolicyEngine, PolicyRule};
 pub use provider::{
     validate_account_identifier, validate_cli_path, validate_secret_reference,
-    validate_trusted_cli_path, MockInvocation, MockSecretProvider, MockSubprocessRunner,
-    OnePasswordAuthMode, OnePasswordCliConfig, OnePasswordCliProvider, ParsedSecretReference,
-    SecretProvider, StandardSubprocessRunner, SubprocessOutput, SubprocessRunner,
+    validate_trusted_cli_path, EnvSecretProvider, MockInvocation, MockSecretProvider,
+    MockSubprocessRunner, OnePasswordAuthMode, OnePasswordCliConfig, OnePasswordCliProvider,
+    ParsedSecretReference, SecretProvider, StandardSubprocessRunner, SubprocessOutput,
+    SubprocessRunner, DEFAULT_ENV_SECRET_PREFIX,
 };
 pub use secret::SecretString;

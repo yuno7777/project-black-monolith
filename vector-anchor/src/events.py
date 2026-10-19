@@ -21,6 +21,7 @@ try:
         context_from_headers,
         make_emitter,
         now_ms,
+        replay_dead_letters,
     )
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python-common"))
@@ -39,6 +40,7 @@ except ModuleNotFoundError:
         context_from_headers,
         make_emitter,
         now_ms,
+        replay_dead_letters,
     )
 
 __all__ = [
@@ -56,4 +58,5 @@ __all__ = [
     "context_from_headers",
     "make_emitter",
     "now_ms",
+    "replay_dead_letters",
 ]
