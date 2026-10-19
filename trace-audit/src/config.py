@@ -47,6 +47,7 @@ class Config:
     dashboard_url: str | None
     event_token: str | None
     event_outbox_path: str
+    allow_insecure_dashboard: bool
     admin_token: str | None
 
     # --- correlation ----------------------------------------------------
@@ -58,6 +59,9 @@ class Config:
     tenant_id: str
     agent_id: str | None
     session_id: str | None
+    openai_base_url: str = "http://localhost:8000"
+    openai_api_key: str | None = None
+    openai_model: str = "default"
 
 
 def _valid_bearer_token(value: str) -> bool:
@@ -70,17 +74,44 @@ def _valid_bearer_token(value: str) -> bool:
 def _validate_id(name: str, value: str | None, *, required: bool = False) -> None:
     if value is None and not required:
         return
-    if value is None or not value.strip() or len(value.strip()) > MAX_ID_LENGTH:
+    trimmed = value.strip() if value is not None else ""
+    if (
+        not trimmed
+        or len(trimmed) > MAX_ID_LENGTH
+        or any(not character.isprintable() for character in trimmed)
+    ):
         raise ValueError(f"{name} must be between 1 and {MAX_ID_LENGTH} characters")
 
 
 def _validate_config(cfg: Config) -> Config:
-    if cfg.model_backend not in {"mock", "ollama"}:
-        raise ValueError("MONOLITH_MODEL_BACKEND must be 'mock' or 'ollama'")
+    if cfg.model_backend not in {"mock", "ollama", "openai"}:
+        raise ValueError("MONOLITH_MODEL_BACKEND must be 'mock', 'ollama', or 'openai'")
     if not cfg.ollama_base_url.startswith(("http://", "https://")):
         raise ValueError("MONOLITH_OLLAMA_URL must use http:// or https://")
-    if not cfg.ollama_model.strip() or len(cfg.ollama_model) > 128:
-        raise ValueError("MONOLITH_OLLAMA_MODEL must be between 1 and 128 characters")
+    ollama_model = cfg.ollama_model.strip()
+    if (
+        not ollama_model
+        or len(ollama_model.encode("utf-8")) > 128
+        or any(not character.isprintable() for character in ollama_model)
+    ):
+        raise ValueError("MONOLITH_OLLAMA_MODEL must be 1-128 printable UTF-8 bytes")
+    if not cfg.openai_base_url.startswith(("http://", "https://")):
+        raise ValueError("MONOLITH_OPENAI_BASE_URL must use http:// or https://")
+    openai_model = cfg.openai_model.strip()
+    if (
+        not openai_model
+        or len(openai_model.encode("utf-8")) > 128
+        or any(not character.isprintable() for character in openai_model)
+    ):
+        raise ValueError("MONOLITH_OPENAI_MODEL must be 1-128 printable UTF-8 bytes")
+    if cfg.openai_api_key is not None and (
+        not cfg.openai_api_key.strip()
+        or any(
+            not character.isprintable() or character in "\r\n"
+            for character in cfg.openai_api_key
+        )
+    ):
+        raise ValueError("MONOLITH_OPENAI_API_KEY must be printable header-safe characters")
     if not cfg.baseline_path.strip():
         raise ValueError("MONOLITH_BASELINE_PATH must not be blank")
     if not math.isfinite(cfg.kl_threshold) or not 0 < cfg.kl_threshold <= 100:
@@ -127,9 +158,17 @@ def load_config() -> Config:
         dashboard_url=os.environ.get("MONOLITH_DASHBOARD_URL") or None,
         event_token=os.environ.get("MONOLITH_EVENT_TOKEN") or None,
         event_outbox_path=os.environ.get("MONOLITH_EVENT_OUTBOX_PATH", "./event_outbox.db"),
+        allow_insecure_dashboard=os.environ.get("MONOLITH_ALLOW_INSECURE_DASHBOARD") == "true",
         admin_token=os.environ.get("MONOLITH_ADMIN_TOKEN") or None,
         tenant_id=os.environ.get("MONOLITH_TENANT_ID", "default"),
         agent_id=os.environ.get("MONOLITH_AGENT_ID") or None,
         session_id=os.environ.get("MONOLITH_SESSION_ID") or None,
+        openai_base_url=(
+            os.environ.get("MONOLITH_OPENAI_BASE_URL")
+            or os.environ.get("MONOLITH_OPENAI_URL")
+            or "http://localhost:8000"
+        ),
+        openai_api_key=os.environ.get("MONOLITH_OPENAI_API_KEY") or None,
+        openai_model=os.environ.get("MONOLITH_OPENAI_MODEL", "default"),
     )
     return _validate_config(cfg)

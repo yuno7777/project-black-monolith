@@ -99,3 +99,42 @@ def test_upsert_clears_stale_quarantine_and_tracker_state():
     assert collection.documents["doc"] == "replacement"
     assert forgotten == ["doc"]
     assert not quarantine.is_quarantined("doc")
+
+
+def test_corpus_update_waits_for_inflight_query_and_clears_its_history():
+    entered = threading.Event()
+    release = threading.Event()
+    updated = threading.Event()
+    history = []
+
+    class PausedCollection(Collection):
+        def query(self, **kwargs):
+            entered.set()
+            assert release.wait(3)
+            return super().query(**kwargs)
+
+    tracker = RacyTracker()
+    tracker.record_query = lambda ids, _embedding: history.extend(ids)
+    tracker.forget_documents = lambda _ids: history.clear()
+    proxy = RetrieverProxy(
+        collection=PausedCollection(), embed_fn=lambda _: [[1.0]], tracker=tracker,
+        quarantine=Quarantine(),
+        cfg=SimpleNamespace(top_k=1, candidate_buffer=0, top_rank_threshold=1),
+        emit=lambda *_args, **_kwargs: None,
+    )
+    def update():
+        proxy.upsert_documents([("doc", "replacement")])
+        updated.set()
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        retrieval = workers.submit(proxy.retrieve, "query")
+        assert entered.wait(3)
+        mutation = workers.submit(update)
+        try:
+            assert not updated.wait(0.1)
+        finally:
+            release.set()
+        retrieval.result(timeout=3)
+        mutation.result(timeout=3)
+    assert history == []
+    assert proxy.collection.documents["doc"] == "replacement"

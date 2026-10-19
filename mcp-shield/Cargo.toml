@@ -2,6 +2,7 @@
 name = "mcp-shield"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.86"
 description = "Project Black Monolith tool-layer defense: MCP proxy that fingerprints tool schemas and detects poisoning / rug-pull mutations"
 license = "MIT"
 
@@ -18,3 +19,10 @@ hex = "0.4"
 tempfile = "3"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
 fs2 = "0.4.3"
+url = "2.5"
+pbm-secret-boundary = { path = "../crates/pbm-secret-boundary" }
+
+[dev-dependencies]
+tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rustls-pki-types = "1"
