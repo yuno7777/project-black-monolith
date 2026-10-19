@@ -8,9 +8,10 @@
 use anyhow::{bail, Context, Result};
 use reqwest::header::{HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, WWW_AUTHENTICATE};
 use serde_json::Value;
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinSet;
 
@@ -18,6 +19,11 @@ const SESSION_HEADER: &str = "mcp-session-id";
 const PROTOCOL_HEADER: &str = "mcp-protocol-version";
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-11-25";
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 300;
+const MAX_REQUEST_TIMEOUT_SECS: u64 = 3_600;
+const MAX_STDIN_MESSAGE_BYTES: usize = 1024 * 1024;
+const MAX_CONCURRENT_REQUESTS: usize = 64;
+const MAX_HTTP_RESPONSE_BYTES: usize = 1024 * 1024;
+const MAX_SSE_BUFFER_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone)]
 struct Bridge {
@@ -34,11 +40,11 @@ struct Bridge {
 /// JSON-RPC request while another POST's SSE stream remains open.
 pub(crate) async fn run(remote_url: &str) -> Result<()> {
     let target = parse_target(remote_url)?;
-    let timeout_secs = std::env::var("MCP_SHIELD_REMOTE_TIMEOUT_SECS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_REQUEST_TIMEOUT_SECS);
+    let timeout_secs = remote_timeout_secs(
+        std::env::var("MCP_SHIELD_REMOTE_TIMEOUT_SECS")
+            .ok()
+            .as_deref(),
+    )?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(10))
@@ -51,16 +57,8 @@ pub(crate) async fn run(remote_url: &str) -> Result<()> {
         DEFAULT_PROTOCOL_VERSION,
         "MCP protocol version",
     )?;
-    let authorization = std::env::var("MCP_SHIELD_REMOTE_TOKEN")
-        .ok()
-        .filter(|token| !token.trim().is_empty())
-        .map(|token| {
-            let mut value = HeaderValue::from_str(&format!("Bearer {token}"))
-                .context("MCP_SHIELD_REMOTE_TOKEN contains invalid header characters")?;
-            value.set_sensitive(true);
-            Ok::<_, anyhow::Error>(value)
-        })
-        .transpose()?;
+    let remote_token = std::env::var("MCP_SHIELD_REMOTE_TOKEN").ok();
+    let authorization = remote_authorization(remote_token.as_deref())?;
 
     let bridge = Bridge {
         client,
@@ -71,12 +69,12 @@ pub(crate) async fn run(remote_url: &str) -> Result<()> {
         authorization,
     };
 
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    let mut input = BufReader::new(tokio::io::stdin());
     let mut requests = JoinSet::new();
     loop {
         tokio::select! {
-            line = lines.next_line() => {
-                match line.context("read JSON-RPC message from stdin")? {
+            line = read_bounded_line(&mut input), if can_accept_request(requests.len()) => {
+                match line? {
                     Some(line) if line.trim().is_empty() => continue,
                     Some(line) => {
                         let message: Value = serde_json::from_str(&line)
@@ -102,6 +100,47 @@ pub(crate) async fn run(remote_url: &str) -> Result<()> {
     }
     bridge.close_session().await;
     Ok(())
+}
+
+fn can_accept_request(active: usize) -> bool {
+    active < MAX_CONCURRENT_REQUESTS
+}
+
+pub(crate) async fn read_bounded_line<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+) -> Result<Option<String>> {
+    let mut bytes = Vec::new();
+    loop {
+        let available = reader
+            .fill_buf()
+            .await
+            .context("read JSON-RPC message from stdin")?;
+        if available.is_empty() {
+            if bytes.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+        let consumed = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |index| index + 1);
+        if bytes.len() + consumed > MAX_STDIN_MESSAGE_BYTES {
+            bail!("stdio JSON-RPC message exceeds 1 MiB");
+        }
+        bytes.extend_from_slice(&available[..consumed]);
+        reader.consume(consumed);
+        if bytes.last() == Some(&b'\n') {
+            bytes.pop();
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
+            break;
+        }
+    }
+    String::from_utf8(bytes)
+        .context("stdio JSON-RPC message was not valid UTF-8")
+        .map(Some)
 }
 
 impl Bridge {
@@ -138,7 +177,9 @@ impl Bridge {
                 .and_then(|value| value.to_str().ok())
                 .unwrap_or("")
                 .to_owned();
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_response_text(response, MAX_HTTP_RESPONSE_BYTES)
+                .await
+                .context("read remote MCP error response")?;
             bail!(
                 "remote MCP server returned {status}{}: {}",
                 if challenge.is_empty() {
@@ -162,7 +203,9 @@ impl Bridge {
             .to_ascii_lowercase();
         match content_type.as_str() {
             "application/json" => {
-                let body = response.text().await.context("read JSON response")?;
+                let body = read_bounded_response_text(response, MAX_HTTP_RESPONSE_BYTES)
+                    .await
+                    .context("read JSON response")?;
                 let value: Value =
                     serde_json::from_str(&body).context("remote returned invalid JSON-RPC JSON")?;
                 validate_jsonrpc(&value)?;
@@ -183,6 +226,7 @@ impl Bridge {
     ) -> Result<()> {
         let mut pending = String::new();
         while let Some(chunk) = response.chunk().await.context("read MCP SSE response")? {
+            ensure_within_limit(pending.len(), chunk.len(), MAX_SSE_BUFFER_BYTES)?;
             pending.push_str(
                 std::str::from_utf8(&chunk).context("MCP SSE response was not valid UTF-8")?,
             );
@@ -259,6 +303,25 @@ impl Bridge {
     }
 }
 
+async fn read_bounded_response_text(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> Result<String> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.context("read HTTP response body")? {
+        ensure_within_limit(body.len(), chunk.len(), limit)?;
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body).context("HTTP response body was not valid UTF-8")
+}
+
+fn ensure_within_limit(current: usize, additional: usize, limit: usize) -> Result<()> {
+    if current.saturating_add(additional) > limit {
+        bail!("remote MCP response exceeds 1 MiB");
+    }
+    Ok(())
+}
+
 fn parse_target(value: &str) -> Result<reqwest::Url> {
     let url = reqwest::Url::parse(value).context("invalid MCP remote URL")?;
     if !matches!(url.scheme(), "http" | "https") {
@@ -270,12 +333,54 @@ fn parse_target(value: &str) -> Result<reqwest::Url> {
     if url.fragment().is_some() {
         bail!("MCP remote URL must not contain a fragment");
     }
+    if url.scheme() == "http" && !is_loopback_host(url.host_str()) {
+        bail!("MCP remote URL must use HTTPS unless it targets loopback");
+    }
     Ok(url)
+}
+
+fn is_loopback_host(host: Option<&str>) -> bool {
+    host.is_some_and(|value| {
+        value.eq_ignore_ascii_case("localhost")
+            || value
+                .parse::<IpAddr>()
+                .is_ok_and(|address| address.is_loopback())
+    })
 }
 
 fn header_from_env(name: &str, fallback: &str, label: &str) -> Result<HeaderValue> {
     let value = std::env::var(name).unwrap_or_else(|_| fallback.to_owned());
     HeaderValue::from_str(&value).with_context(|| format!("invalid {label}"))
+}
+
+fn remote_timeout_secs(value: Option<&str>) -> Result<u64> {
+    let Some(value) = value else {
+        return Ok(DEFAULT_REQUEST_TIMEOUT_SECS);
+    };
+    let seconds = value
+        .parse::<u64>()
+        .context("MCP_SHIELD_REMOTE_TIMEOUT_SECS must be an integer")?;
+    if !(1..=MAX_REQUEST_TIMEOUT_SECS).contains(&seconds) {
+        bail!("MCP_SHIELD_REMOTE_TIMEOUT_SECS must be between 1 and 3600");
+    }
+    Ok(seconds)
+}
+
+fn remote_authorization(token: Option<&str>) -> Result<Option<HeaderValue>> {
+    let Some(token) = token.filter(|value| !value.trim().is_empty()) else {
+        return Ok(None);
+    };
+    if !(16..=512).contains(&token.len())
+        || !token
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-._~+/=".contains(character))
+    {
+        bail!("MCP_SHIELD_REMOTE_TOKEN must be a 16-512 character header-safe token");
+    }
+    let mut value = HeaderValue::from_str(&format!("Bearer {token}"))
+        .context("MCP_SHIELD_REMOTE_TOKEN contains invalid header characters")?;
+    value.set_sensitive(true);
+    Ok(Some(value))
 }
 
 fn validate_jsonrpc(value: &Value) -> Result<()> {
@@ -329,6 +434,8 @@ mod tests {
         assert!(parse_target("file:///tmp/mcp").is_err());
         assert!(parse_target("https://user:pass@example.test/mcp").is_err());
         assert!(parse_target("https://example.test/mcp#token").is_err());
+        assert!(parse_target("http://example.test/mcp").is_err());
+        assert!(parse_target("http://192.0.2.1/mcp").is_err());
     }
 
     #[test]
@@ -344,5 +451,58 @@ mod tests {
     fn finds_lf_and_crlf_event_boundaries() {
         assert_eq!(next_sse_event("data: one\n\nrest"), Some((9, 11)));
         assert_eq!(next_sse_event("data: one\r\n\r\nrest"), Some((9, 13)));
+    }
+
+    #[test]
+    fn remote_timeout_is_bounded_and_invalid_values_fail_closed() {
+        assert_eq!(remote_timeout_secs(None).unwrap(), 300);
+        assert_eq!(remote_timeout_secs(Some("1")).unwrap(), 1);
+        assert_eq!(remote_timeout_secs(Some("3600")).unwrap(), 3600);
+        for value in ["0", "3601", "invalid"] {
+            assert!(remote_timeout_secs(Some(value)).is_err());
+        }
+    }
+
+    #[test]
+    fn remote_bearer_token_is_bounded_and_header_safe() {
+        assert!(remote_authorization(None).unwrap().is_none());
+        assert!(remote_authorization(Some(" ")).unwrap().is_none());
+        let header = remote_authorization(Some("valid-token-0000"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(header.to_str().unwrap(), "Bearer valid-token-0000");
+        assert!(header.is_sensitive());
+        for value in ["short", "invalid token value", "valid-token\r\ninjected"] {
+            assert!(remote_authorization(Some(value)).is_err());
+        }
+        assert!(remote_authorization(Some(&"x".repeat(513))).is_err());
+    }
+
+    #[tokio::test]
+    async fn stdin_messages_are_bounded_before_allocation_runs_away() {
+        let mut input = BufReader::new(&b"{\"jsonrpc\":\"2.0\"}\r\n"[..]);
+        assert_eq!(
+            read_bounded_line(&mut input).await.unwrap().as_deref(),
+            Some("{\"jsonrpc\":\"2.0\"}")
+        );
+        assert!(read_bounded_line(&mut input).await.unwrap().is_none());
+
+        let oversized = vec![b'x'; MAX_STDIN_MESSAGE_BYTES + 1];
+        let mut input = BufReader::new(oversized.as_slice());
+        assert!(read_bounded_line(&mut input).await.is_err());
+    }
+
+    #[test]
+    fn remote_bridge_caps_in_flight_requests() {
+        assert!(can_accept_request(MAX_CONCURRENT_REQUESTS - 1));
+        assert!(!can_accept_request(MAX_CONCURRENT_REQUESTS));
+        assert!(!can_accept_request(MAX_CONCURRENT_REQUESTS + 1));
+    }
+
+    #[test]
+    fn remote_response_buffers_are_bounded() {
+        assert!(ensure_within_limit(512, 512, 1024).is_ok());
+        assert!(ensure_within_limit(1024, 1, 1024).is_err());
+        assert!(ensure_within_limit(usize::MAX, 1, 1024).is_err());
     }
 }

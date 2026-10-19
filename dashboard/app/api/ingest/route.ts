@@ -1,7 +1,9 @@
 // POST /api/ingest — the endpoint each Monolith module POSTs its events to.
 // Accepts a single event object or an array of them.
 
+import { getEventBroker } from "@/lib/event-ingest";
 import { normalizeEvent, persistEvents, checkDatabase } from "@/lib/event-store";
+import { evaluateSessionCircuitBreaker } from "@/lib/incident-store";
 import { authenticateIngest } from "@/lib/ingest-auth";
 import { jsonBodyError, readJsonBody } from "@/lib/request-body";
 
@@ -45,10 +47,20 @@ export async function POST(req: Request) {
 
   try {
     const persisted = await persistEvents(events);
+    const newlyAccepted = persisted
+      .filter((result) => result.inserted)
+      .map((result) => result.event);
+    if (newlyAccepted.length) {
+      getEventBroker().publish(newlyAccepted);
+    }
+    const revokedSessions = await evaluateSessionCircuitBreaker(
+      persisted.map((result) => result.event),
+    );
     return Response.json({
-      accepted: persisted.filter((result) => result.inserted).length,
+      accepted: newlyAccepted.length,
       duplicates: persisted.filter((result) => !result.inserted).length,
       event_ids: persisted.map((result) => result.event.event_id),
+      revoked_sessions: revokedSessions,
     }, { status: 201 });
   } catch (error) {
     console.error("failed to persist security events", error);
