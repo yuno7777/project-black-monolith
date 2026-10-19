@@ -131,19 +131,7 @@ class EventOutbox:
         self._connection.execute("pragma journal_mode = wal")
         self._connection.execute("pragma synchronous = normal")
         self._connection.execute("pragma busy_timeout = 1000")
-        self._connection.execute(
-            """create table if not exists event_outbox (
-                event_id text primary key,
-                payload blob not null,
-                attempts integer not null default 0,
-                next_attempt_ms integer not null,
-                status text not null default 'pending',
-                last_error text,
-                created_ms integer not null,
-                updated_ms integer not null
-            )"""
-        )
-        self._migrate_legacy_table()
+        self._init_schema()
         self._connection.commit()
         self._lock = threading.Lock()
         self._url = url
@@ -163,6 +151,27 @@ class EventOutbox:
                 daemon=True,
             )
             self._worker.start()
+
+    def _init_schema(self) -> None:
+        self._connection.execute(
+            """create table if not exists event_outbox (
+                event_id text primary key,
+                payload blob not null,
+                attempts integer not null default 0,
+                next_attempt_ms integer not null,
+                status text not null default 'pending',
+                last_error text,
+                created_ms integer not null,
+                updated_ms integer not null
+            )"""
+        )
+        self._migrate_legacy_table()
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_event_outbox_status_next ON event_outbox (status, next_attempt_ms, created_ms)"
+        )
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_event_outbox_status_updated ON event_outbox (status, updated_ms)"
+        )
 
     def _migrate_legacy_table(self) -> None:
         columns = {row[1] for row in self._connection.execute("pragma table_info(event_outbox)")}
@@ -309,6 +318,27 @@ class EventOutbox:
             "worker_error": self._worker_error,
         }
 
+    def replay_dead_letters(self) -> int:
+        timestamp = now_ms()
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                """update event_outbox
+                   set status = 'pending',
+                       attempts = 0,
+                       next_attempt_ms = 0,
+                       last_error = null,
+                       updated_ms = ?
+                   where status = 'dead'""",
+                (timestamp,),
+            )
+            replayed = int(
+                cursor.rowcount
+                if cursor.rowcount is not None and cursor.rowcount >= 0
+                else 0
+            )
+        self._wake.set()
+        return replayed
+
     def close(self, timeout: float = 5.0) -> None:
         self._stop.set()
         self._wake.set()
@@ -402,6 +432,17 @@ class EventEmitter:
         if not self.outbox:
             return {"pending": 0, "dead": 0, "worker_alive": False, "worker_error": None}
         return self.outbox.stats()
+
+    def replay_dead_letters(self) -> int:
+        if not self.outbox:
+            return 0
+        return self.outbox.replay_dead_letters()
+
+
+def replay_dead_letters(outbox: EventOutbox | EventEmitter | None = None) -> int:
+    if outbox is None:
+        return 0
+    return outbox.replay_dead_letters()
 
 
 def make_emitter(
