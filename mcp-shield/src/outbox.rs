@@ -33,12 +33,13 @@
 use crate::events::now_ms;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
-use std::net::IpAddr;
+use std::io::{self, BufRead, BufReader, Write};
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 /// Attempts after which an event is moved to the dead-letter file. Attempts
@@ -47,7 +48,9 @@ use std::time::{Duration, Instant};
 const MAX_ATTEMPTS: u32 = 10;
 /// Upper bound on spooled records. Enforced at compaction; the oldest records
 /// are dropped first (newest detections are the most actionable).
-const MAX_SPOOL_RECORDS: usize = 10_000;
+pub const MAX_SPOOL_RECORDS: usize = 10_000;
+/// Upper bound on spooled bytes across `outbox.jsonl` and `outbox.dead`.
+pub const MAX_SPOOL_BYTES: usize = 16 * 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
 /// How often the background flusher looks for due records.
@@ -71,6 +74,70 @@ fn valid_event_token(token: &str) -> bool {
         })
 }
 
+/// Upper bound on the ingest response body read back for the revocation
+/// snapshot. The real response (ids plus a session list) is a few kilobytes.
+const MAX_INGEST_RESPONSE_BYTES: usize = 64 * 1024;
+
+/// Sessions the dashboard's cross-layer circuit breaker revoked.
+///
+/// The dashboard is the authority and does not expire revocations, so neither
+/// does this mirror: `observe_revoked_sessions` replaces the whole set with
+/// each authoritative snapshot, and a missing or unparseable snapshot leaves
+/// the previous set in place. Fail closed, not open.
+fn revoked_session_store() -> &'static RwLock<HashSet<String>> {
+    static REVOKED_SESSIONS: OnceLock<RwLock<HashSet<String>>> = OnceLock::new();
+    REVOKED_SESSIONS.get_or_init(|| RwLock::new(HashSet::new()))
+}
+
+/// Whether `session_id` is currently revoked; an empty id is never revoked.
+pub(crate) fn is_session_revoked(session_id: &str) -> bool {
+    let session_id = session_id.trim();
+    if session_id.is_empty() || session_id.len() > 128 {
+        return false;
+    }
+    revoked_session_store()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(session_id)
+}
+
+/// Read a response body with a hard byte cap; the revocation snapshot is
+/// small, and a compromised or misconfigured target must not be able to make
+/// the proxy buffer an unbounded body.
+async fn read_bounded_response(mut response: reqwest::Response) -> String {
+    let mut body: Vec<u8> = Vec::new();
+    while let Ok(Some(chunk)) = response.chunk().await {
+        if body.len() + chunk.len() > MAX_INGEST_RESPONSE_BYTES {
+            break;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8_lossy(&body).into_owned()
+}
+
+/// Adopt the `revoked_sessions` snapshot of an ingest response.
+///
+/// Returns `Some(count)` when the body carried a usable snapshot (possibly
+/// empty, which correctly lifts local revocations), and `None` when it did
+/// not — in which case the previous snapshot stands.
+pub(crate) fn observe_revoked_sessions(body: &str) -> Option<usize> {
+    let value: Value = serde_json::from_str(body).ok()?;
+    let ids = value.get("revoked_sessions")?.as_array()?;
+    let cleaned: HashSet<String> = ids
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty() && id.len() <= 128 && id.chars().all(|c| !c.is_control()))
+        .map(str::to_string)
+        .collect();
+    let count = cleaned.len();
+    let mut store = revoked_session_store()
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
+    *store = cleaned;
+    Some(count)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SpoolRecord {
     pub event_id: String,
@@ -82,6 +149,8 @@ pub(crate) struct SpoolRecord {
     pub next_attempt_ms: u128,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    #[serde(default)]
+    pub created_ms: u128,
 }
 
 impl SpoolRecord {
@@ -102,6 +171,14 @@ impl SpoolRecord {
         self.next_attempt_ms = now_ms() + base_ms.min(300_000) + jitter_ms;
         self.last_error = Some(error);
     }
+}
+
+/// Snapshot of outbox queue depths and age for `/stats` reporting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutboxStats {
+    pub outbox_pending: usize,
+    pub outbox_dead_letter: usize,
+    pub oldest_pending_age_seconds: u64,
 }
 
 pub(crate) fn parse_dashboard_url(value: &str, allow_insecure_http: bool) -> Option<reqwest::Url> {
@@ -126,7 +203,7 @@ pub(crate) fn parse_dashboard_url(value: &str, allow_insecure_http: bool) -> Opt
     Some(url)
 }
 
-pub(crate) struct Outbox {
+pub struct Outbox {
     path: PathBuf,
     lock_path: PathBuf,
     dead_path: PathBuf,
@@ -139,7 +216,31 @@ pub(crate) struct Outbox {
 }
 
 impl Outbox {
-    fn from_env() -> Option<Outbox> {
+    /// Construct an `Outbox` backed by `path` for local file operations
+    /// (`stats`, `replay_dead_letters`, and unit testing).
+    pub fn for_path(path: impl Into<PathBuf>) -> io::Result<Self> {
+        let path = path.into();
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            fs::create_dir_all(parent)?;
+        }
+        let client = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(RESPONSE_TIMEOUT)
+            .build()
+            .map_err(io::Error::other)?;
+        let target = reqwest::Url::parse("http://127.0.0.1:3000/api/events").expect("static url");
+        Ok(Self {
+            dead_path: path.with_extension("dead"),
+            lock_path: path.with_extension("lock"),
+            path,
+            target,
+            client,
+            token: String::new(),
+            file_lock: Mutex::new(()),
+        })
+    }
+
+    fn from_env() -> Option<Arc<Outbox>> {
         let url = std::env::var("MONOLITH_DASHBOARD_URL").ok()?;
         let allow_insecure_http =
             std::env::var("MONOLITH_ALLOW_INSECURE_DASHBOARD").is_ok_and(|value| value == "true");
@@ -184,7 +285,7 @@ impl Outbox {
                 return None;
             }
         };
-        Some(Outbox {
+        Some(Arc::new(Outbox {
             dead_path: path.with_extension("dead"),
             lock_path: path.with_extension("lock"),
             path,
@@ -192,34 +293,108 @@ impl Outbox {
             client,
             token,
             file_lock: Mutex::new(()),
-        })
+        }))
+    }
+
+    #[cfg(test)]
+    pub fn spool_path(&self) -> &Path {
+        &self.path
+    }
+
+    #[cfg(test)]
+    pub fn dead_letter_path(&self) -> &Path {
+        &self.dead_path
     }
 
     /// Append one event to the spool and fsync it. This is the only operation
     /// on the proxy's hot path; it is synchronous and bounded.
-    pub(crate) fn enqueue(&self, event_id: &str, payload: &str) -> std::io::Result<()> {
+    pub(crate) fn enqueue(&self, event_id: &str, payload: &str) -> io::Result<()> {
+        let now = now_ms();
         let record = SpoolRecord {
             event_id: event_id.to_string(),
             payload: payload.to_string(),
             attempts: 0,
-            next_attempt_ms: now_ms(),
+            next_attempt_ms: now,
             last_error: None,
+            created_ms: now,
         };
         let _guard = self.file_lock.lock().unwrap_or_else(|e| e.into_inner());
         let _process_guard = self.acquire_process_lock()?;
-        append_record(&self.path, &record)
+        append_record_bounded(&self.path, &record, MAX_SPOOL_RECORDS, MAX_SPOOL_BYTES)
     }
 
-    async fn post(&self, body: &str) -> Result<u16, String> {
-        self.client
+    /// Move all records from `outbox.dead` back into `outbox.jsonl` with
+    /// `attempts: 0` and `next_attempt_ms: 0` under the file and process locks.
+    /// Returns the number of dead-letter records replayed.
+    pub fn replay_dead_letters(&self) -> io::Result<usize> {
+        let _guard = self.file_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _process_guard = self.acquire_process_lock()?;
+
+        let dead_records = read_records(&self.dead_path)?;
+        if dead_records.is_empty() {
+            return Ok(0);
+        }
+        let replayed = dead_records.len();
+        let mut pending = read_records(&self.path)?;
+        let now = now_ms();
+        for mut record in dead_records {
+            record.attempts = 0;
+            record.next_attempt_ms = 0;
+            record.last_error = None;
+            if record.created_ms == 0 {
+                record.created_ms = now;
+            }
+            pending.push(record);
+        }
+        enforce_spool_bounds(&mut pending, MAX_SPOOL_RECORDS, MAX_SPOOL_BYTES);
+        write_records_atomically(&self.path, &pending)?;
+        write_records_atomically(&self.dead_path, &[])?;
+        Ok(replayed)
+    }
+
+    /// Inspect current pending and dead-letter counts plus the age in seconds
+    /// of the oldest pending record.
+    pub fn stats(&self) -> OutboxStats {
+        let _guard = self.file_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _process_guard = self.acquire_process_lock().ok();
+        let pending = read_records(&self.path).unwrap_or_default();
+        let dead = read_records(&self.dead_path).unwrap_or_default();
+        let now = now_ms();
+        let oldest_pending_age_seconds = pending
+            .iter()
+            .filter_map(record_created_ms)
+            .map(|created| (now.saturating_sub(created) / 1000) as u64)
+            .max()
+            .unwrap_or(0);
+        OutboxStats {
+            outbox_pending: pending.len(),
+            outbox_dead_letter: dead.len(),
+            oldest_pending_age_seconds,
+        }
+    }
+
+    async fn post(&self, body: &str) -> Result<(u16, String), String> {
+        let response = self
+            .client
             .post(self.target.clone())
             .bearer_auth(&self.token)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body.to_owned())
             .send()
             .await
-            .map(|response| response.status().as_u16())
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        let status = response.status().as_u16();
+        let text = read_bounded_response(response).await;
+        if (200..300).contains(&status) {
+            // Ingest responses carry the circuit breaker's revocations; the
+            // background poller covers the idle case where no event is sent.
+            if let Some(count) = observe_revoked_sessions(&text) {
+                if count > 0 {
+                    tracing::warn!(revoked_sessions = count, "dashboard revoked sessions");
+                }
+            }
+        }
+        Ok((status, text))
     }
 
     /// Attempt delivery of spooled records within `budget`.
@@ -253,11 +428,11 @@ impl Outbox {
                 continue;
             }
             match self.post(&record.payload).await {
-                Ok(status) if (200..300).contains(&status) => {
+                Ok((status, _)) if (200..300).contains(&status) => {
                     delivered.insert(record.event_id);
                     continue;
                 }
-                Ok(status) if is_permanent(status) => {
+                Ok((status, _)) if is_permanent(status) => {
                     record.last_error = Some(format!("http {status}"));
                     tracing::error!(
                         event_id = %record.event_id,
@@ -267,7 +442,7 @@ impl Outbox {
                     dead.push(record);
                     continue;
                 }
-                Ok(status) => record.defer(format!("http {status}")),
+                Ok((status, _)) => record.defer(format!("http {status}")),
                 Err(e) => record.defer(e),
             }
             if record.attempts >= MAX_ATTEMPTS {
@@ -297,7 +472,7 @@ impl Outbox {
         }
     }
 
-    fn load_pending(&self) -> std::io::Result<Vec<SpoolRecord>> {
+    fn load_pending(&self) -> io::Result<Vec<SpoolRecord>> {
         let _guard = self.file_lock.lock().unwrap_or_else(|e| e.into_inner());
         let _process_guard = self.acquire_process_lock()?;
         read_records(&self.path)
@@ -313,7 +488,7 @@ impl Outbox {
         delivered: &HashSet<String>,
         updated: &HashMap<String, SpoolRecord>,
         dead: &[SpoolRecord],
-    ) -> std::io::Result<()> {
+    ) -> io::Result<()> {
         let _guard = self.file_lock.lock().unwrap_or_else(|e| e.into_inner());
         let _process_guard = self.acquire_process_lock()?;
         let dead_ids: HashSet<&str> = dead.iter().map(|r| r.event_id.as_str()).collect();
@@ -324,19 +499,24 @@ impl Outbox {
             .map(|r| updated.get(&r.event_id).cloned().unwrap_or(r))
             .collect();
 
-        if keep.len() > MAX_SPOOL_RECORDS {
-            let dropped = keep.len() - MAX_SPOOL_RECORDS;
+        let dropped = enforce_spool_bounds(&mut keep, MAX_SPOOL_RECORDS, MAX_SPOOL_BYTES);
+        if dropped > 0 {
             tracing::error!(
                 dropped,
-                cap = MAX_SPOOL_RECORDS,
+                cap_records = MAX_SPOOL_RECORDS,
+                cap_bytes = MAX_SPOOL_BYTES,
                 "event outbox exceeded its cap; dropping oldest undelivered events"
             );
-            keep.drain(..dropped);
         }
 
-        for record in dead {
-            if let Err(e) = append_record(&self.dead_path, record) {
-                tracing::warn!(error = %e, "cannot write dead-letter record");
+        if !dead.is_empty() {
+            if let Err(e) = append_dead_records_bounded(
+                &self.dead_path,
+                dead,
+                MAX_SPOOL_RECORDS,
+                MAX_SPOOL_BYTES,
+            ) {
+                tracing::warn!(error = %e, "cannot write dead-letter records");
             }
         }
         write_records_atomically(&self.path, &keep)
@@ -345,7 +525,7 @@ impl Outbox {
     /// Serialize spool mutations across proxy processes and the resident
     /// drainer. The in-memory mutex only protects tasks in one process; this
     /// advisory lock protects the shared volume itself.
-    fn acquire_process_lock(&self) -> std::io::Result<std::fs::File> {
+    fn acquire_process_lock(&self) -> io::Result<std::fs::File> {
         let file = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -357,19 +537,103 @@ impl Outbox {
     }
 }
 
-fn append_record(path: &Path, record: &SpoolRecord) -> std::io::Result<()> {
-    let line = serde_json::to_string(record)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+fn record_created_ms(record: &SpoolRecord) -> Option<u128> {
+    if record.created_ms > 0 {
+        return Some(record.created_ms);
+    }
+    if let Ok(val) = serde_json::from_str::<Value>(&record.payload) {
+        if let Some(ts) = val.get("timestamp_ms").and_then(Value::as_u64) {
+            if ts > 0 {
+                return Some(u128::from(ts));
+            }
+        }
+    }
+    if record.attempts == 0 && record.next_attempt_ms > 0 {
+        return Some(record.next_attempt_ms);
+    }
+    None
+}
+
+pub(crate) fn enforce_spool_bounds(
+    records: &mut Vec<SpoolRecord>,
+    max_records: usize,
+    max_bytes: usize,
+) -> usize {
+    let initial_len = records.len();
+    if records.len() > max_records {
+        let drop_count = records.len() - max_records;
+        records.drain(..drop_count);
+    }
+    let sizes: Vec<usize> = records
+        .iter()
+        .map(|r| serde_json::to_string(r).map(|s| s.len() + 1).unwrap_or(0))
+        .collect();
+    let mut total_bytes: usize = sizes.iter().sum();
+    let mut byte_drops = 0;
+    while total_bytes > max_bytes && byte_drops < records.len() {
+        total_bytes = total_bytes.saturating_sub(sizes[byte_drops]);
+        byte_drops += 1;
+    }
+    if byte_drops > 0 {
+        records.drain(..byte_drops);
+    }
+    initial_len - records.len()
+}
+
+fn append_record(path: &Path, record: &SpoolRecord) -> io::Result<()> {
+    let line =
+        serde_json::to_string(record).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     file.write_all(line.as_bytes())?;
     file.write_all(b"\n")?;
     file.sync_all()
 }
 
-fn read_records(path: &Path) -> std::io::Result<Vec<SpoolRecord>> {
+fn append_record_bounded(
+    path: &Path,
+    record: &SpoolRecord,
+    max_records: usize,
+    max_bytes: usize,
+) -> io::Result<()> {
+    let line =
+        serde_json::to_string(record).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let existing_len = fs::metadata(path).map(|m| m.len() as usize).unwrap_or(0);
+    if existing_len + line.len() + 1 > max_bytes {
+        let mut records = read_records(path)?;
+        records.push(record.clone());
+        enforce_spool_bounds(&mut records, max_records, max_bytes);
+        return write_records_atomically(path, &records);
+    }
+    append_record(path, record)
+}
+
+pub(crate) fn append_dead_records_bounded(
+    dead_path: &Path,
+    new_dead: &[SpoolRecord],
+    max_records: usize,
+    max_bytes: usize,
+) -> io::Result<()> {
+    if new_dead.is_empty() {
+        return Ok(());
+    }
+    let mut records = read_records(dead_path)?;
+    records.extend_from_slice(new_dead);
+    let dropped = enforce_spool_bounds(&mut records, max_records, max_bytes);
+    if dropped > 0 {
+        tracing::warn!(
+            dropped,
+            cap_records = max_records,
+            cap_bytes = max_bytes,
+            "dead-letter spool exceeded cap; dropping oldest dead-letter records"
+        );
+    }
+    write_records_atomically(dead_path, &records)
+}
+
+fn read_records(path: &Path) -> io::Result<Vec<SpoolRecord>> {
     let file = match OpenOptions::new().read(true).open(path) {
         Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e),
     };
     let mut records = Vec::new();
@@ -388,10 +652,10 @@ fn read_records(path: &Path) -> std::io::Result<Vec<SpoolRecord>> {
     Ok(records)
 }
 
-fn write_records_atomically(path: &Path, records: &[SpoolRecord]) -> std::io::Result<()> {
+fn write_records_atomically(path: &Path, records: &[SpoolRecord]) -> io::Result<()> {
     if records.is_empty() {
         return match fs::remove_file(path) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
             other => other,
         };
     }
@@ -404,7 +668,7 @@ fn write_records_atomically(path: &Path, records: &[SpoolRecord]) -> std::io::Re
             .open(&temp)?;
         for record in records {
             let line = serde_json::to_string(record)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             file.write_all(line.as_bytes())?;
             file.write_all(b"\n")?;
         }
@@ -413,10 +677,23 @@ fn write_records_atomically(path: &Path, records: &[SpoolRecord]) -> std::io::Re
     fs::rename(&temp, path)
 }
 
-static OUTBOX: OnceLock<Option<Outbox>> = OnceLock::new();
+static OUTBOX: OnceLock<Option<Arc<Outbox>>> = OnceLock::new();
 
-pub(crate) fn outbox() -> Option<&'static Outbox> {
+pub(crate) fn outbox() -> Option<&'static Arc<Outbox>> {
     OUTBOX.get_or_init(Outbox::from_env).as_ref()
+}
+
+/// Resolve the active `Outbox` instance or open the spool file configured via
+/// `MONOLITH_EVENT_OUTBOX_PATH` (default `/var/lib/monolith/outbox.jsonl`).
+pub fn outbox_or_from_env_path() -> io::Result<Arc<Outbox>> {
+    if let Some(configured) = outbox() {
+        return Ok(Arc::clone(configured));
+    }
+    let path = PathBuf::from(
+        std::env::var("MONOLITH_EVENT_OUTBOX_PATH")
+            .unwrap_or_else(|_| "/var/lib/monolith/outbox.jsonl".to_string()),
+    );
+    Ok(Arc::new(Outbox::for_path(path)?))
 }
 
 /// Drain the spool. No-op when dashboard forwarding is not configured.
@@ -430,6 +707,7 @@ pub async fn drain(budget: Duration, force: bool) {
 /// then keeps delivering this run's events as they are emitted.
 pub fn spawn_flusher() -> Option<tokio::task::JoinHandle<()>> {
     let outbox = outbox()?;
+    let outbox = Arc::clone(outbox);
     Some(tokio::spawn(async move {
         loop {
             outbox.drain(FLUSH_INTERVAL * 4, false).await;
@@ -438,9 +716,258 @@ pub fn spawn_flusher() -> Option<tokio::task::JoinHandle<()>> {
     }))
 }
 
+/// Derive `GET /api/sessions/revoked` from the configured ingest endpoint.
+fn revocation_poll_url(target: &reqwest::Url) -> Option<reqwest::Url> {
+    let path = target.path().trim_end_matches('/');
+    let prefix = path.strip_suffix("/api/ingest")?;
+    let mut poll = target.clone();
+    poll.set_path(&format!("{prefix}/api/sessions/revoked"));
+    poll.set_query(None);
+    poll.set_fragment(None);
+    Some(poll)
+}
+
+/// Revocation poll cadence; zero (or a bad value) disables polling.
+fn poll_interval_ms() -> Option<u64> {
+    let raw = std::env::var("MONOLITH_SESSION_POLL_MS").unwrap_or_else(|_| "15000".to_string());
+    match raw.trim().parse::<u64>() {
+        Ok(value) if value >= 1_000 => Some(value),
+        _ => None,
+    }
+}
+
+/// Background revocation poller.
+///
+/// A revoked session must be cut off even when this short-lived proxy emits no
+/// events of its own: the dashboard's breaker trips from other layers'
+/// detections, and an idle proxy would otherwise never see it. Each poll
+/// adopts the whole snapshot, so a restore (empty set) also propagates.
+pub fn spawn_revocation_poller() -> Option<tokio::task::JoinHandle<()>> {
+    let outbox = outbox()?;
+    let url = revocation_poll_url(&outbox.target)?;
+    let interval_ms = poll_interval_ms()?;
+    let tenant = std::env::var("MONOLITH_TENANT_ID").unwrap_or_else(|_| "default".to_string());
+    let tenant = tenant.trim().to_string();
+    if tenant.is_empty() || tenant.len() > 128 || tenant.chars().any(char::is_control) {
+        tracing::warn!(
+            "MONOLITH_TENANT_ID is missing or invalid; revoked-session polling disabled"
+        );
+        return None;
+    }
+    let token = outbox.token.clone();
+    let client = match reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(RESPONSE_TIMEOUT)
+        // The bearer credential must never follow a redirect to another host.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            tracing::warn!(%error, "cannot initialize revocation poll client");
+            return None;
+        }
+    };
+    Some(tokio::spawn(async move {
+        loop {
+            match client
+                .get(url.clone())
+                .bearer_auth(&token)
+                .header("x-monolith-tenant-id", &tenant)
+                .header("x-monolith-module", crate::events::MODULE)
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => {
+                    let body = read_bounded_response(response).await;
+                    if let Some(count) = observe_revoked_sessions(&body) {
+                        tracing::debug!(
+                            revoked_sessions = count,
+                            "refreshed revoked-session snapshot"
+                        );
+                    }
+                }
+                Ok(response) => tracing::debug!(
+                    status = response.status().as_u16(),
+                    "revocation snapshot poll rejected"
+                ),
+                Err(error) => tracing::debug!(%error, "revocation snapshot poll failed"),
+            }
+            tokio::time::sleep(Duration::from_millis(interval_ms)).await;
+        }
+    }))
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+fn admin_authorized(expected_token: Option<&str>, auth_header: Option<&str>) -> bool {
+    let Some(expected) = expected_token.map(str::trim).filter(|s| !s.is_empty()) else {
+        return true;
+    };
+    let Some(header) = auth_header else {
+        return false;
+    };
+    let Some(supplied) = header.strip_prefix("Bearer ") else {
+        return false;
+    };
+    !supplied.is_empty() && constant_time_eq(supplied.as_bytes(), expected.as_bytes())
+}
+
+fn write_http_json_response(
+    mut stream: TcpStream,
+    status_code: u16,
+    reason: &str,
+    body: &Value,
+) -> io::Result<()> {
+    let payload = serde_json::to_string(body).unwrap_or_else(|_| "{}".to_string());
+    let response = format!(
+        "HTTP/1.1 {status_code} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+        payload.len()
+    );
+    stream.write_all(response.as_bytes())?;
+    stream.flush()
+}
+
+/// Handle a single HTTP connection on the status listener (`/health`, `/stats`,
+/// and `POST /admin/replay-dead-letters`).
+pub fn handle_status_connection(
+    stream: TcpStream,
+    outbox: &Outbox,
+    admin_token: Option<&str>,
+) -> io::Result<()> {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+
+    let cloned = stream.try_clone()?;
+    let mut reader = BufReader::new(cloned);
+
+    let mut request_line = String::new();
+    if reader.read_line(&mut request_line)? == 0 {
+        return Ok(());
+    }
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let raw_target = parts.next().unwrap_or("");
+    let path = raw_target.split('?').next().unwrap_or(raw_target);
+
+    let mut auth_header: Option<String> = None;
+    for _ in 0..64 {
+        let mut line = String::new();
+        let n = reader.read_line(&mut line)?;
+        if n == 0 || line == "\r\n" || line == "\n" {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            if name.trim().eq_ignore_ascii_case("authorization") {
+                auth_header = Some(value.trim().to_string());
+            }
+        }
+    }
+
+    match (method, path) {
+        ("GET", "/health") => write_http_json_response(
+            stream,
+            200,
+            "OK",
+            &json!({
+                "status": "ok",
+                "module": crate::events::MODULE,
+            }),
+        ),
+        ("GET", "/stats") => {
+            if !admin_authorized(admin_token, auth_header.as_deref()) {
+                return write_http_json_response(
+                    stream,
+                    401,
+                    "Unauthorized",
+                    &json!({ "error": "invalid administrative credential" }),
+                );
+            }
+            let s = outbox.stats();
+            write_http_json_response(
+                stream,
+                200,
+                "OK",
+                &json!({
+                    "status": "ok",
+                    "module": crate::events::MODULE,
+                    "outbox_pending": s.outbox_pending,
+                    "outbox_dead_letter": s.outbox_dead_letter,
+                    "oldest_pending_age_seconds": s.oldest_pending_age_seconds,
+                    "delivery": {
+                        "pending": s.outbox_pending,
+                        "dead": s.outbox_dead_letter,
+                        "oldest_pending_age_seconds": s.oldest_pending_age_seconds,
+                        "worker_alive": true,
+                        "worker_error": Value::Null,
+                    }
+                }),
+            )
+        }
+        ("POST", "/admin/replay-dead-letters") => {
+            if !admin_authorized(admin_token, auth_header.as_deref()) {
+                return write_http_json_response(
+                    stream,
+                    401,
+                    "Unauthorized",
+                    &json!({ "error": "invalid administrative credential" }),
+                );
+            }
+            match outbox.replay_dead_letters() {
+                Ok(replayed) => {
+                    write_http_json_response(stream, 200, "OK", &json!({ "replayed": replayed }))
+                }
+                Err(error) => write_http_json_response(
+                    stream,
+                    500,
+                    "Internal Server Error",
+                    &json!({ "error": error.to_string() }),
+                ),
+            }
+        }
+        _ => write_http_json_response(stream, 404, "Not Found", &json!({ "error": "not found" })),
+    }
+}
+
+/// Spawn a lightweight background `std::net::TcpListener` thread serving
+/// `/health`, `/stats`, and `POST /admin/replay-dead-letters`.
+pub fn spawn_status_listener(
+    bind_addr: &str,
+    outbox: Arc<Outbox>,
+    admin_token: Option<String>,
+) -> io::Result<SocketAddr> {
+    let listener = TcpListener::bind(bind_addr)?;
+    let local_addr = listener.local_addr()?;
+    std::thread::Builder::new()
+        .name("mcp-shield-status".into())
+        .spawn(move || {
+            for incoming in listener.incoming() {
+                match incoming {
+                    Ok(stream) => {
+                        let _ = handle_status_connection(stream, &outbox, admin_token.as_deref());
+                    }
+                    Err(error) => {
+                        tracing::debug!(%error, "status listener accept failed");
+                    }
+                }
+            }
+        })?;
+    Ok(local_addr)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir =
@@ -457,6 +984,7 @@ mod tests {
             attempts: 0,
             next_attempt_ms: 0,
             last_error: None,
+            created_ms: now_ms(),
         }
     }
 
@@ -547,5 +1075,201 @@ mod tests {
         assert!(!valid_event_token("valid-length-token\r\nInjected: yes"));
         assert!(!valid_event_token("valid length token with spaces"));
         assert!(!valid_event_token(&"x".repeat(MAX_EVENT_TOKEN_LENGTH + 1)));
+    }
+
+    #[test]
+    fn revocation_poll_url_is_derived_only_from_an_ingest_endpoint() {
+        let ingest = reqwest::Url::parse("https://dashboard.example/api/ingest").unwrap();
+        assert_eq!(
+            revocation_poll_url(&ingest).unwrap().as_str(),
+            "https://dashboard.example/api/sessions/revoked"
+        );
+        let nested = reqwest::Url::parse("https://dashboard.example/base/api/ingest/").unwrap();
+        assert_eq!(
+            revocation_poll_url(&nested).unwrap().as_str(),
+            "https://dashboard.example/base/api/sessions/revoked"
+        );
+        let unrelated = reqwest::Url::parse("https://dashboard.example/api/events").unwrap();
+        assert!(revocation_poll_url(&unrelated).is_none());
+    }
+
+    #[test]
+    fn revocation_poll_interval_is_bounded_and_zero_disables_it() {
+        std::env::set_var("MONOLITH_SESSION_POLL_MS", "30000");
+        assert_eq!(poll_interval_ms(), Some(30_000));
+        std::env::set_var("MONOLITH_SESSION_POLL_MS", "0");
+        assert_eq!(poll_interval_ms(), None);
+        std::env::set_var("MONOLITH_SESSION_POLL_MS", "250");
+        assert_eq!(poll_interval_ms(), None, "sub-second polls are rejected");
+        std::env::set_var("MONOLITH_SESSION_POLL_MS", "not-a-number");
+        assert_eq!(poll_interval_ms(), None);
+        std::env::remove_var("MONOLITH_SESSION_POLL_MS");
+        assert_eq!(poll_interval_ms(), Some(15_000), "default is 15s");
+    }
+
+    #[test]
+    fn revoked_session_snapshot_replaces_wholesale_and_missing_snapshots_do_not_clear() {
+        let session = "cafebabe-0000-4000-8000-000000000002";
+        let snapshot = json!({ "revoked_sessions": [session] }).to_string();
+        assert_eq!(observe_revoked_sessions(&snapshot), Some(1));
+        assert!(is_session_revoked(session));
+
+        // An ingest response without the field must not read as "nothing is
+        // revoked" — the previous snapshot stands.
+        assert_eq!(observe_revoked_sessions(r#"{"accepted":1}"#), None);
+        assert!(is_session_revoked(session));
+
+        // Malformed values are dropped, not admitted.
+        assert_eq!(
+            observe_revoked_sessions(r#"{"revoked_sessions":["", 7, {"id":"x"}]}"#),
+            Some(0)
+        );
+        assert!(!is_session_revoked(session));
+
+        // A real empty snapshot is authoritative and lifts the revocation.
+        assert_eq!(observe_revoked_sessions(&snapshot), Some(1));
+        assert_eq!(
+            observe_revoked_sessions(r#"{"revoked_sessions":[]}"#),
+            Some(0)
+        );
+        assert!(!is_session_revoked(session));
+        assert!(!is_session_revoked(""));
+    }
+
+    #[test]
+    fn dead_letter_spool_enforces_record_and_byte_bounds() {
+        let dead_path = temp_dir("dead-bounds").join("outbox.dead");
+        let batch: Vec<SpoolRecord> = (0..10).map(|i| record(&format!("evt-{i}"))).collect();
+        // Enforce max 4 records
+        append_dead_records_bounded(&dead_path, &batch, 4, MAX_SPOOL_BYTES).unwrap();
+        let kept = read_records(&dead_path).unwrap();
+        assert_eq!(kept.len(), 4);
+        assert_eq!(kept[0].event_id, "evt-6");
+        assert_eq!(kept[3].event_id, "evt-9");
+
+        // Enforce tight byte limit so only the newest 2 records fit
+        let new_rec = record("evt-10");
+        let two_size = serde_json::to_string(&kept[3]).unwrap().len()
+            + 1
+            + serde_json::to_string(&new_rec).unwrap().len()
+            + 1;
+        append_dead_records_bounded(&dead_path, &[new_rec], 10, two_size).unwrap();
+        let byte_kept = read_records(&dead_path).unwrap();
+        assert_eq!(byte_kept.len(), 2);
+        assert_eq!(byte_kept[0].event_id, "evt-9");
+        assert_eq!(byte_kept[1].event_id, "evt-10");
+    }
+
+    #[test]
+    fn replay_dead_letters_and_stats_work_end_to_end() {
+        let dir = temp_dir("replay-stats");
+        let spool_path = dir.join("outbox.jsonl");
+        let outbox = Outbox::for_path(&spool_path).unwrap();
+
+        // Enqueue one pending record aged 5 seconds
+        let mut old_pending = record("pending-1");
+        old_pending.created_ms = now_ms().saturating_sub(5_200);
+        write_records_atomically(outbox.spool_path(), &[old_pending]).unwrap();
+
+        // Add two dead-letter records with non-zero attempts and future next_attempt_ms
+        let mut dead1 = record("dead-1");
+        dead1.attempts = 10;
+        dead1.next_attempt_ms = now_ms() + 60_000;
+        dead1.last_error = Some("http 503".to_string());
+        let mut dead2 = record("dead-2");
+        dead2.attempts = 3;
+        dead2.next_attempt_ms = now_ms() + 30_000;
+        dead2.last_error = Some("http 401".to_string());
+        append_dead_records_bounded(
+            outbox.dead_letter_path(),
+            &[dead1, dead2],
+            MAX_SPOOL_RECORDS,
+            MAX_SPOOL_BYTES,
+        )
+        .unwrap();
+
+        let stats_before = outbox.stats();
+        assert_eq!(stats_before.outbox_pending, 1);
+        assert_eq!(stats_before.outbox_dead_letter, 2);
+        assert!(stats_before.oldest_pending_age_seconds >= 5);
+
+        let replayed = outbox.replay_dead_letters().unwrap();
+        assert_eq!(replayed, 2);
+        assert!(!outbox.dead_letter_path().exists());
+
+        let stats_after = outbox.stats();
+        assert_eq!(stats_after.outbox_pending, 3);
+        assert_eq!(stats_after.outbox_dead_letter, 0);
+
+        let pending_records = read_records(outbox.spool_path()).unwrap();
+        assert_eq!(pending_records.len(), 3);
+        assert_eq!(pending_records[1].event_id, "dead-1");
+        assert_eq!(pending_records[1].attempts, 0);
+        assert_eq!(pending_records[1].next_attempt_ms, 0);
+        assert!(pending_records[1].last_error.is_none());
+    }
+
+    #[test]
+    fn status_listener_serves_health_stats_and_replay_with_auth() {
+        let dir = temp_dir("status-http");
+        let outbox = Arc::new(Outbox::for_path(dir.join("outbox.jsonl")).unwrap());
+        let mut dead = record("dead-http-1");
+        dead.attempts = 10;
+        append_dead_records_bounded(
+            outbox.dead_letter_path(),
+            &[dead],
+            MAX_SPOOL_RECORDS,
+            MAX_SPOOL_BYTES,
+        )
+        .unwrap();
+
+        let token = "super-secret-admin-token-123456";
+        let addr =
+            spawn_status_listener("127.0.0.1:0", Arc::clone(&outbox), Some(token.to_string()))
+                .unwrap();
+
+        let send_raw = |raw_req: &str| -> String {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream.write_all(raw_req.as_bytes()).unwrap();
+            stream.flush().unwrap();
+            let mut resp = String::new();
+            stream.read_to_string(&mut resp).unwrap();
+            resp
+        };
+
+        // 1. GET /health (no auth required)
+        let health_resp = send_raw("GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        assert!(health_resp.starts_with("HTTP/1.1 200 OK"));
+        let health_body: Value =
+            serde_json::from_str(health_resp.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(health_body["status"], "ok");
+        assert_eq!(health_body["module"], "mcp-shield");
+
+        // 2. GET /stats without token -> 401
+        let unauth_stats = send_raw("GET /stats HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        assert!(unauth_stats.starts_with("HTTP/1.1 401 Unauthorized"));
+
+        // 3. GET /stats with valid token -> 200
+        let auth_stats = send_raw(&format!(
+            "GET /stats HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n"
+        ));
+        assert!(auth_stats.starts_with("HTTP/1.1 200 OK"));
+        let stats_body: Value =
+            serde_json::from_str(auth_stats.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(stats_body["status"], "ok");
+        assert_eq!(stats_body["module"], "mcp-shield");
+        assert_eq!(stats_body["outbox_pending"], 0);
+        assert_eq!(stats_body["outbox_dead_letter"], 1);
+
+        // 4. POST /admin/replay-dead-letters with valid token -> 200 {"replayed": 1}
+        let replay_resp = send_raw(&format!(
+            "POST /admin/replay-dead-letters HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n"
+        ));
+        assert!(replay_resp.starts_with("HTTP/1.1 200 OK"));
+        let replay_body: Value =
+            serde_json::from_str(replay_resp.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(replay_body["replayed"], 1);
+        assert_eq!(outbox.stats().outbox_pending, 1);
+        assert_eq!(outbox.stats().outbox_dead_letter, 0);
     }
 }
