@@ -164,6 +164,9 @@ delivery follows one shared contract:
   inspect the append-only audit trail.
 - **Cross-layer correlation** — groups only the complete
   `(tenant_id, agent_id, session_id)` identity.
+- **Cross-layer circuit breaker** — revokes a session once two distinct
+  layers report critical detections, and every layer then refuses to serve it
+  until an analyst restores it.
 - **Benchmark ledger** — keeps detector scorecards separate from security
   events and recomputes metrics from the confusion matrix server-side.
 - **Operations command center** — shows ledger latency, layer reachability,
@@ -179,6 +182,19 @@ delivery follows one shared contract:
 - **Least-privilege database runtime** — the restricted login assumes a
   `NOLOGIN`, `NOSUPERUSER`, `NOBYPASSRLS` application role; immutable evidence
   has no `UPDATE` or `DELETE` grant.
+
+The circuit breaker is deliberately conservative by default: it trips only
+when **two distinct layers** report a **critical** event for the same
+`(tenant_id, agent_id, session_id)`. Warnings do not count unless
+`MONOLITH_CIRCUIT_BREAKER_MIN_SEVERITY=warning`; the layer threshold is
+`MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS` (1–3). Revocation is enforced by each
+module itself — MCP-Shield returns a tool error, VectorAnchor serves no
+documents, and TraceAudit terminates with `session_revoked` — and is mirrored
+locally from ingest responses plus a 15-second poll, so a session with no
+traffic is still cut off. An analyst with the `analyst` role can restore a
+session from the investigation queue; a restore settles everything received
+before it, so the history that tripped the breaker cannot immediately re-trip
+it, while fresh detections still can. Revocations never expire on a timer.
 
 See the [dashboard guide](dashboard/README.md) and
 [identity and access model](docs/IDENTITY_AND_ACCESS.md) for the full
@@ -227,28 +243,52 @@ complete configuration contract.
 | MCP-Shield | stdio | MCP JSON-RPC proxy |
 | PostgreSQL | internal | Event, incident, session, and benchmark ledgers |
 
-### Docker-free college/demo setup
+### Docker-free setup: Windows, Linux, and macOS
 
-Install PostgreSQL 17 with `psql`, Python 3.12, Node.js/npm, Rust, Bash, and
-`curl`; then install the checked-in dependency graphs and run:
+Install PostgreSQL 17 with `psql`, Python 3.12, Node.js 22/npm, and Rust 1.86+
+so their executables are on PATH. Start PostgreSQL before launching the demo.
+Bash, curl, Docker, and WSL are not required for this native workflow.
+Use a Python 3.12 virtual environment and activate it in your shell first.
+On a system where Python is named `python3`, substitute that for `python` below.
 
-```bash
-bash scripts/generate_secrets.sh
-cd dashboard && npm ci && cd ..
-py -3.12 -m pip install -r vector-anchor/requirements.lock
-py -3.12 -m pip install -r trace-audit/requirements.lock
-
-# Defaults: dashboard 3000, VectorAnchor 8001, TraceAudit 8002.
-# Override any occupied port, for example: DASH_PORT=3101.
-DASH_PORT=3101 bash scripts/run_local_demo.sh
+```text
+python scripts/generate_secrets.py
+cd dashboard
+npm ci
+cd ..
+python -m pip install --require-hashes -r vector-anchor/requirements.lock -r trace-audit/requirements.lock
+python scripts/run_local_demo.py
 ```
 
-The runner targets a local PostgreSQL server on `127.0.0.1:5432`, bootstraps
-the restricted roles, applies checksum-verified migrations, builds/starts the
-dashboard, drives all three attacks, and keeps the services open until Ctrl-C.
-Set `DATABASE_ADMIN_URL` and `DATABASE_URL` to override the administrative and
-runtime connections. The generated operator token stays in `.env` and is the
-credential used on the sign-in page.
+Set `DATABASE_ADMIN_URL` in `.env` to an existing PostgreSQL administrative
+connection. Generating `.env` does not change your installed PostgreSQL user's
+password. The runner creates/reconciles the restricted runtime login using
+`MONOLITH_DATABASE_RUNTIME_PASSWORD`, applies checksum-verified migrations,
+builds the dashboard, and runs all three synthetic attack fixtures.
+Set `DATABASE_URL` too if PostgreSQL is not at `127.0.0.1:5432/postgres`.
+The generated `MONOLITH_OPERATOR_TOKEN` in `.env` is your sign-in credential.
+
+```text
+python scripts/run_local_demo.py --dash-port 3101
+python scripts/run_local_demo.py --no-hold
+python scripts/run_local_demo.py --skip-attacks
+```
+
+Default ports are 3000, 8001, and 8002. Use `--dash-port`, `--va-port`, and
+`--ta-port` to change them. Existing `DASH_PORT`, `VA_PORT`, `TA_PORT`, and
+`DEMO_HOLD=0` settings are also supported. Shell environment values override
+`.env`; its values are read literally, with no shell expansion or execution.
+
+Ctrl-C stops the process trees started by the runner. Occupied ports cause an
+error instead of terminating their owners. Logs and isolated detector state
+are retained in the printed temporary directory for diagnosis. Remove that
+directory manually after inspection. Database events persist in PostgreSQL.
+The Bash entry points remain available as wrappers for existing commands.
+
+Native CI covers all three operating systems; the complete Docker integration
+suite runs on Linux. A native full-stack run still requires local PostgreSQL
+and the installed dependencies. See [the code review](docs/CODEBASE_REVIEW.md)
+for remaining work and validation limits.
 
 ---
 
@@ -390,6 +430,7 @@ bash scripts/verify_ingest.sh
 bash scripts/verify_recovery.sh
 bash scripts/verify_incidents.sh
 bash scripts/verify_correlation.sh
+bash scripts/verify_circuit_breaker.sh
 bash scripts/verify_benchmarks.sh
 ```
 
@@ -496,3 +537,11 @@ unchanged.
 </sub>
 
 </div>
+
+See [real-model evaluation and the protected note agent](docs/EVALUATION_AND_AGENT.md)
+for the held-out benchmark profile, real-backend setup, and safe reset workflow.
+
+## Release candidate and evaluation
+
+See [0.2.0 release guide](docs/RELEASE_0_2.md) and [0.3.0 release candidate](docs/RELEASE_0_3.md) for cross-platform installation,
+independent evaluation, real-model CI, fault testing, and reproducible source packages.

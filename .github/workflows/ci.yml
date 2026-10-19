@@ -13,6 +13,23 @@ permissions:
   contents: read
 
 jobs:
+  local-tools:
+    name: Native local tooling
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Verify native configuration and process lifecycle
+        run: |
+          python -m unittest discover -s scripts/tests -v
+          python -m unittest discover -s evaluation/tests -v
+
   contracts:
     name: Shared contracts (JSON Schema + OpenAPI)
     runs-on: ubuntu-latest
@@ -28,13 +45,20 @@ jobs:
 
   mcp-shield:
     name: MCP-Shield (Rust build + test)
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: mcp-shield
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: "1.86"
+          components: rustfmt, clippy
       # The outbox verification spawns fixtures/fake_mcp_server.py as the
       # proxied server and fixtures/fake_ingest.js as the stand-in dashboard.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -52,16 +76,54 @@ jobs:
       - name: Test
         run: cargo test --locked --verbose
       - name: Rust dependency vulnerability gate
-        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          working-directory: mcp-shield
+        if: runner.os == 'Linux'
+        # cargo-audit directly, not rustsec/audit-check: that action bundles an
+        # older cargo-audit that cannot parse a version-4 Cargo.lock and panics
+        # (cargo exit 101) before it ever reads an advisory. Calling the CLI also
+        # drops a third-party action, its GITHUB_TOKEN, the checks:write it
+        # needed for its check run, and a Node 20 deprecation warning.
+        # Pinned to 0.22.1: 0.22.2 raised its own MSRV to rustc 1.88, which does
+        # not build on this crate's pinned 1.86 toolchain. Advisories are fetched
+        # at run time, so pinning the tool does not stale the data.
+        run: |
+          cargo install cargo-audit --locked --version 0.22.1
+          cargo audit
       - name: Verify the durable outbox (spool / redeliver / dead-letter)
+        if: runner.os == 'Linux'
         run: bash fixtures/verify_outbox.sh
+
+  secret-boundary:
+    name: PBM Secret Boundary (crate build + test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/pbm-secret-boundary
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: "1.86"
+          components: rustfmt, clippy
+      # The crate is a path dependency of mcp-shield, so its tests are not
+      # covered by that job: it has its own suite, its own lock file, and its
+      # own lint gate. Without this job the crate's security invariants are
+      # never checked by CI.
+      - name: Format and lint
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+      - name: Build
+        run: cargo build --locked --verbose
+      - name: Test
+        run: cargo test --locked --verbose
 
   python-common:
     name: Shared Python delivery (lint + test)
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -79,7 +141,11 @@ jobs:
 
   vector-anchor:
     name: VectorAnchor (Python tests)
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: vector-anchor
@@ -103,7 +169,11 @@ jobs:
 
   trace-audit:
     name: TraceAudit (Python tests)
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: trace-audit
@@ -127,7 +197,11 @@ jobs:
 
   dashboard:
     name: Dashboard (Next.js build)
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: dashboard
@@ -139,7 +213,18 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Dependency vulnerability gate
-        run: npm audit --audit-level=high
+        if: runner.os == 'Linux'
+        # --omit=dev gates what actually ships. The only advisories left are
+        # in the ESLint plugin's glob chain (eslint-config-next ->
+        # @next/eslint-plugin-next -> fast-glob -> micromatch -> braces), and
+        # `braces` has no patched release at any version, so the chain cannot
+        # be cleared by upgrading. Those packages are lint-time only and are
+        # not part of the running service; the advisory is a denial of
+        # service through attacker-controlled glob patterns, and the patterns
+        # come from the repo's own ESLint config, not from user input.
+        # Tracked in SECURITY.md. A production dependency reintroducing a
+        # high or critical advisory still fails this step.
+        run: npm audit --audit-level=high --omit=dev
       - name: Dashboard contract tests
         run: npm test
       - name: Dashboard lint
@@ -147,12 +232,53 @@ jobs:
       - name: Build
         run: npm run build
 
+  native-integration:
+    name: Native full stack (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: monolith workspace
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          path: monolith workspace
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: "22"
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: "1.86"
+      - name: Install PostgreSQL on macOS
+        if: runner.os == 'macOS'
+        run: brew install postgresql@17
+      - name: Install PostgreSQL on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y postgresql
+      - name: Install locked Python dependencies
+        run: python -m pip install --require-hashes -r vector-anchor/requirements.lock -r trace-audit/requirements.lock
+      - name: Install and build dashboard
+        run: |
+          npm ci --prefix dashboard
+          npm run build --prefix dashboard
+      - name: Build MCP-Shield
+        run: cargo build --locked --manifest-path mcp-shield/Cargo.toml
+      - name: Run native stack, attacks, ledger verification, and cleanup
+        run: python scripts/native_smoke.py
+
   integration:
     name: Integration (ingest contract + outage recovery)
     runs-on: ubuntu-latest
     # The unit suites are cheap and catch most breakage; only pay for the
     # 5-image stack build once they are green.
-    needs: [contracts, mcp-shield, python-common, vector-anchor, trace-audit, dashboard]
+    needs: [contracts, mcp-shield, secret-boundary, python-common, vector-anchor, trace-audit, dashboard]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -163,7 +289,13 @@ jobs:
         # .env is gitignored so none of it can be committed.
         run: bash scripts/generate_secrets.sh
       - name: Bring the stack up
-        run: docker compose up -d --build --wait
+        shell: bash
+        run: |
+          set +e
+          docker compose up -d --build --wait 2>&1 | tee compose-up.log
+          compose_status="${PIPESTATUS[0]}"
+          set -e
+          exit "$compose_status"
       - name: Verify the ingestion contract
         run: bash scripts/verify_ingest.sh
       - name: Verify outage recovery (spool -> drain)
@@ -172,13 +304,36 @@ jobs:
         run: bash scripts/verify_incidents.sh
       - name: Verify cross-layer correlation
         run: bash scripts/verify_correlation.sh
+      - name: Verify the cross-layer session circuit breaker
+        run: bash scripts/verify_circuit_breaker.sh
+      - name: Verify sustained concurrent retrieval load
+        run: python scripts/verify_sustained_load.py
+      - name: Verify concurrent agents and crash recovery
+        run: python scripts/verify_resilience.py --allow-faults
       - name: Verify the benchmark ledger (auth / integrity / isolation)
         run: bash scripts/verify_benchmarks.sh
       - name: Run the full three-attack demo
         run: ./run_full_demo.sh
       - name: Dump container logs on failure
         if: failure()
-        run: docker compose logs --no-color --tail=120
+        shell: bash
+        run: |
+          diagnostics="$({ cat compose-up.log 2>/dev/null || true; docker compose ps -a; docker compose logs --no-color --tail=120; } 2>&1 | tail -n 120)"
+          printf '%s\n' "$diagnostics"
+
+          # Raw public logs require a signed-in GitHub session. Mirror a bounded,
+          # secret-scrubbed tail into the check annotation so unattended failures
+          # remain diagnosable through the public checks API.
+          while IFS='=' read -r key value; do
+            if [[ -n "$key" && -n "$value" ]]; then
+              diagnostics="${diagnostics//"$value"/<redacted>}"
+            fi
+          done < .env
+          diagnostics="${diagnostics: -8000}"
+          diagnostics="${diagnostics//'%'/'%25'}"
+          diagnostics="${diagnostics//$'\r'/'%0D'}"
+          diagnostics="${diagnostics//$'\n'/'%0A'}"
+          echo "::error file=.github/workflows/ci.yml,line=168,title=Compose startup diagnostics::$diagnostics"
       - name: Tear the stack down
         if: always()
         run: docker compose down -v

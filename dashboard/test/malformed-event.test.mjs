@@ -21,7 +21,19 @@ if (!INGEST_TOKEN || !OPERATOR_TOKEN) {
   process.exit(1);
 }
 
+// Envelopes that must be rejected permanently (422), never retried.
+//
+// The optional-field cases below used to be asserted as *normalized* into safe
+// values and accepted. That expectation predates 39f6998, which made envelope
+// validation strict, and it was never updated -- which is why EVALUATION.md 5
+// read NOT MEASURED: the stale test was not run against a live stack.
+//
+// Strict is the right contract for a security ledger. Coercing an unrecognised
+// severity to "info" would silently downgrade a finding, and coercing a
+// non-object `details` would discard the evidence a detection exists to carry.
+// A permanent 422 dead-letters the event where a human can see it instead.
 const REJECTED = [
+  // --- required identity cannot be guessed --------------------------------
   {},
   { module: "mcp-shield" },
   { event_type: "orphan_event" },
@@ -31,15 +43,26 @@ const REJECTED = [
     module: "mcp-shield",
     event_type: "bad_id",
   },
+  // --- optional fields, malformed: rejected rather than coerced -----------
+  { module: "mcp-shield", event_type: "bad_severity", severity: "not-a-real-severity" },
+  { module: "mcp-shield", event_type: "null_details", severity: "warning", details: null },
+  { module: "mcp-shield", event_type: "string_details", severity: "info", details: "nope" },
+  { module: "mcp-shield", event_type: "array_details", severity: "critical", details: [1, 2, 3] },
+  { module: "mcp-shield", event_type: "bad_ts", severity: "info", timestamp_ms: "not-a-number" },
+  { module: "mcp-shield", event_type: "bad_schema", schema_version: 99 },
 ];
 
 const PREFIX = `malformed_probe_${randomUUID()}`;
+// Valid envelopes exercising the fields that ARE optional: absent severity,
+// absent timestamp, absent event_id. These must be accepted, defaulted
+// server-side, and replayed to an authenticated subscriber under the right
+// tenant -- the delivery half of the contract.
 const NORMALIZED = [
-  { severity: "not-a-real-severity", details: {} },
-  { severity: "warning", details: null },
-  { severity: "info", details: "should-not-be-a-string" },
-  { severity: "critical", details: [1, 2, 3] },
-  { severity: "info", timestamp_ms: "not-a-number", details: { nested: null } },
+  { severity: "warning", details: { note: "explicit severity" } },
+  { details: { note: "severity defaults" } },
+  { severity: "critical", details: {} },
+  { severity: "info", details: { nested: { deep: true } } },
+  { severity: "info", timestamp_ms: Date.now(), details: { note: "explicit ts" } },
 ].map((value, index) => ({
   module: "mcp-shield",
   event_type: `${PREFIX}_${index}`,
@@ -94,6 +117,12 @@ async function readEvents(expectedIds, timeoutMs) {
     if (error?.name !== "AbortError") fail(`event stream failed: ${error}`);
   } finally {
     clearTimeout(timer);
+    // Release the stream on the SUCCESS path too. /api/events is an
+    // open-ended SSE connection, so returning once every expected event has
+    // arrived leaves the socket live, Node's event loop non-empty, and the
+    // process hanging forever with its buffered stdout never flushed --
+    // which reads as an inexplicably stuck test rather than a passing one.
+    controller.abort();
   }
   return events;
 }
@@ -127,7 +156,7 @@ async function main() {
 
   const accepted = await ingest(NORMALIZED);
   if (accepted.status !== 201) {
-    fail(`normalizable optional fields returned HTTP ${accepted.status}, expected 201`);
+    fail(`valid optional-field events returned HTTP ${accepted.status}, expected 201`);
   }
   const payload = await accepted.json();
   const ids = new Set(payload.event_ids ?? []);
@@ -143,7 +172,7 @@ async function main() {
     if (event.tenant_id !== TENANT) fail(`wrong tenant on ${event.event_id}`);
     if (!VALID_SEVERITIES.has(event.severity)) fail(`invalid severity on ${event.event_id}`);
     if (!event.details || typeof event.details !== "object" || Array.isArray(event.details)) {
-      fail(`details was not normalized to an object on ${event.event_id}`);
+      fail(`details was not stored as an object on ${event.event_id}`);
     }
     if (!Number.isFinite(event.timestamp_ms)) fail(`invalid timestamp on ${event.event_id}`);
     if (JSON.stringify(event).includes("undefined")) {
@@ -156,7 +185,8 @@ async function main() {
     process.exitCode = 1;
   } else {
     console.log(
-      `  [OK] ${REJECTED.length} invalid envelopes rejected; ${events.size} optional-field cases normalized`,
+      `  [OK] ${REJECTED.length} invalid envelopes rejected with 422; `
+        + `${events.size} valid events accepted, defaulted and replayed`,
     );
     console.log("\nMALFORMED-EVENT TEST PASSED");
   }

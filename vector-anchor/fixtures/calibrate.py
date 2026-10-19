@@ -32,9 +32,10 @@ CFG = load_config()
 EF = HashingEmbeddingFunction(dim=CFG.embedding_dim)
 _DOC_EMB = {doc_id: EF([text])[0] for doc_id, text in cd.CLEAN_DOCS}
 
-# 18 diverse clean queries across the six corpus topics (3 each). None are
+# 36 diverse clean queries across the twelve corpus topics (3 each). None are
 # poison-trigger queries. Deliberately spans narrow sub-topics within each
-# domain — the hard case for a frequency detector.
+# domain — the hard case for a frequency detector, because a bag-of-words
+# embedder can read two narrow sub-topics of one subject as unrelated.
 CLEAN_QUERIES = [
     "how to prune tomato plants", "best mulch for flower beds", "composting kitchen scraps for soil",
     "what is a red giant star", "how galaxies form from gas", "measuring distance to a nebula",
@@ -42,6 +43,12 @@ CLEAN_QUERIES = [
     "building an emergency fund", "paying off credit card debt", "diversifying a retirement portfolio",
     "using a password manager", "segmenting a network with firewalls", "spotting phishing emails",
     "adjusting bicycle saddle height", "lubricating a bike chain", "maintaining a smooth cadence on climbs",
+    "cutting a mortise with a chisel", "sanding before applying varnish", "why a dovetail joint holds",
+    "grinding beans before brewing", "tamping an espresso puck evenly", "what makes crema form",
+    "choosing a wide aperture for portraits", "when to raise the ISO", "composing with the rule of thirds",
+    "spaced repetition for vocabulary", "learning irregular verb conjugation", "does immersion build fluency",
+    "how to dress a bleeding wound", "cooling a burn correctly", "splinting a suspected fracture",
+    "what a falling barometer means", "why a cold front brings storms", "how hail grows in a cloud",
 ]
 
 
@@ -55,7 +62,8 @@ def _tracker() -> FrequencyTracker:
     return FrequencyTracker(
         min_distinct_topics=CFG.min_distinct_topics,
         topic_similarity=CFG.topic_similarity,
-        window_size=CFG.window_size,
+        retention_horizon=CFG.retention_horizon,
+        max_queries_per_doc=CFG.max_queries_per_doc,
     )
 
 
@@ -86,7 +94,8 @@ def main() -> None:
     lines.append(f"| `top_rank_threshold` (a doc must rank in the top-N) | {CFG.top_rank_threshold} |")
     lines.append(f"| `topic_similarity` (cosine ≥ ⇒ same topic) | {CFG.topic_similarity} |")
     lines.append(f"| `min_distinct_topics` (flag threshold) | {CFG.min_distinct_topics} |")
-    lines.append(f"| `window_size` | {CFG.window_size} |")
+    lines.append(f"| `retention_horizon` | {CFG.retention_horizon} |")
+    lines.append(f"| `max_queries_per_doc` | {CFG.max_queries_per_doc} |")
     lines.append("")
     lines.append("## False-positive test\n")
     lines.append(f"{len(CLEAN_QUERIES)} diverse clean queries across six topics, "

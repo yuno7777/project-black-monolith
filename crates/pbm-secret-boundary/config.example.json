@@ -1,0 +1,79 @@
+{
+  "_comment": [
+    "Example PBM Secret Boundary configuration.",
+    "",
+    "This is the format the mcp-shield integration actually reads: a single",
+    "JSON document, referenced by MCP_SHIELD_SECRET_BOUNDARY_CONFIG (either a",
+    "file path or an inline JSON string).",
+    "",
+    "The '_comment' key is illustrative only — the real configuration rejects",
+    "unknown fields, so remove it before using this file."
+  ],
+
+  "enabled": true,
+  "agent_id": "agent-researcher",
+  "active_provider": "mock",
+
+  "synthetic_secrets": {
+    "op://dev-vault/weather-service/api-key": "synthetic-weather-dev-token-9988",
+    "op://dev-vault/metrics-pipeline/token": "synthetic-metrics-dev-token-5544"
+  },
+
+  "onepassword_cli": null,
+
+  "tools": [
+    {
+      "tool_name": "fetch_forecast",
+      "operation_id": "fetch_forecast",
+      "description": "Fetch a weather forecast for a city.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "city": { "type": "string" },
+          "units": { "type": "string" }
+        },
+        "required": ["city"]
+      },
+      "url_template": "https://api.weather.example.com/v1/forecast",
+      "method": "GET",
+      "permitted_params": ["city", "units"],
+      "policy_rule": {
+        "agent_id": "agent-researcher",
+        "operation_id": "fetch_forecast",
+        "approved_credential_ref": "op://dev-vault/weather-service/api-key",
+        "destination_host": "api.weather.example.com",
+        "destination_port": 443,
+        "allowed_methods": ["GET"],
+        "allowed_path_prefix": "/v1/forecast",
+        "permitted_query_params": ["city", "units"],
+        "require_https": true
+      }
+    },
+    {
+      "tool_name": "post_heartbeat",
+      "operation_id": "post_heartbeat",
+      "description": "Post a heartbeat to the metrics pipeline.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source": { "type": "string" }
+        },
+        "required": ["source"]
+      },
+      "url_template": "https://telemetry.internal.net/ingest/v2",
+      "method": "POST",
+      "permitted_params": ["source"],
+      "policy_rule": {
+        "agent_id": "agent-researcher",
+        "operation_id": "post_heartbeat",
+        "approved_credential_ref": "op://dev-vault/metrics-pipeline/token",
+        "destination_host": "telemetry.internal.net",
+        "destination_port": 443,
+        "allowed_methods": ["POST"],
+        "allowed_path_prefix": "/ingest/v2",
+        "permitted_query_params": [],
+        "require_https": true
+      }
+    }
+  ]
+}
