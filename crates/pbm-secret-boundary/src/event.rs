@@ -8,6 +8,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static EVENT_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+fn splitmix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    x ^ (x >> 31)
+}
+
 /// Generates a valid RFC 4122 version 4 UUID formatted string.
 pub fn generate_uuid_v4() -> String {
     let now = SystemTime::now()
@@ -15,20 +22,29 @@ pub fn generate_uuid_v4() -> String {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let count = EVENT_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
+    let pid = u64::from(std::process::id());
+    let stack_marker = (&count as *const u64 as usize) as u64;
 
-    // Generate pseudo-random bytes from timestamp, counter, and process ID
-    let mut b = [0u8; 16];
-    let now_bytes = now.to_le_bytes();
-    let count_bytes = count.to_le_bytes();
-    let pid_bytes = pid.to_le_bytes();
-
-    for i in 0..16 {
-        b[i] = now_bytes[i % now_bytes.len()]
-            ^ count_bytes[i % count_bytes.len()]
-            ^ pid_bytes[i % pid_bytes.len()]
-            ^ ((i as u8).wrapping_mul(31));
+    // FNV-1a 64-bit hash across all entropy inputs followed by two SplitMix64
+    // avalanche steps so all 16 bytes (including bytes 8..16) have full diffusion.
+    let mut fnv: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in now
+        .to_le_bytes()
+        .into_iter()
+        .chain(count.to_le_bytes())
+        .chain(pid.to_le_bytes())
+        .chain(stack_marker.to_le_bytes())
+    {
+        fnv ^= u64::from(byte);
+        fnv = fnv.wrapping_mul(0x0100_0000_01b3);
     }
+
+    let hi = splitmix64(fnv ^ (now as u64) ^ count.rotate_left(17));
+    let lo = splitmix64(hi ^ ((now >> 64) as u64) ^ pid.rotate_left(31) ^ count);
+
+    let mut b = [0u8; 16];
+    b[..8].copy_from_slice(&hi.to_le_bytes());
+    b[8..].copy_from_slice(&lo.to_le_bytes());
 
     // Set RFC 4122 version 4 (bits 4-7 of byte 6 = 0100)
     b[6] = (b[6] & 0x0f) | 0x40;
@@ -246,6 +262,25 @@ mod tests {
         assert_eq!(uuid.len(), 36);
         assert_eq!(&uuid[14..15], "4");
         assert!(["8", "9", "a", "b"].contains(&&uuid[19..20]));
+    }
+
+    #[test]
+    fn test_uuid_v4_tail_bytes_are_not_zero_biased() {
+        let mut distinct_tails = std::collections::HashSet::new();
+        for _ in 0..64 {
+            let uuid = generate_uuid_v4();
+            assert_eq!(uuid.len(), 36);
+            assert_eq!(&uuid[14..15], "4");
+            assert!(["8", "9", "a", "b"].contains(&&uuid[19..20]));
+            let tail = &uuid[24..36];
+            assert_ne!(tail, "000000000000");
+            distinct_tails.insert(tail.to_string());
+        }
+        assert_eq!(
+            distinct_tails.len(),
+            64,
+            "every UUIDv4 tail (bytes 10..16) must vary across consecutive calls"
+        );
     }
 
     #[test]

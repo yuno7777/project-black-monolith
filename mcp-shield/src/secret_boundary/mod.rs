@@ -20,7 +20,8 @@ use pbm_secret_boundary::operation::http::{
 };
 use pbm_secret_boundary::policy::PolicyEngine;
 use pbm_secret_boundary::provider::{
-    MockSecretProvider, OnePasswordCliConfig, OnePasswordCliProvider, SecretProvider,
+    EnvSecretProvider, MockSecretProvider, OnePasswordCliConfig, OnePasswordCliProvider,
+    SecretProvider,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -51,7 +52,7 @@ pub struct BoundaryConfig {
     /// Every configured policy rule must name this same identity.
     pub agent_id: String,
 
-    /// Active credential provider: "mock" or "1password-cli". Defaults to "mock".
+    /// Active credential provider: "mock", "env", or "1password-cli". Defaults to "mock".
     #[serde(default = "default_provider")]
     pub active_provider: String,
 
@@ -208,6 +209,12 @@ impl ShieldSecretBoundary {
         }
 
         // 1. Configure credential provider
+        let env_provider_check = if config.active_provider == "env" {
+            Some(EnvSecretProvider::new())
+        } else {
+            None
+        };
+
         let provider: Arc<dyn SecretProvider> = match config.active_provider.as_str() {
             "mock" => {
                 let mut mock = MockSecretProvider::new();
@@ -216,6 +223,7 @@ impl ShieldSecretBoundary {
                 }
                 Arc::new(mock)
             }
+            "env" => Arc::new(EnvSecretProvider::new()),
             "1password-cli" => {
                 let cli_config = config.onepassword_cli.ok_or_else(|| {
                     anyhow::anyhow!(
@@ -250,6 +258,17 @@ impl ShieldSecretBoundary {
                     tool_def.policy_rule.agent_id,
                     agent_id
                 );
+            }
+            if let Some(ref env_provider) = env_provider_check {
+                env_provider
+                    .validate_var_name(&tool_def.policy_rule.approved_credential_ref)
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "Tool '{}' has invalid env credential reference: {}",
+                            tool_def.tool_name,
+                            e
+                        )
+                    })?;
             }
             policy_engine
                 .add_rule(tool_def.policy_rule.clone())
