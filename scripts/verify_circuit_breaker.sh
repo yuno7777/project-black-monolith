@@ -30,7 +30,12 @@ check() { # name expected actual
 }
 
 is_true() { python -c 'import sys,json; sys.exit(0 if json.load(sys.stdin).get("session_quarantined") is True else 1)'; }
-has_results() { python -c 'import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get("session_quarantined") is not True and d.get("results") else 1)'; }
+# "Not quarantined" and "returned documents" are different claims. These two
+# checks are about enforcement — a session that is not revoked must be served
+# — so they test the quarantine flag alone. Folding in "has results" made
+# them fail for an unrelated reason on a stack with an empty corpus, where a
+# perfectly healthy retrieval returns no documents.
+not_quarantined() { python -c 'import sys,json; sys.exit(0 if json.load(sys.stdin).get("session_quarantined") is not True else 1)'; }
 
 # The recovery script deliberately restarts the dashboard container, and a
 # restarting container is briefly unreachable. Every dashboard call in this
@@ -152,7 +157,7 @@ BYSTANDER_BODY=$($DC exec -T vector-anchor curl -s -X POST http://localhost:8001
   -H 'Content-Type: application/json' -H "X-Monolith-Session-Id: $BYSTANDER" \
   -d '{"query":"how long should I boil pasta"}' 2>/dev/null)
 check "an unrelated session is unaffected" "0" \
-  "$(echo "$BYSTANDER_BODY" | has_results; echo $?)"
+  "$(echo "$BYSTANDER_BODY" | not_quarantined; echo $?)"
 
 echo
 echo "=============================================="
@@ -168,7 +173,7 @@ for _ in $(seq 1 40); do
   VA_BODY=$($DC exec -T vector-anchor curl -s -X POST http://localhost:8001/retrieve \
     -H 'Content-Type: application/json' -H "X-Monolith-Session-Id: $SESSION" \
     -d '{"query":"how do I prune tomato plants"}' 2>/dev/null)
-  if echo "$VA_BODY" | has_results 2>/dev/null; then RESTORED=0; break; fi
+  if echo "$VA_BODY" | not_quarantined 2>/dev/null; then RESTORED=0; break; fi
   sleep 1
 done
 check "vector-anchor serves again after restore" "0" "$RESTORED"
