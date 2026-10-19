@@ -15,6 +15,9 @@ pub const DEFAULT_ENV_SECRET_PREFIX: &str = "PBM_SECRET_";
 /// - Accepts references formatted either as `env://<VAR_NAME>` or `<VAR_NAME>`.
 /// - Trims trailing whitespace/newlines (`\r`, `\n`, `' '`, `'\t'`) from the resolved value
 ///   and rejects empty values as [`BoundaryError::SecretNotFound`].
+/// - Rejects values containing control characters as [`BoundaryError::InvalidRequest`]:
+///   a secret is injected into an HTTP header value, and a control character
+///   would end that header early and inject further headers into the request.
 /// - Error messages never include raw secret values.
 #[derive(Debug, Clone)]
 pub struct EnvSecretProvider {
@@ -98,6 +101,19 @@ impl SecretProvider for EnvSecretProvider {
                         secret_ref
                     )));
                 }
+                // A secret is injected into an HTTP header value. A value that
+                // carries a control character cannot be placed in one: it
+                // would terminate the header early and inject headers of the
+                // caller's choosing into the outbound request. Rejecting it
+                // here fails loudly at the source instead of producing a
+                // malformed request later.
+                if trimmed.chars().any(char::is_control) {
+                    raw_val.zeroize();
+                    return Err(BoundaryError::InvalidRequest(format!(
+                        "Environment secret '{}' contains control characters and cannot be used as a header value",
+                        secret_ref
+                    )));
+                }
                 let secret = SecretString::new(trimmed);
                 raw_val.zeroize();
                 Ok(secret)
@@ -167,6 +183,25 @@ mod tests {
             provider.get_secret("env://PBM_SECRET_KEY-1"),
             Err(BoundaryError::InvalidRequest(_))
         ));
+    }
+
+    #[test]
+    fn test_env_provider_rejects_values_with_control_characters() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let var_name = "PBM_SECRET_MULTILINE_TEST_TOKEN";
+        // A value with an embedded newline would end the Authorization header
+        // early and inject a header of its own choosing into the request.
+        std::env::set_var(var_name, "first-line\r\nX-Injected: yes");
+
+        let provider = EnvSecretProvider::new();
+        let error = provider
+            .get_secret("env://PBM_SECRET_MULTILINE_TEST_TOKEN")
+            .unwrap_err();
+        assert!(matches!(error, BoundaryError::InvalidRequest(_)));
+        // The message must not carry the value.
+        assert!(!error.to_string().contains("X-Injected"));
+
+        std::env::remove_var(var_name);
     }
 
     #[test]

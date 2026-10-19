@@ -292,8 +292,14 @@ fn collect_argument_findings(value: &Value, findings: &mut Vec<Finding>) {
 }
 
 /// Recursively inspect all string values inside a `tools/call` `params.arguments`
-/// JSON value for prompt-injection, shell injection, invisible Unicode, and
-/// outbound credential/secret exfiltration patterns.
+/// JSON value for prompt-injection, invisible Unicode, and outbound
+/// credential/secret exfiltration patterns.
+///
+/// The shell-command family is reported but is not a blocking finding: it
+/// exists because a tool *description* has no legitimate reason to contain a
+/// shell command, while argument values routinely do — "curl tutorial",
+/// "eval(x)", or the command the agent was actually asked to run. The
+/// caller decides which families block a call.
 pub fn scan_tool_arguments(args: &Value) -> ScanResult {
     let mut findings = Vec::new();
     collect_argument_findings(args, &mut findings);
