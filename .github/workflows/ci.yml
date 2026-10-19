@@ -92,6 +92,31 @@ jobs:
         if: runner.os == 'Linux'
         run: bash fixtures/verify_outbox.sh
 
+  secret-boundary:
+    name: PBM Secret Boundary (crate build + test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/pbm-secret-boundary
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: "1.86"
+          components: rustfmt, clippy
+      # The crate is a path dependency of mcp-shield, so its tests are not
+      # covered by that job: it has its own suite, its own lock file, and its
+      # own lint gate. Without this job the crate's security invariants are
+      # never checked by CI.
+      - name: Format and lint
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+      - name: Build
+        run: cargo build --locked --verbose
+      - name: Test
+        run: cargo test --locked --verbose
+
   python-common:
     name: Shared Python delivery (lint + test)
     strategy:
@@ -189,7 +214,17 @@ jobs:
         run: npm ci
       - name: Dependency vulnerability gate
         if: runner.os == 'Linux'
-        run: npm audit --audit-level=high
+        # --omit=dev gates what actually ships. The only advisories left are
+        # in the ESLint plugin's glob chain (eslint-config-next ->
+        # @next/eslint-plugin-next -> fast-glob -> micromatch -> braces), and
+        # `braces` has no patched release at any version, so the chain cannot
+        # be cleared by upgrading. Those packages are lint-time only and are
+        # not part of the running service; the advisory is a denial of
+        # service through attacker-controlled glob patterns, and the patterns
+        # come from the repo's own ESLint config, not from user input.
+        # Tracked in SECURITY.md. A production dependency reintroducing a
+        # high or critical advisory still fails this step.
+        run: npm audit --audit-level=high --omit=dev
       - name: Dashboard contract tests
         run: npm test
       - name: Dashboard lint
@@ -243,7 +278,7 @@ jobs:
     runs-on: ubuntu-latest
     # The unit suites are cheap and catch most breakage; only pay for the
     # 5-image stack build once they are green.
-    needs: [contracts, mcp-shield, python-common, vector-anchor, trace-audit, dashboard]
+    needs: [contracts, mcp-shield, secret-boundary, python-common, vector-anchor, trace-audit, dashboard]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -269,6 +304,8 @@ jobs:
         run: bash scripts/verify_incidents.sh
       - name: Verify cross-layer correlation
         run: bash scripts/verify_correlation.sh
+      - name: Verify the cross-layer session circuit breaker
+        run: bash scripts/verify_circuit_breaker.sh
       - name: Verify sustained concurrent retrieval load
         run: python scripts/verify_sustained_load.py
       - name: Verify concurrent agents and crash recovery
