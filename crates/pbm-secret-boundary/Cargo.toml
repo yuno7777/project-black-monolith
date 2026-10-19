@@ -1,0 +1,26 @@
+[package]
+name = "pbm-secret-boundary"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.86"
+description = "PBM Secret Boundary: Security middleware preventing AI agents from accessing raw credentials"
+authors = ["Project Black Monolith"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+zeroize = "1.9"
+url = "2.5"
+chrono = { version = "0.4", features = ["serde"] }
+
+[features]
+default = []
+test-utils = []
+
+[dev-dependencies]
+# Only the test-suite matches the RFC 4122 v4 UUID shape; the library itself
+# has no need for a regular-expression engine.
+regex = "1.10"
+pbm-secret-boundary = { path = ".", features = ["test-utils"] }

@@ -14,5 +14,9 @@
     "type": "done",
     "peak_kl": 0.48,
     "tokens": 64
+  },
+  {
+    "type": "error",
+    "error": "upstream_stream_error"
   }
 ]

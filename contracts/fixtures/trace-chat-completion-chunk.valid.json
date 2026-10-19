@@ -1,0 +1,15 @@
+{
+  "id": "chatcmpl-0123456789abcdef01234567",
+  "object": "chat.completion.chunk",
+  "created": 1785715200,
+  "model": "mock-auditor",
+  "choices": [
+    {
+      "index": 0,
+      "delta": {
+        "content": "Escalate"
+      },
+      "finish_reason": null
+    }
+  ]
+}

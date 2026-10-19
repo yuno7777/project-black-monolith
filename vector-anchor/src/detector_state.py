@@ -19,17 +19,39 @@ class DetectorStateStore:
         *,
         min_distinct_topics: int,
         topic_similarity: float,
-        window_size: int,
+        retention_horizon: int,
+        max_queries_per_doc: int,
+        max_tracked_docs: int = 50_000,
     ) -> None:
         self.path = Path(path)
         self.min_distinct_topics = min_distinct_topics
         self.topic_similarity = topic_similarity
-        self.window_size = window_size
+        self.retention_horizon = retention_horizon
+        self.max_queries_per_doc = max_queries_per_doc
+        self.max_tracked_docs = max_tracked_docs
         self.policy = {
             "min_distinct_topics": min_distinct_topics,
             "topic_similarity": topic_similarity,
-            "window_size": window_size,
+            "retention_horizon": retention_horizon,
+            "max_queries_per_doc": max_queries_per_doc,
         }
+
+    def quarantine_unreadable(self) -> str:
+        """Move state that cannot be loaded aside instead of deleting it.
+
+        Called when the persisted policy or schema no longer matches. The file
+        is evidence of what the detector had seen, so it is preserved for
+        inspection rather than overwritten by the next save.
+        """
+        target = self.path.with_suffix(self.path.suffix + ".unreadable")
+        suffix = 1
+        while target.exists():
+            target = self.path.with_suffix(
+                self.path.suffix + f".unreadable.{suffix}"
+            )
+            suffix += 1
+        os.replace(self.path, target)
+        return str(target)
 
     def load(self) -> tuple[FrequencyTracker, Quarantine] | None:
         if not self.path.exists():
@@ -48,13 +70,16 @@ class DetectorStateStore:
         quarantine_data = data.get("quarantine")
         if not isinstance(tracker_data, dict) or not isinstance(quarantine_data, list):
             raise ValueError("detector state payload is incomplete")
+        quarantine = Quarantine.from_snapshot(quarantine_data)
         tracker = FrequencyTracker.from_snapshot(
             tracker_data,
             min_distinct_topics=self.min_distinct_topics,
             topic_similarity=self.topic_similarity,
-            window_size=self.window_size,
+            retention_horizon=self.retention_horizon,
+            max_queries_per_doc=self.max_queries_per_doc,
+            max_tracked_docs=self.max_tracked_docs,
         )
-        quarantine = Quarantine.from_snapshot(quarantine_data)
+        tracker._quarantined.update(quarantine.list_ids())
         return tracker, quarantine
 
     def save(self, tracker: FrequencyTracker, quarantine: Quarantine) -> None:
