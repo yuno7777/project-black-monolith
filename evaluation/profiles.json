@@ -5,37 +5,52 @@
       {
         "name": "vector-anchor-hash",
         "cwd": "vector-anchor",
-        "command": ["{python}", "fixtures/benchmark_detection.py"],
+        "command": [
+          "{python}",
+          "fixtures/benchmark_detection.py"
+        ],
         "result": "fixtures/benchmark_results.json",
-        "sources": ["fixtures/corpus_data.py", "fixtures/calibrate.py"]
+        "sources": [
+          "fixtures/corpus_data.py",
+          "fixtures/calibrate.py"
+        ]
       },
       {
         "name": "trace-audit-mock",
         "cwd": "trace-audit",
-        "command": ["{python}", "fixtures/benchmark_detection.py"],
+        "command": [
+          "{python}",
+          "fixtures/benchmark_detection.py"
+        ],
         "result": "fixtures/benchmark_results.json",
-        "sources": ["fixtures/benchmark_corpus.py", "fixtures/baseline_capture.py", "fixtures/calibrate.py"]
+        "sources": [
+          "fixtures/benchmark_corpus.py",
+          "fixtures/baseline_capture.py",
+          "fixtures/calibrate.py"
+        ]
       }
     ]
   },
   "real": {
-    "description": "External-model evaluation; downloads the Chroma embedding model and requires Ollama",
+    "description": "Held-out semantic retrieval and real Ollama output evaluation; no mock fallback",
     "steps": [
       {
-        "name": "vector-anchor-semantic",
-        "cwd": "vector-anchor",
-        "command": ["{python}", "fixtures/benchmark_detection.py"],
-        "environment": { "MONOLITH_EMBEDDING": "default" },
-        "result": "fixtures/benchmark_results.json",
-        "sources": ["fixtures/corpus_data.py", "fixtures/calibrate.py"]
-      },
-      {
-        "name": "trace-audit-ollama",
-        "cwd": "trace-audit",
-        "command": ["{python}", "fixtures/benchmark_detection.py"],
-        "environment": { "MONOLITH_MODEL_BACKEND": "ollama" },
-        "result": "fixtures/benchmark_results.json",
-        "sources": ["fixtures/benchmark_corpus.py", "fixtures/baseline_capture.py", "fixtures/calibrate.py"]
+        "name": "vector-anchor-semantic-held-out",
+        "cwd": ".",
+        "command": [
+          "{python}",
+          "evaluation/real_models.py",
+          "vector",
+          "--output",
+          "evaluation/results/vector-real.json"
+        ],
+        "result": "evaluation/results/vector-real.json",
+        "sources": [
+          "evaluation/real_models.py",
+          "evaluation/held_out.json",
+          "vector-anchor/src/config.py",
+          "vector-anchor/src/frequency_tracker.py"
+        ]
       }
     ]
   }

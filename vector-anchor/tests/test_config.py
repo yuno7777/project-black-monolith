@@ -12,9 +12,14 @@ from src.config import load_config
         ("MONOLITH_EMBEDDING_DIM", "0", "between 1 and 4096"),
         ("MONOLITH_TOP_K", "0", "between 1 and 100"),
         ("MONOLITH_CANDIDATE_BUFFER", "-1", "between 0 and 1000"),
-        ("MONOLITH_WINDOW_SIZE", "0", "between 1 and 10000"),
+        ("MONOLITH_RETENTION_HORIZON", "0", "between 1 and 1000000"),
+        ("MONOLITH_MAX_QUERIES_PER_DOC", "0", "between 1 and 4096"),
+        ("MONOLITH_MAX_TRACKED_DOCS", "0", "between 1 and 100000"),
+        ("MONOLITH_STATE_FLUSH_INTERVAL_MS", "-1", "between 0 and 3600000"),
+        ("MONOLITH_LOG_CLEAN_RETRIEVALS", "maybe", "boolean"),
         ("MONOLITH_TOPIC_SIMILARITY", "1.1", "between -1 and 1"),
         ("MONOLITH_TENANT_ID", " ", "between 1 and 128"),
+        ("MONOLITH_AGENT_ID", "agent\nforged", "between 1 and 128"),
     ],
 )
 def test_invalid_detector_configuration_fails_at_startup(
@@ -33,9 +38,9 @@ def test_related_thresholds_must_be_internally_consistent(monkeypatch):
         load_config()
 
     monkeypatch.setenv("MONOLITH_TOP_RANK_THRESHOLD", "2")
-    monkeypatch.setenv("MONOLITH_WINDOW_SIZE", "3")
+    monkeypatch.setenv("MONOLITH_MAX_QUERIES_PER_DOC", "3")
     monkeypatch.setenv("MONOLITH_MIN_DISTINCT_TOPICS", "4")
-    with pytest.raises(ValueError, match="window size"):
+    with pytest.raises(ValueError, match="max queries per document"):
         load_config()
 
 
@@ -60,6 +65,9 @@ def test_default_configuration_is_valid(monkeypatch):
         "MONOLITH_MIN_DISTINCT_TOPICS",
         "MONOLITH_TOPIC_SIMILARITY",
         "MONOLITH_WINDOW_SIZE",
+        "MONOLITH_MAX_TRACKED_DOCS",
+        "MONOLITH_STATE_FLUSH_INTERVAL_MS",
+        "MONOLITH_LOG_CLEAN_RETRIEVALS",
         "MONOLITH_DASHBOARD_URL",
         "MONOLITH_EVENT_TOKEN",
         "MONOLITH_ADMIN_TOKEN",
@@ -71,3 +79,22 @@ def test_default_configuration_is_valid(monkeypatch):
     cfg = load_config()
     assert cfg.embedding == "hash"
     assert cfg.top_k == 3
+    assert cfg.max_tracked_docs == 50_000
+    assert cfg.state_flush_interval_ms == 0
+    assert cfg.log_clean_retrievals is True
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("false", False),
+        ("0", False),
+        ("no", False),
+        ("true", True),
+        ("1", True),
+        ("yes", True),
+    ],
+)
+def test_log_clean_retrievals_parses_boolean_tokens(monkeypatch, raw, expected):
+    monkeypatch.setenv("MONOLITH_LOG_CLEAN_RETRIEVALS", raw)
+    assert load_config().log_clean_retrievals is expected

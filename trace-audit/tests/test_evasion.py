@@ -67,7 +67,7 @@ def test_redaction_preserves_unrelated_token_boundaries():
     ]
 
 
-def test_known_boundary_more_fragments_than_the_window_can_evade():
+def test_more_fragments_than_the_old_window_are_redacted():
     buffer = PiiStreamBuffer()
     outputs = []
     matches = []
@@ -81,8 +81,8 @@ def test_known_boundary_more_fragments_than_the_window_can_evade():
     outputs.extend(drained.outputs)
     matches.extend(drained.matches)
 
-    assert matches == []
-    assert "".join(item.token for item in outputs) == SECRET
+    assert [match.label for match in matches] == ["aws_access_key_id"]
+    assert SECRET not in "".join(item.token for item in outputs)
 
 
 def test_stream_auditor_never_releases_a_split_secret(monkeypatch):
@@ -148,3 +148,63 @@ def test_duplicate_secret_is_reported_once_without_releasing_it(monkeypatch):
     assert sum(event["type"] == "pii" for event in events) == 1
     assert sum(event[0] == "pii_redacted" for event in emitted) == 1
     assert SECRET not in repr(events)
+
+
+def test_characterwise_and_obfuscated_keys_never_escape():
+    for secret in (SECRET, '\u200b'.join(SECRET), ' '.join(SECRET),
+                   ''.join(chr(ord(c) + 0xFEE0) for c in SECRET)):
+        buffer = PiiStreamBuffer()
+        outputs = []
+        matches = []
+        for char in secret:
+            drain = buffer.push(char, None)
+            outputs += drain.outputs
+            matches += drain.matches
+        drain = buffer.finish()
+        outputs += drain.outputs
+        matches += drain.matches
+        assert any(m.label == 'aws_access_key_id' for m in matches)
+        assert 'AKIA' not in ''.join(t.token for t in outputs)
+
+
+def test_variable_length_key_is_not_partially_released():
+    secret = 'sk-' + 'a' * 90
+    buffer = PiiStreamBuffer()
+    outputs = []
+    for char in secret:
+        outputs += buffer.push(char, None).outputs
+    outputs += buffer.finish().outputs
+    assert ''.join(t.token for t in outputs) == '[REDACTED:openai_style_api_key]'
+
+
+def test_overlong_candidate_is_bounded_and_withheld():
+    buffer = PiiStreamBuffer(max_chars=64)
+    outputs = []
+    for char in 'sk-' + 'a' * 2000:
+        outputs += buffer.push(char, None).outputs
+        assert sum(len(t.token) for t in buffer._pending) <= 64
+    outputs += buffer.push(' end', None).outputs
+    outputs += buffer.finish().outputs
+    text = ''.join(t.token for t in outputs)
+    assert 'sk-' not in text and 'aaaa' not in text
+    assert text.endswith(' end')
+
+
+def test_long_benign_prose_is_preserved():
+    text = 'ordinary words with spaces ' * 100
+    buffer = PiiStreamBuffer()
+    outputs = []
+    for char in text:
+        outputs += buffer.push(char, None).outputs
+    outputs += buffer.finish().outputs
+    assert ''.join(t.token for t in outputs) == text
+
+
+def test_complete_match_does_not_release_a_second_secret_prefix():
+    buffer = PiiStreamBuffer()
+    output = buffer.push(SECRET + ' sk-abc', None).outputs
+    output += buffer.push('defghijklmnopqrstuvwxyz1234567890', None).outputs
+    output += buffer.finish().outputs
+    text = ''.join(t.token for t in output)
+    assert 'sk-abc' not in text
+    assert text == '[REDACTED:aws_access_key_id] [REDACTED:openai_style_api_key]'
