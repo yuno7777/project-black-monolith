@@ -95,10 +95,10 @@ pub struct ShieldEvent<'a> {
 /// than none: it would group unrelated agents together, and the grouping is
 /// the entire point of having one.
 #[derive(Debug, Clone, Default)]
-struct Identity {
-    tenant_id: String,
-    agent_id: Option<String>,
-    session_id: Option<String>,
+pub(crate) struct Identity {
+    pub(crate) tenant_id: String,
+    pub(crate) agent_id: Option<String>,
+    pub(crate) session_id: Option<String>,
 }
 
 fn clean_id(value: String) -> Option<String> {
@@ -112,7 +112,7 @@ fn clean_id(value: String) -> Option<String> {
     Some(trimmed.to_owned())
 }
 
-fn identity() -> &'static Identity {
+pub(crate) fn identity() -> &'static Identity {
     static IDENTITY: OnceLock<Identity> = OnceLock::new();
     IDENTITY.get_or_init(|| Identity {
         tenant_id: std::env::var("MONOLITH_TENANT_ID")

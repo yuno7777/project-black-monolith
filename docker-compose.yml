@@ -224,7 +224,12 @@ services:
     <<: *service-hardening
     mem_limit: 256m
     pids_limit: 128
-    build: ./mcp-shield
+    # The context is the repository root because the Secret Boundary is a
+    # path dependency that lives outside mcp-shield/; the Dockerfile copies
+    # it to the sibling path Cargo.toml names.
+    build:
+      context: .
+      dockerfile: mcp-shield/Dockerfile
     environment:
       MONOLITH_DASHBOARD_URL: "http://dashboard:3000/api/ingest"
       MONOLITH_ALLOW_INSECURE_DASHBOARD: "true"

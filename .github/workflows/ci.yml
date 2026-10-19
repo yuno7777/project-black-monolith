@@ -69,6 +69,31 @@ jobs:
       - name: Verify the durable outbox (spool / redeliver / dead-letter)
         run: bash fixtures/verify_outbox.sh
 
+  secret-boundary:
+    name: PBM Secret Boundary (crate build + test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/pbm-secret-boundary
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: "1.86"
+          components: rustfmt, clippy
+      # The crate is a path dependency of mcp-shield, so its tests are not
+      # covered by that job: it has its own suite, its own lock file, and its
+      # own lint gate. Without this job the crate's security invariants are
+      # never checked by CI.
+      - name: Format and lint
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+      - name: Build
+        run: cargo build --locked --verbose
+      - name: Test
+        run: cargo test --locked --verbose
+
   python-common:
     name: Shared Python delivery (lint + test)
     runs-on: ubuntu-latest
@@ -150,6 +175,7 @@ jobs:
         run: npm ci
       - name: Dependency vulnerability gate
         run: npm audit --audit-level=high
+
       - name: Dashboard contract tests
         run: npm test
       - name: Dashboard lint
@@ -162,7 +188,7 @@ jobs:
     runs-on: ubuntu-latest
     # The unit suites are cheap and catch most breakage; only pay for the
     # 5-image stack build once they are green.
-    needs: [contracts, mcp-shield, python-common, vector-anchor, trace-audit, dashboard]
+    needs: [contracts, mcp-shield, secret-boundary, python-common, vector-anchor, trace-audit, dashboard]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6

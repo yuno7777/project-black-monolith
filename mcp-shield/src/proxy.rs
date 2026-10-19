@@ -80,13 +80,20 @@ pub struct ShieldConfig {
     pub baseline_path: PathBuf,
     pub mode: ShieldMode,
     pub first_contact: FirstContact,
+    pub boundary: Option<Arc<crate::secret_boundary::ShieldSecretBoundary>>,
 }
 
 impl ShieldConfig {
     /// Read configuration from the environment. Called exactly once at
     /// startup, which is also what guarantees the dev-key banner below
     /// fires exactly once per process, not once per request.
-    pub fn from_env() -> Self {
+    ///
+    /// The Secret Boundary is *not* built here. Building it reads the
+    /// credential provider and can fail, and this function is also used by
+    /// the operator commands (`--list-pending`, `--approve`). A broken
+    /// boundary configuration must not lock the operator out of the command
+    /// they need in order to fix it.
+    pub fn from_env() -> Result<Self> {
         let hmac_key = std::env::var("MCP_SHIELD_KEY")
             .unwrap_or_else(|_| {
                 tracing::warn!(
@@ -133,12 +140,13 @@ impl ShieldConfig {
                 }
             },
         };
-        Self {
+        Ok(Self {
             hmac_key,
             baseline_path,
             mode,
             first_contact,
-        }
+            boundary: None,
+        })
     }
 }
 
@@ -169,23 +177,32 @@ pub async fn run(server_cmd: Vec<String>, config: ShieldConfig) -> Result<()> {
     let pending_tools_list: Arc<Mutex<VecDeque<String>>> = Arc::default();
     let pending_inspections: Arc<Mutex<VecDeque<PendingInspection>>> = Arc::default();
 
+    let stdout = Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
+
     // agent -> server runs as a background task so the main task can keep
     // draining server output even while stdin is idle.
     let agent_task = tokio::spawn(forward_agent_to_server(
         child_stdin,
         Arc::clone(&pending_tools_list),
         Arc::clone(&pending_inspections),
+        config.boundary.clone(),
+        Arc::clone(&stdout),
     ));
 
     // server -> agent runs in the foreground and owns the baseline store.
+    let analysis = AnalysisContext {
+        hmac_key: config.hmac_key,
+        mode: config.mode,
+        first_contact: config.first_contact,
+        boundary: config.boundary,
+    };
     let server_result = forward_server_to_agent(
         child_stdout,
         pending_tools_list,
         pending_inspections,
         store,
-        config.hmac_key,
-        config.mode,
-        config.first_contact,
+        analysis,
+        stdout,
     )
     .await;
 
@@ -205,6 +222,8 @@ async fn forward_agent_to_server(
     mut child_stdin: tokio::process::ChildStdin,
     pending: Arc<Mutex<VecDeque<String>>>,
     pending_inspections: Arc<Mutex<VecDeque<PendingInspection>>>,
+    boundary: Option<Arc<crate::secret_boundary::ShieldSecretBoundary>>,
+    stdout: Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
 ) -> Result<()> {
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     while let Some(line) = lines
@@ -217,6 +236,51 @@ async fn forward_agent_to_server(
         }
         match JsonRpcMessage::parse(&line) {
             Ok(msg) => {
+                // Secret-bound tool interception.
+                //
+                // A `tools/call` for a policy-bound tool is answered HERE and
+                // is never forwarded to the backend. That is the whole point:
+                // the backend child process must not see the call, because a
+                // backend that could see it would also be able to answer it
+                // — and the answer it would give is a response the agent
+                // would trust, produced without the credential mediation
+                // this tool is supposed to have.
+                //
+                // The response is written straight to the agent's stdout,
+                // serialized behind the same mutex the server-to-agent path
+                // uses, so the two writers cannot interleave a line and
+                // corrupt the protocol stream.
+                if let Some(boundary_ref) = &boundary {
+                    if msg.is_jsonrpc_2() && msg.method.as_deref() == Some("tools/call") {
+                        let tool_name = msg
+                            .params
+                            .as_ref()
+                            .and_then(|p| p.get("name"))
+                            .and_then(Value::as_str);
+                        if let Some(name) = tool_name {
+                            if boundary_ref.is_secret_tool(name) {
+                                tracing::info!(
+                                    direction = "agent->secret_boundary",
+                                    tool = name,
+                                    "intercepting secret-bound tool call"
+                                );
+                                let resp_line = boundary_ref.execute_mcp_tool_call(&msg).await;
+                                {
+                                    let mut out = stdout.lock().await;
+                                    out.write_all(resp_line.as_bytes())
+                                        .await
+                                        .context("writing intercepted response to stdout")?;
+                                    out.write_all(b"\n")
+                                        .await
+                                        .context("writing newline to stdout")?;
+                                    out.flush().await.context("flushing stdout")?;
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                }
+
                 tracing::info!(
                     direction = "agent->server",
                     message = %msg.describe(),
@@ -310,6 +374,18 @@ async fn forward_agent_to_server(
     Ok(())
 }
 
+/// The analysis inputs the server-to-agent forwarding loop needs.
+///
+/// Grouped into a struct so the forwarding function's signature does not
+/// grow with every new analysis input, and so the set of things that
+/// determine "is this schema trusted" is stated in one place.
+struct AnalysisContext {
+    hmac_key: Vec<u8>,
+    mode: ShieldMode,
+    first_contact: FirstContact,
+    boundary: Option<Arc<crate::secret_boundary::ShieldSecretBoundary>>,
+}
+
 /// Read lines from the server's stdout, log them, run detection on
 /// tools/list responses, and forward each line untouched to the agent.
 async fn forward_server_to_agent(
@@ -317,11 +393,9 @@ async fn forward_server_to_agent(
     pending: Arc<Mutex<VecDeque<String>>>,
     pending_inspections: Arc<Mutex<VecDeque<PendingInspection>>>,
     mut store: BaselineStore,
-    hmac_key: Vec<u8>,
-    mode: ShieldMode,
-    first_contact: FirstContact,
+    analysis: AnalysisContext,
+    stdout: Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
 ) -> Result<()> {
-    let mut stdout = tokio::io::stdout();
     let mut lines = BufReader::new(child_stdout).lines();
     while let Some(line) = lines
         .next_line()
@@ -368,7 +442,14 @@ async fn forward_server_to_agent(
                     // detector-internal error must also never masquerade as
                     // "nothing to flag": fail open (forward unmodified) and
                     // say so at error level, with a structured event.
-                    match analyze_tools_list(&msg, &mut store, &hmac_key, mode, first_contact) {
+                    match analyze_tools_list_with_boundary(
+                        &msg,
+                        &mut store,
+                        &analysis.hmac_key,
+                        analysis.mode,
+                        analysis.first_contact,
+                        analysis.boundary.as_deref(),
+                    ) {
                         Ok(AnalysisOutcome::Analyzed { rewritten }) => {
                             rewritten_line = rewritten;
                         }
@@ -393,7 +474,7 @@ async fn forward_server_to_agent(
                             .and_then(|mut pending| take_inspection(&mut pending, &key))
                     });
                     if let Some(inspection) = inspection {
-                        match analyze_inspectable_response(&msg, &inspection, mode) {
+                        match analyze_inspectable_response(&msg, &inspection, analysis.mode) {
                             Ok(rewritten) => rewritten_line = rewritten,
                             Err(error) => {
                                 tracing::error!(
@@ -419,15 +500,16 @@ async fn forward_server_to_agent(
             }
         }
         let outgoing = rewritten_line.as_deref().unwrap_or(&line);
-        stdout
-            .write_all(outgoing.as_bytes())
-            .await
-            .context("writing to agent stdout")?;
-        stdout
-            .write_all(b"\n")
-            .await
-            .context("writing newline to agent stdout")?;
-        stdout.flush().await.context("flushing agent stdout")?;
+        {
+            let mut out = stdout.lock().await;
+            out.write_all(outgoing.as_bytes())
+                .await
+                .context("writing to agent stdout")?;
+            out.write_all(b"\n")
+                .await
+                .context("writing newline to agent stdout")?;
+            out.flush().await.context("flushing agent stdout")?;
+        }
     }
     tracing::info!("MCP server closed stdout");
     Ok(())
@@ -638,7 +720,7 @@ fn rebuild_result_array(msg: &JsonRpcMessage, key: &str, values: Vec<Value>) -> 
 
 /// Outcome of analyzing one tools/list response.
 #[derive(Debug)]
-enum AnalysisOutcome {
+pub(crate) enum AnalysisOutcome {
     /// The response had no `result.tools` array — structurally malformed
     /// for a tools/list result. Logged distinctly from a clean pass so a
     /// detector-visible anomaly is never mistaken for "nothing to flag".
@@ -695,12 +777,24 @@ fn validate_tool_entries(tools: &[Value]) -> Result<(), String> {
 /// the description sanitizer, then persist any newly registered baselines.
 /// In enforce mode, mismatched tools are swapped back to their trusted
 /// baseline schema in the returned rewritten response line.
+#[cfg(test)]
 fn analyze_tools_list(
     msg: &JsonRpcMessage,
     store: &mut BaselineStore,
     hmac_key: &[u8],
     mode: ShieldMode,
     first_contact: FirstContact,
+) -> Result<AnalysisOutcome> {
+    analyze_tools_list_with_boundary(msg, store, hmac_key, mode, first_contact, None)
+}
+
+pub(crate) fn analyze_tools_list_with_boundary(
+    msg: &JsonRpcMessage,
+    store: &mut BaselineStore,
+    hmac_key: &[u8],
+    mode: ShieldMode,
+    first_contact: FirstContact,
+    boundary: Option<&crate::secret_boundary::ShieldSecretBoundary>,
 ) -> Result<AnalysisOutcome> {
     // One id for this whole exchange. A mismatched schema and the suspicious
     // description that arrived with it are one finding seen twice, so they must
@@ -748,6 +842,26 @@ fn analyze_tools_list(
             .get("name")
             .and_then(Value::as_str)
             .unwrap_or("<unnamed>");
+
+        if let Some(boundary_ref) = boundary {
+            if boundary_ref.is_secret_tool(name) {
+                // Shadowing. The backend advertised a tool with the same name
+                // as a policy-bound one. It is dropped from the agent-facing
+                // catalogue and its calls are answered locally, so the
+                // backend can never impersonate the secret-bound tool.
+                //
+                // Note what is skipped by the `continue`: the backend's
+                // definition is never fingerprinted and never registered as a
+                // baseline. Fingerprinting it would bless a definition the
+                // boundary has already decided not to trust.
+                tracing::info!(
+                    tool = name,
+                    "backend tool shadowed by secret boundary tool definition"
+                );
+                blocked_tools.insert(index);
+                continue;
+            }
+        }
         let description = tool
             .get("description")
             .and_then(Value::as_str)
@@ -933,13 +1047,35 @@ fn analyze_tools_list(
 
     store.save()?;
 
-    let rewritten = if clean_tools.is_some() || !blocked_tools.is_empty() {
+    let has_boundary_tools = boundary
+        .map(|b| !b.get_mcp_tool_descriptors().is_empty())
+        .unwrap_or(false);
+
+    // The rewrite happens in BOTH shield modes when a Secret Boundary is
+    // configured, and that is deliberate:
+    //
+    //   * The boundary's own tools must be advertised, or the agent cannot
+    //     call them at all. Monitor mode still has to be usable.
+    //   * A backend tool that shadows a boundary tool is dropped in both
+    //     modes. If it survived in monitor mode, the backend could
+    //     impersonate the secret-bound tool and the agent would have no way
+    //     to tell which definition it is looking at.
+    //
+    // Monitor mode's promise is about *detection* — a mutated schema is
+    // logged rather than corrected — not about leaving a tools/list
+    // untouched. The sanitizer and fingerprint decisions above remain
+    // mode-gated exactly as before.
+    let rewritten = if clean_tools.is_some() || !blocked_tools.is_empty() || has_boundary_tools {
         let rewritten_tools = clean_tools.unwrap_or_else(|| tools.clone());
-        let filtered = rewritten_tools
+        let mut filtered: Vec<Value> = rewritten_tools
             .into_iter()
             .enumerate()
             .filter_map(|(index, tool)| (!blocked_tools.contains(&index)).then_some(tool))
             .collect();
+        if let Some(boundary_ref) = boundary {
+            let secret_tools = boundary_ref.get_mcp_tool_descriptors();
+            filtered.extend(secret_tools);
+        }
         Some(rebuild_response(msg, filtered)?)
     } else {
         None

@@ -28,6 +28,7 @@ mod jsonrpc;
 mod outbox;
 mod proxy;
 mod sanitizer;
+pub mod secret_boundary;
 
 use anyhow::{bail, Context, Result};
 use std::io::IsTerminal;
@@ -86,7 +87,7 @@ async fn main() -> Result<()> {
     // baseline file and exit without starting a proxy, so they can be run
     // while an agent is not connected.
     if server_cmd.first().map(String::as_str) == Some("--list-pending") {
-        let config = proxy::ShieldConfig::from_env();
+        let config = proxy::ShieldConfig::from_env()?;
         let store = fingerprint::BaselineStore::load(&config.baseline_path, &config.hmac_key)?;
         let pending = store.pending_names();
         if pending.is_empty() {
@@ -105,7 +106,7 @@ async fn main() -> Result<()> {
             bail!("--approve expects exactly one tool name");
         }
         let tool = &server_cmd[1];
-        let config = proxy::ShieldConfig::from_env();
+        let config = proxy::ShieldConfig::from_env()?;
         let mut store = fingerprint::BaselineStore::load(&config.baseline_path, &config.hmac_key)?;
         if !store.approve(tool) {
             // Not an error to be swallowed: approving a name that is not
@@ -136,7 +137,13 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let config = proxy::ShieldConfig::from_env();
+    let mut config = proxy::ShieldConfig::from_env()?;
+    // The Secret Boundary is built only on the proxy path. The operator
+    // commands above deliberately do not touch it: a malformed boundary
+    // configuration must not make `--list-pending` or `--approve`
+    // unusable, because those are how an operator inspects and repairs the
+    // very state the boundary is configured against.
+    config.boundary = secret_boundary::ShieldSecretBoundary::from_env()?;
     tracing::info!(
         module = events::MODULE,
         server_command = ?server_cmd,
