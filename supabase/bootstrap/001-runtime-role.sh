@@ -17,6 +17,16 @@ else
 fi
 
 psql "${psql_args[@]}" <<'SQL'
+-- Plain PostgreSQL lacks Supabase's API roles. Create inert compatibility
+-- roles for migration REVOKEs; existing Supabase roles remain untouched.
+select format(
+  'create role %I nologin nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls',
+  required.name
+)
+from (values ('anon'), ('authenticated')) as required(name)
+where not exists (select 1 from pg_roles where rolname = required.name)
+\gexec
+
 select 'create role monolith_app nologin nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls'
 where not exists (select 1 from pg_roles where rolname = 'monolith_app')
 \gexec
@@ -28,8 +38,13 @@ select format(
 where not exists (select 1 from pg_roles where rolname = 'monolith_runtime')
 \gexec
 
+-- Reconcile the password on an existing volume. Deliberately does NOT restate
+-- nosuperuser/noreplication/nobypassrls: altering those attributes requires a
+-- superuser even to turn them off, and this runs as `postgres`, which in the
+-- supabase image has CREATEROLE but not SUPERUSER. CREATE ROLE above already
+-- set them, so restating here only bought an unconditional failure.
 select format(
-  'alter role monolith_runtime with login password %L nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls',
+  'alter role monolith_runtime with login password %L',
   :'runtime_password'
 )
 \gexec

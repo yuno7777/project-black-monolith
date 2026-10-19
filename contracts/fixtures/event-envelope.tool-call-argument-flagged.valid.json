@@ -1,0 +1,29 @@
+{
+  "event_id": "5f2a1c34-6d1e-4f8b-9c2a-3e4b5c6d7e8f",
+  "schema_version": 2,
+  "timestamp_ms": 1785715200001,
+  "module": "mcp-shield",
+  "event_type": "tool_call_argument_flagged",
+  "severity": "critical",
+  "details": {
+    "tool": "deploy_tool",
+    "action_taken": "blocked",
+    "reason": "1 finding: credential in tool arguments",
+    "findings": [
+      {
+        "kind": "credential",
+        "pattern": "aws_access_key_id",
+        "location": "arguments.env"
+      }
+    ]
+  },
+  "source": "module",
+  "tenant_id": "college-demo",
+  "agent_id": "research-agent",
+  "session_id": "demo-session-01",
+  "trace_id": "8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+  "resource_type": "tool_call",
+  "resource_id": "deploy_tool",
+  "outcome": "blocked",
+  "policy_version": "mcp-shield/1"
+}

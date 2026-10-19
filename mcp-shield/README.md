@@ -157,6 +157,7 @@ Configuration (environment variables):
 | Variable              | Default                         | Purpose                                  |
 | --------------------- | ------------------------------- | ---------------------------------------- |
 | `MCP_SHIELD_MODE`     | `enforce`                       | `enforce` (rewrite/block on mismatch) or `monitor` (log only) |
+| `MCP_SHIELD_FIRST_CONTACT` | `trust`                    | `trust` (register an unseen tool as the baseline) or `approve` (withhold it until an operator approves it by name) |
 | `MCP_SHIELD_KEY`      | built-in dev key (banner-warns) | HMAC-SHA256 secret key                   |
 | `MCP_SHIELD_BASELINE` | `baseline_hashes.json`          | baseline store path                      |
 | `MONOLITH_DASHBOARD_URL` | *(unset)*                    | if set (e.g. `http://localhost:3000/api/ingest`), events are also POSTed here |
@@ -241,8 +242,22 @@ envelopes, and durable-outbox recovery/dead-letter behavior.
 - The stdio adapter uses the MCP line-delimited framing standard; legacy
   `Content-Length` framing is not supported.
 - A tool that is poisoned from its very first sighting has no clean
-  fingerprint to compare against. In `enforce` mode, the description
-  sanitizer removes a suspicious first-contact tool and refuses to register
-  it as a baseline. Novel poison outside the sanitizer corpus can still pass
-  first contact, so reviewed pre-provisioned baselines remain the strongest
-  deployment model.
+  fingerprint to compare against — a fingerprint proves a schema has not
+  *changed*, not that it was ever safe. Three layers address this, in
+  increasing order of strength:
+  1. In `enforce` mode the description sanitizer removes a suspicious
+     first-contact tool and refuses to register it as a baseline. This covers
+     phrasings in the sanitizer corpus only.
+  2. `MCP_SHIELD_FIRST_CONTACT=approve` withholds *every* unseen tool
+     regardless of how it is worded, parks it as pending, and emits
+     `tool_pending_approval`. Nothing reaches the agent until an operator runs
+     `mcp-shield --approve <tool>`. This turns trust-on-first-use from an
+     implicit default into an explicit decision, and it is the setting to use
+     when the tool server is not fully trusted.
+  3. Reviewed pre-provisioned baselines remain the strongest model, since no
+     unreviewed schema is ever seen at all.
+
+  The gate deliberately pins what was *first* seen: re-serving a different
+  schema while approval is pending does not overwrite the parked record, so a
+  server cannot show a clean tool and swap in a poisoned one just before the
+  operator approves. Pinned by `approval_pins_what_was_first_seen_not_what_arrived_last`.

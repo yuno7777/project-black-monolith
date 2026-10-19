@@ -8,6 +8,7 @@ drive it through POST /retrieve.
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from secrets import compare_digest
 
@@ -16,13 +17,14 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .config import MODULE_NAME, load_config
 from .detector_state import DetectorStateStore
-from .events import context_from_headers, make_emitter
+from .events import context_from_headers, make_emitter, replay_dead_letters
 from .frequency_tracker import FrequencyTracker
 from .quarantine import Quarantine
 from .retriever_proxy import RetrieverProxy
 from .store import build_embedding_function, get_or_create_collection
 
 MAX_QUERY_LENGTH = 16_384
+MAX_QUERY_BYTES = 16_384
 MAX_DOCUMENT_TEXT_BYTES = 64 * 1024
 MAX_DOCUMENT_BATCH_BYTES = 1024 * 1024
 
@@ -41,6 +43,8 @@ class RetrieveRequest(StrictRequest):
         value = value.strip()
         if not value:
             raise ValueError("query must not be blank")
+        if len(value.encode("utf-8")) > MAX_QUERY_BYTES:
+            raise ValueError(f"query must be at most {MAX_QUERY_BYTES} UTF-8 bytes")
         return value
 
 
@@ -54,6 +58,8 @@ class Document(StrictRequest):
         value = value.strip()
         if not value:
             raise ValueError("document id must not be blank")
+        if any(not character.isprintable() for character in value):
+            raise ValueError("document id must contain only printable characters")
         return value
 
     @field_validator("text")
@@ -94,6 +100,7 @@ def build_proxy() -> RetrieverProxy:
         tenant_id=cfg.tenant_id,
         agent_id=cfg.agent_id,
         session_id=cfg.session_id,
+        allow_insecure_http=cfg.allow_insecure_dashboard,
     )
     embed_fn = build_embedding_function(cfg)
     collection = get_or_create_collection(cfg, embedding_function=embed_fn)
@@ -101,16 +108,35 @@ def build_proxy() -> RetrieverProxy:
         cfg.detector_state_path,
         min_distinct_topics=cfg.min_distinct_topics,
         topic_similarity=cfg.topic_similarity,
-        window_size=cfg.window_size,
+        retention_horizon=cfg.retention_horizon,
+        max_queries_per_doc=cfg.max_queries_per_doc,
+        max_tracked_docs=cfg.max_tracked_docs,
     )
-    restored = state_store.load()
+    try:
+        restored = state_store.load()
+    except ValueError as error:
+        # State written under different retention policy or an older schema.
+        # Refusing to reinterpret it is deliberate — scores under mixed rules
+        # would be unreproducible — but crash-looping the service is not a
+        # safe alternative either, so set the old file aside (never delete
+        # evidence) and continue from empty detector state.
+        quarantined = state_store.quarantine_unreadable()
+        logging.error(
+            "detector state could not be loaded (%s); moved to %s and started "
+            "with empty detection state",
+            error,
+            quarantined,
+        )
+        restored = None
     if restored:
         tracker, quarantine = restored
     else:
         tracker = FrequencyTracker(
             min_distinct_topics=cfg.min_distinct_topics,
             topic_similarity=cfg.topic_similarity,
-            window_size=cfg.window_size,
+            retention_horizon=cfg.retention_horizon,
+            max_queries_per_doc=cfg.max_queries_per_doc,
+            max_tracked_docs=cfg.max_tracked_docs,
         )
         quarantine = Quarantine()
     return RetrieverProxy(
@@ -136,6 +162,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        app.state.proxy.flush_state()
         emit("service_stop", "info", {"message": "VectorAnchor shutting down"})
         emit.close()
 
@@ -163,6 +190,10 @@ def _require_admin(request: Request) -> None:
         raise HTTPException(status_code=401, detail="invalid administrative credential")
 
 
+def _require_admin_token(request: Request) -> None:
+    _require_admin(request)
+
+
 @app.get("/health")
 def health() -> dict:
     return {
@@ -186,7 +217,7 @@ def add_documents(req: AddDocumentsRequest, request: Request) -> dict:
     single ChromaDB client, so the seed/inject fixtures route all corpus
     mutations through here rather than opening a second client (which would
     contend on ChromaDB's SQLite store)."""
-    _require_admin(request)
+    _require_admin_token(request)
     proxy: RetrieverProxy = app.state.proxy
     total = proxy.upsert_documents([(document.id, document.text) for document in req.documents])
     return {"added": len(req.documents), "total": total}
@@ -194,7 +225,7 @@ def add_documents(req: AddDocumentsRequest, request: Request) -> dict:
 
 @app.get("/quarantine")
 def quarantine(request: Request) -> dict:
-    _require_admin(request)
+    _require_admin_token(request)
     proxy: RetrieverProxy = app.state.proxy
     documents = proxy.quarantine_snapshot()
     return {
@@ -212,9 +243,34 @@ def quarantine(request: Request) -> dict:
     }
 
 
+@app.delete("/quarantine/{doc_id}")
+def delete_quarantined_document(doc_id: str, request: Request) -> dict:
+    _require_admin_token(request)
+    cleaned = doc_id.strip()
+    if (
+        not cleaned
+        or len(cleaned) > 128
+        or any(not character.isprintable() for character in cleaned)
+    ):
+        raise HTTPException(status_code=422, detail="invalid document id")
+    proxy: RetrieverProxy = app.state.proxy
+    if hasattr(proxy, "release_quarantine"):
+        return proxy.release_quarantine(cleaned)
+    released = cleaned in proxy.quarantine.list_ids()
+    proxy.quarantine.remove_many([cleaned])
+    proxy.tracker.reset_doc(cleaned)
+    if hasattr(proxy, "flush_state"):
+        proxy.flush_state()
+    return {
+        "doc_id": cleaned,
+        "released": released,
+        "quarantined_count": len(proxy.quarantine.list_ids()),
+    }
+
+
 @app.get("/stats")
 def stats(request: Request) -> dict:
-    _require_admin(request)
+    _require_admin_token(request)
     proxy: RetrieverProxy = app.state.proxy
     return {
         "module": MODULE_NAME,
@@ -225,7 +281,8 @@ def stats(request: Request) -> dict:
             "top_k": proxy.cfg.top_k,
             "min_distinct_topics": proxy.cfg.min_distinct_topics,
             "topic_similarity": proxy.cfg.topic_similarity,
-            "window_size": proxy.cfg.window_size,
+            "retention_horizon": proxy.cfg.retention_horizon,
+            "max_queries_per_doc": proxy.cfg.max_queries_per_doc,
         },
     }
 
@@ -234,7 +291,20 @@ def stats(request: Request) -> dict:
 def reset_detection(request: Request) -> dict:
     """Clear the tracker + quarantine (not the corpus). Lets the demo script
     re-run detection from a clean slate without re-seeding."""
-    _require_admin(request)
+    _require_admin_token(request)
     proxy: RetrieverProxy = app.state.proxy
     proxy.reset_detection()
     return {"status": "reset"}
+
+
+@app.post("/admin/replay-dead-letters")
+def admin_replay_dead_letters(request: Request) -> dict:
+    """Reset dead-lettered outbox events back to pending for immediate retry."""
+    _require_admin_token(request)
+    proxy: RetrieverProxy = app.state.proxy
+    target = (
+        getattr(getattr(proxy, "emit", None), "outbox", None)
+        or getattr(proxy, "outbox", None)
+        or getattr(proxy, "emit", None)
+    )
+    return {"replayed": replay_dead_letters(target)}

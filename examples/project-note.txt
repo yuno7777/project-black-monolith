@@ -1,0 +1,2 @@
+Project Black Monolith protects tool schemas, retrieved documents, and streamed model output.
+The read-only note agent uses one approved local file and has no shell or network tools.
