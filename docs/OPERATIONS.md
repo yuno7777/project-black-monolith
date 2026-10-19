@@ -74,6 +74,34 @@ bounded exponential backoff; other non-2xx responses and ten exhausted attempts
 become dead letters. Production destinations require HTTPS; HTTP is accepted
 only for loopback test receivers.
 
+## Cross-layer session circuit breaker
+
+When independent defenses agree that a session is compromised, the dashboard
+revokes it and every layer stops serving that identity. A single detector hit
+is a finding; agreement across layers is treated as an active compromise.
+
+- **Trip condition.** Two distinct modules (default) report a `critical` event
+  for the same `(tenant_id, agent_id, session_id)`. `MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS`
+  changes the layer count (1–3) and `MONOLITH_CIRCUIT_BREAKER_MIN_SEVERITY`
+  (`critical` default, `warning`, or `info`) lowers the severity bar.
+- **Enforcement.** MCP-Shield answers `tools/call` with an `isError` result;
+  VectorAnchor returns no results and `session_quarantined: true`; TraceAudit
+  terminates with `reason: "session_revoked"` (streaming) or a
+  `content_filter` refusal (OpenAI-compatible response).
+- **Propagation.** Modules adopt the revoked-session set from every ingest
+  response and poll `GET /api/sessions/revoked` every
+  `MONOLITH_SESSION_POLL_MS` (default 15 s, `0` disables) so an idle session
+  is still cut off. The poll uses the module's existing ingest credential.
+- **Fail closed.** A failed or malformed refresh leaves the previous set in
+  place; only an authoritative snapshot can lift a revocation. Revocations do
+  not expire on a timer.
+- **Manual control.** `POST /api/incidents/<event-id>/session` quarantines and
+  `DELETE` restores; both require the `analyst` role. The same actions are
+  available from the investigation queue. Restores propagate on the next
+  ingest response or poll.
+- **Visibility.** Each refusal emits one `session_quarantined` critical event
+  per session, so repeated retries do not flood the ledger.
+
 ## Retention and cleanup
 
 Evidence is append-only to the dashboard runtime. A database owner may schedule

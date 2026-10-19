@@ -184,7 +184,11 @@ async fn main() -> Result<()> {
                 );
             }
         }
+        let revocation_poller = outbox::spawn_revocation_poller();
         flusher.await?;
+        if let Some(poller) = revocation_poller {
+            poller.abort();
+        }
         return Ok(());
     }
 
@@ -208,15 +212,21 @@ async fn main() -> Result<()> {
     // process on a volume), then keeps this run's events flowing to the
     // dashboard live as they are detected.
     let flusher = outbox::spawn_flusher();
+    // The breaker trips from other layers' detections, so an idle proxy must
+    // still learn about its session's revocation.
+    let revocation_poller = outbox::spawn_revocation_poller();
 
     let result = proxy::run(server_cmd, config).await;
 
     // This proxy is short-lived: it exits as soon as the agent closes stdin,
     // so there is no long-running retry loop to fall back on. Stop the
-    // periodic flusher and make one final forced pass — ignoring backoff,
+    // periodic tasks and make one final forced pass — ignoring backoff,
     // since a scheduled retry after exit would never happen.
     if let Some(flusher) = flusher {
         flusher.abort();
+    }
+    if let Some(poller) = revocation_poller {
+        poller.abort();
     }
     outbox::drain(FINAL_DRAIN_BUDGET, true).await;
 

@@ -164,6 +164,9 @@ delivery follows one shared contract:
   inspect the append-only audit trail.
 - **Cross-layer correlation** — groups only the complete
   `(tenant_id, agent_id, session_id)` identity.
+- **Cross-layer circuit breaker** — revokes a session once two distinct
+  layers report critical detections, and every layer then refuses to serve it
+  until an analyst restores it.
 - **Benchmark ledger** — keeps detector scorecards separate from security
   events and recomputes metrics from the confusion matrix server-side.
 - **Operations command center** — shows ledger latency, layer reachability,
@@ -179,6 +182,17 @@ delivery follows one shared contract:
 - **Least-privilege database runtime** — the restricted login assumes a
   `NOLOGIN`, `NOSUPERUSER`, `NOBYPASSRLS` application role; immutable evidence
   has no `UPDATE` or `DELETE` grant.
+
+The circuit breaker is deliberately conservative by default: it trips only
+when **two distinct layers** report a **critical** event for the same
+`(tenant_id, agent_id, session_id)`. Warnings do not count unless
+`MONOLITH_CIRCUIT_BREAKER_MIN_SEVERITY=warning`; the layer threshold is
+`MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS` (1–3). Revocation is enforced by each
+module itself — MCP-Shield returns a tool error, VectorAnchor serves no
+documents, and TraceAudit terminates with `session_revoked` — and is mirrored
+locally from ingest responses plus a 15-second poll, so a session with no
+traffic is still cut off. An analyst with the `analyst` role can restore a
+session from the investigation queue; revocations never expire on a timer.
 
 See the [dashboard guide](dashboard/README.md) and
 [identity and access model](docs/IDENTITY_AND_ACCESS.md) for the full
@@ -414,6 +428,7 @@ bash scripts/verify_ingest.sh
 bash scripts/verify_recovery.sh
 bash scripts/verify_incidents.sh
 bash scripts/verify_correlation.sh
+bash scripts/verify_circuit_breaker.sh
 bash scripts/verify_benchmarks.sh
 ```
 
