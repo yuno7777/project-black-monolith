@@ -43,6 +43,10 @@ backoff. The dashboard being down costs delivery latency, not evidence.
 - `app/api/incidents/[eventId]/audit/route.ts` — `GET` one incident's trail.
 - `app/api/incidents/[eventId]/export/route.ts` — downloads a versioned evidence
   bundle containing the immutable event, incident, audit trail, and session.
+- `app/api/incidents/[eventId]/session/route.ts` — `GET` the correlated
+  session, `POST` to quarantine it manually, `DELETE` to restore it.
+- `app/api/sessions/revoked/route.ts` — module-credential snapshot the layers
+  poll so an idle session still learns it was revoked.
 - `app/investigate/page.tsx` — the queue UI.
 - `app/operations/page.tsx` — ledger latency, evidence age, policy coverage,
   module reachability, and durable-delivery backlog/dead-letter telemetry.

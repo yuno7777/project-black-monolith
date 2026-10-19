@@ -1,3 +1,9 @@
+# Dependency updates.
+#
+# The two `ignore` entries below are not preferences — each was verified by
+# building the change and watching it fail. Both are majors that need a code
+# migration, so they are excluded until that migration is done deliberately
+# rather than re-proposed weekly as if they were routine bumps.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -6,9 +12,32 @@ updates:
     groups:
       dashboard:
         patterns: ["*"]
+    ignore:
+      # TypeScript 7 is rejected outright by the Next.js build:
+      #   "TypeScript 7.0.2 does not provide the compiler API required by
+      #    Next.js. Enable experimental.useTypeScriptCli ... or install
+      #    TypeScript 6 instead."
+      # `npm run build` is the CI type-check gate, so this fails the build.
+      # Verified: with TypeScript pinned back, every other package in the
+      # group (eslint 10, @types/node 26, jose 6.2.6) builds clean — one
+      # package was blocking a group of seven.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: cargo
     directory: /mcp-shield
     schedule: { interval: weekly }
+    ignore:
+      # sha2 0.11 moves to digest 0.11 while hmac 0.12 is built on digest
+      # 0.10, so `Hmac<Sha256>` loses its trait impls and the crate does not
+      # compile (E0277/E0599: CoreWrapper<HmacCore<Sha256>> does not satisfy
+      # MacMarker/Mac). Bumping it requires moving hmac to 0.13 and migrating
+      # fingerprint.rs in the same change — that code produces the tool
+      # baselines, so it is not a drive-by upgrade.
+      # For a 0.x crate a minor bump is the breaking one, hence both types.
+      - dependency-name: sha2
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
   - package-ecosystem: pip
     directory: /vector-anchor
     schedule: { interval: weekly }

@@ -1,58 +1,36 @@
 #!/usr/bin/env bash
-# Reset Project Black Monolith to a clean state before a live demo run —
-# WITHOUT a rebuild. Wipes:
-#   * MCP-Shield's trusted-schema baseline  (baseline_hashes.json)
-#   * VectorAnchor's quarantine + frequency-tracker state
-#   * TraceAudit's captured baseline distribution (re-captured on next start)
-#   * the dashboard's in-memory event history (bounded ring buffer)
-#
-# Works whether the stack is running under Docker Compose or locally, and is
-# safe to run when nothing is up (it just clears on-disk artifacts).
-#
-#   ./scripts/reset_demo_state.sh
+# Reset local demo state across Postgres, SQLite/JSONL outboxes, and detector state.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-set -uo pipefail
-cd "$(dirname "$0")/.."
-if [ -f .env ]; then set -a; . ./.env; set +a; fi
-ADMIN_TOKEN="${MONOLITH_ADMIN_TOKEN:-}"
-
-say() { printf '  %s\n' "$*"; }
-
-echo "== Resetting Project Black Monolith demo state =="
-
-# --- 1. On-disk artifacts (always safe) --------------------------------
-say "removing on-disk artifacts…"
-rm -f  mcp-shield/baseline_hashes.json
-rm -rf vector-anchor/chroma_store
-rm -f  trace-audit/baseline_distribution.json
-say "  cleared baseline_hashes.json, chroma_store/, baseline_distribution.json"
-
-# --- 2. Running services under Docker Compose --------------------------
-if command -v docker >/dev/null 2>&1 && [ -n "$(docker compose ps -q 2>/dev/null)" ]; then
-    say "docker compose stack is up — resetting live state…"
-    # MCP-Shield keeps its authenticated baseline beside the durable outbox.
-    docker compose exec -T mcp-shield sh -c 'rm -f /var/lib/monolith/baseline_hashes.json' 2>/dev/null \
-        && say "  mcp-shield: baseline reset"
-    # VectorAnchor: clear the in-memory tracker + quarantine (corpus is kept).
-    docker compose exec -T vector-anchor sh -c \
-        'curl -fs -X POST http://localhost:8001/admin/reset-detection -H "Authorization: Bearer $MONOLITH_ADMIN_TOKEN"' \
-        >/dev/null 2>&1 \
-        && say "  vector-anchor: quarantine + tracker reset"
-    docker compose exec -T trace-audit sh -c \
-        'rm -f /var/lib/monolith/baseline_distribution.json' 2>/dev/null \
-        && docker compose restart trace-audit >/dev/null 2>&1 \
-        && say "  trace-audit: baseline recaptured"
-    # Dashboard event history is an in-memory ring buffer — a restart clears it.
-    docker compose restart dashboard >/dev/null 2>&1 \
-        && say "  dashboard: event history cleared (restarted)"
-else
-    # --- 3. Local (non-Docker) services, if reachable ------------------
-    if curl -fs -X POST http://localhost:8001/admin/reset-detection \
-        -H "Authorization: Bearer $ADMIN_TOKEN" >/dev/null 2>&1; then
-        say "vector-anchor (localhost:8001): quarantine + tracker reset"
-    fi
-    say "note: the dashboard event history is in-memory; restart the dashboard"
-    say "      process to clear it if it is running locally."
+if [[ -f "$ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
 fi
 
-echo "== Done. State is clean for a fresh demo run. =="
+TRUNCATE_SQL="TRUNCATE monolith.security_events, monolith.incident_triage, monolith.incident_audit, monolith.alert_outbox CASCADE;"
+
+if [[ -n "${DATABASE_URL:-}" ]] && command -v psql >/dev/null 2>&1; then
+  psql "$DATABASE_URL" -c "$TRUNCATE_SQL" >/dev/null 2>&1 || true
+elif command -v docker >/dev/null 2>&1; then
+  docker compose -f "$ROOT/docker-compose.yml" exec -T database \
+    psql -U postgres -d postgres -c "$TRUNCATE_SQL" >/dev/null 2>&1 || true
+fi
+
+rm -f \
+  "$ROOT"/vector-anchor/outbox.db \
+  "$ROOT"/vector-anchor/outbox.db-wal \
+  "$ROOT"/vector-anchor/outbox.db-shm \
+  "$ROOT"/trace-audit/outbox.db \
+  "$ROOT"/trace-audit/outbox.db-wal \
+  "$ROOT"/trace-audit/outbox.db-shm \
+  "$ROOT"/mcp-shield/outbox.jsonl \
+  "$ROOT"/vector-anchor/detector_state.json
+
+PY="${PYTHON:-python3}"
+if ! command -v "$PY" >/dev/null 2>&1; then PY=python; fi
+if [[ $# -gt 0 ]] || [[ -n "${MONOLITH_ADMIN_TOKEN:-}" ]]; then
+  "$PY" "$ROOT/scripts/reset_demo_state.py" "$@" || true
+fi

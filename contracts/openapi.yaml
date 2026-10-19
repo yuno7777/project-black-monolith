@@ -64,6 +64,118 @@ paths:
             text/event-stream:
               schema:
                 $ref: "./schemas/trace-audit-api.v1.schema.json#/$defs/streamEvent"
+  /quarantine:
+    get:
+      operationId: listQuarantinedDocuments
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Quarantined documents with bounded previews.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/vector-anchor-api.v1.schema.json#/$defs/quarantineResponse"
+  /quarantine/{doc_id}:
+    delete:
+      operationId: releaseQuarantinedDocument
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: doc_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+      responses:
+        "200":
+          description: The document was released and its retained hits reset.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/vector-anchor-api.v1.schema.json#/$defs/releaseQuarantineResponse"
+        "404":
+          description: No quarantined document carries that id.
+  /admin/replay-dead-letters:
+    post:
+      operationId: replayDeadLetters
+      description: VectorAnchor and TraceAudit requeue their dead-lettered outbox events.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Number of records moved back to pending.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/vector-anchor-api.v1.schema.json#/$defs/replayDeadLettersResponse"
+  /admin/reload-baseline:
+    post:
+      operationId: reloadTraceAuditBaseline
+      description: |
+        Hot-reload the TraceAudit KL baseline. An empty body reloads from the
+        configured path; a body may carry a replacement `distribution` (or
+        `counts`) mapping, which is validated and written atomically first.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                distribution:
+                  type: object
+                  additionalProperties: { "type": "number", "minimum": 0 }
+      responses:
+        "200":
+          description: The baseline was validated and swapped into the live auditor.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: ["reloaded", "vocab_size"]
+                properties:
+                  reloaded: { "const": true }
+                  vocab_size: { "type": "integer", "minimum": 1 }
+  /v1/chat/completions:
+    post:
+      operationId: auditedChatCompletion
+      description: |
+        OpenAI-compatible entry point. The prompt is audited with the same
+        divergence and PII pipeline as /generate; divergent streams terminate
+        with `finish_reason: "content_filter"`. TraceAudit is a detector, not a
+        general-purpose model proxy; the backend is configured server-side.
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+        - $ref: "#/components/parameters/AgentId"
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/TraceId"
+        - $ref: "#/components/parameters/CorrelationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/trace-audit-api.v1.schema.json#/$defs/chatCompletionRequest"
+      responses:
+        "200":
+          description: |
+            A `chat.completion` object when `stream` is false, or a
+            `text/event-stream` of `chat.completion.chunk` objects ending in
+            `data: [DONE]` when `stream` is true.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/trace-audit-api.v1.schema.json#/$defs/chatCompletionResponse"
+            text/event-stream:
+              schema:
+                $ref: "./schemas/trace-audit-api.v1.schema.json#/$defs/chatCompletionChunk"
+        "422":
+          description: The request body is not a usable chat completion request.
   /api/ingest:
     post:
       operationId: ingestSecurityEvents
@@ -82,8 +194,108 @@ paths:
                   items:
                     $ref: "./schemas/event-envelope.v2.schema.json"
       responses:
-        "202":
-          description: Events accepted for the tenant-scoped ledger.
+        "201":
+          description: |
+            Events accepted for the tenant-scoped ledger. `revoked_sessions`
+            lists sessions the circuit breaker revoked as a result of this
+            batch, so emitters can enforce revocation without polling.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IngestResponse"
+  /api/operations:
+    get:
+      operationId: readOperationsHealth
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Ledger counts, per-module runtime probes, and alerting status.
+          content:
+            application/json:
+              schema:
+                type: object
+    post:
+      operationId: replayDeadLettersAcrossModules
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Dead-letter replay results per module plus alert deliveries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperationsReplayResponse"
+  /api/incidents/{eventId}/session:
+    get:
+      operationId: readIncidentSession
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: eventId
+          in: path
+          required: true
+          schema: { "type": "string", "format": "uuid" }
+      responses:
+        "200":
+          description: The event's agent/session correlation across modules.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: ["session"]
+                properties:
+                  session: { "type": "object" }
+        "404":
+          description: The event carries no complete agent/session identity.
+    post:
+      operationId: quarantineIncidentSession
+      description: Manually revoke the session that produced this event.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: eventId
+          in: path
+          required: true
+          schema: { "type": "string", "format": "uuid" }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { "type": "string", "minLength": 1, "maxLength": 512 }
+      responses:
+        "200":
+          description: The session is revoked and returned with its updated state.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: ["session"]
+                properties:
+                  session: { "type": "object" }
+    delete:
+      operationId: restoreIncidentSession
+      description: Lift the manual quarantine and let the breaker re-evaluate.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: eventId
+          in: path
+          required: true
+          schema: { "type": "string", "format": "uuid" }
+      responses:
+        "200":
+          description: The session revocation is lifted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: ["session"]
+                properties:
+                  session: { "type": "object" }
   /api/benchmarks:
     post:
       operationId: uploadBenchmarkRun
@@ -109,6 +321,37 @@ components:
       minLength: 1
       maxLength: 128
       pattern: "^[^\\u0000-\\u001f\\u007f]+$"
+    IngestResponse:
+      type: object
+      required: ["accepted", "duplicates", "event_ids", "revoked_sessions"]
+      properties:
+        accepted: { "type": "integer", "minimum": 0 }
+        duplicates: { "type": "integer", "minimum": 0 }
+        event_ids:
+          type: array
+          items: { "$ref": "#/components/schemas/CorrelationIdentity" }
+        revoked_sessions:
+          type: array
+          items: { "type": "string", "minLength": 1, "maxLength": 128 }
+    OperationsReplayResponse:
+      type: object
+      required: ["tenant_id", "alerts_replayed", "total_replayed", "modules"]
+      properties:
+        tenant_id: { "$ref": "#/components/schemas/CorrelationIdentity" }
+        alerts_replayed: { "type": "integer", "minimum": 0 }
+        total_replayed: { "type": "integer", "minimum": 0 }
+        modules:
+          type: array
+          items:
+            type: object
+            required: ["module", "configured", "ok", "replayed"]
+            properties:
+              module: { "type": "string", "minLength": 1 }
+              configured: { "type": "boolean" }
+              ok: { "type": "boolean" }
+              replayed: { "type": "integer", "minimum": 0 }
+              status: { "type": "integer" }
+              error: { "type": "string" }
   parameters:
     TenantId:
       name: x-monolith-tenant-id

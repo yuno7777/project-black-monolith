@@ -25,10 +25,20 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("profile", choices=("deterministic", "real"))
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--models", nargs="+", default=["llama3.2:1b", "qwen2.5:0.5b"],
+                        help="installed Ollama model names for the real profile")
     args = parser.parse_args()
 
     profiles = json.loads(PROFILES.read_text(encoding="utf-8"))
     profile = profiles[args.profile]
+    if args.profile == "real":
+        for index, model in enumerate(args.models):
+            profile["steps"].append({"name": f"trace-audit-real-{index}", "cwd": ".",
+                "command": ["{python}", "evaluation/real_models.py", "trace", "--model", model,
+                            "--output", f"evaluation/results/trace-real-{index}.json"],
+                "result": f"evaluation/results/trace-real-{index}.json",
+                "sources": ["evaluation/real_models.py", "evaluation/held_out.json",
+                            "trace-audit/src/stream_proxy.py", "trace-audit/src/pii_scanner.py"]})
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     output = (args.output or ROOT / "evaluation" / "results" / f"{args.profile}-{stamp}").resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -43,6 +53,7 @@ def main() -> None:
         "steps": [],
     }
 
+    failed = False
     for step in profile["steps"]:
         cwd = ROOT / step["cwd"]
         environment = os.environ.copy()
@@ -50,21 +61,26 @@ def main() -> None:
         command = [part.format(python=sys.executable) for part in step["command"]]
         source_hashes = {name: digest(cwd / name) for name in step["sources"]}
         started = time.perf_counter()
-        completed = subprocess.run(command, cwd=cwd, env=environment, check=False)
+        try:
+            completed = subprocess.run(command, cwd=cwd, env=environment, check=False, timeout=900)
+            exit_code = completed.returncode
+        except subprocess.TimeoutExpired:
+            exit_code = 124
         record = {
             "name": step["name"],
             "command": command,
             "environment": step.get("environment", {}),
             "source_sha256": source_hashes,
             "duration_ms": round((time.perf_counter() - started) * 1000),
-            "exit_code": completed.returncode,
+            "exit_code": exit_code,
         }
         manifest["steps"].append(record)
-        if completed.returncode:
+        if exit_code:
             (output / "run-manifest.json").write_text(
                 json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
             )
-            raise SystemExit(completed.returncode)
+            failed = True
+            continue
         shutil.copy2(cwd / step["result"], output / f"{step['name']}.json")
 
     manifest["completed_at_ms"] = int(time.time() * 1000)
@@ -72,6 +88,8 @@ def main() -> None:
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
     print(f"evaluation artifacts: {output}")
+    if failed:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,20 @@
+{
+  "event_id": "9d8c7b6a-5f4e-4d3c-8b2a-1f0e9d8c7b6a",
+  "schema_version": 2,
+  "timestamp_ms": 1785715200002,
+  "module": "trace-audit",
+  "event_type": "upstream_stream_error",
+  "severity": "warning",
+  "details": {
+    "error": "ReadTimeout"
+  },
+  "source": "module",
+  "tenant_id": "college-demo",
+  "agent_id": "research-agent",
+  "session_id": "demo-session-01",
+  "trace_id": "1f0e9d8c-7b6a-5f4e-4d3c-8b2a1f0e9d8c",
+  "resource_type": "reasoning_trace",
+  "resource_id": "1f0e9d8c-7b6a-5f4e-4d3c-8b2a1f0e9d8c",
+  "outcome": "error",
+  "policy_version": "trace-audit/1"
+}

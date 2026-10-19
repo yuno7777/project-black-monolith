@@ -52,11 +52,13 @@ of **16 held-out benign prompts** — drawn from those same four styles, none in
 the baseline set — is then measured against that baseline, giving the benign
 KL distribution. Reproduce: `python fixtures/calibrate.py`.
 
-**Measured benign peak-KL distribution (N = 16):**
+**Measured benign peak-KL distribution (N = 36):**
 
 | mean | std | min | max | mean + 2σ | divergent fixture |
 | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0.343 | 0.064 | 0.247 | 0.481 | 0.470 | **3.289** |
+| 0.351 | 0.065 | 0.247 | 0.481 | 0.481 | **3.289** |
+
+The held-out set grew from 16 prompts across four styles to **36 across eight**, adding code generation, technical explanation, summarization and comparison. **False-positive result: 0 / 36.**
 
 **Derived threshold = 1.0.** The textbook `mean + 2σ = 0.470` sits essentially
 *at* the benign maximum (0.481), leaving no margin — a strict 2σ cut would
@@ -65,8 +67,18 @@ populations: **1.0 is ~2.1× the worst benign peak (0.481) and ~0.30× the
 divergent fixture (3.289)**. Encoded as `DEFAULT_KL_THRESHOLD` in
 `src/divergence_monitor.py` with the derivation in-comment.
 
-**False-positive result: 0 / 16** benign prompts triggered termination; the
-divergent fixture (3.289) crosses 1.0 decisively.
+The divergent fixture (3.289) crosses 1.0 decisively.
+
+> **What that larger N does and does not buy — read before quoting it.** The
+> default mock backend seeds its RNG from the prompt but draws every token from
+> one fixed pool (`_mock_stream` in `src/stream_proxy.py`), so its output style
+> does **not** vary with the prompt's style. The 20 added prompts therefore
+> widen the *seed* sample — a better estimate of run-to-run variance, which is
+> why the max is unchanged at 0.481 — but they do not test whether a genuinely
+> code-shaped token distribution shifts the benign range. **The
+> code-generation blind spot below remains NOT MEASURED**, and closing it
+> requires the `real` profile against Ollama. A clean count here is evidence
+> about seeds, not about code.
 
 **Bug found & fixed during calibration.** The mock backend seeded its RNG with
 Python's built-in `hash()`, which is salted per process (`PYTHONHASHSEED`), so
@@ -86,17 +98,17 @@ and needs recalibration (re-run `fixtures/calibrate.py`, update
 
 ## 2. VectorAnchor (memory layer) — frequency-anomaly threshold
 
-**Calibration method.** The 24-document clean corpus is seeded and **18
-diverse clean queries** across six topics (no poison present) are run through
-the frequency-anomaly detector; the highest distinct-topic score reached by
-any legitimate document is recorded, then compared against the poison
-fixture's score. Reproduce: `python fixtures/calibrate.py`.
+**Calibration method.** The **60-document** clean corpus is seeded and **36
+diverse clean queries** across twelve topics (no poison present) are run
+through the frequency-anomaly detector; the highest distinct-topic score
+reached by any legitimate document is recorded, then compared against the
+poison fixture's score. Reproduce: `python fixtures/calibrate.py`.
 
 **Measured separation:**
 
 | | distinct-topic score |
 | :-- | ---: |
-| highest **clean** document | 2 |
+| highest **clean** document | 3 |
 | `min_distinct_topics` threshold | **4** |
 | **poison** fixture | 4 |
 
@@ -109,23 +121,125 @@ threshold can separate 7-vs-5. A parameter sweep showed `(top_rank_threshold=2,
 topic_similarity=0.20)` restores separation: related sub-topic queries
 (pairwise cosine 0.15–0.30) merge into one topic while the poison's
 truly-unrelated triggers (pairwise ~0.0) stay separate. At those parameters
-the highest clean score is **2** and the poison is **4**, so
-`min_distinct_topics = 4` clears the worst clean document by a **2-topic
+the highest clean score is **3** and the poison is **4**, so
+`min_distinct_topics = 4` clears the worst clean document by a **1-topic
 margin**.
 
-**False-positive result: 0 / 24** clean documents flagged.
+> **Correction.** This section previously claimed a highest clean score of 2
+> and a 2-topic margin. Re-running `fixtures/calibrate.py` during the retention
+> work (§2a) measured **3**, and re-running it against the *unmodified* prior
+> revision measured 3 as well — so the number was stale rather than changed by
+> that work. `garden-3` scores 3. The margin is one topic, not two. The
+> false-positive count is unaffected.
 
-**Limitation — measured, not asserted.** Detection is frequency-based within a
-*bounded rolling window* (`window_size`, default 50 queries), not persistent
-long-term tracking. A **slow-drip** attacker who surfaces a bait document for
-one unrelated topic per window — letting earlier hits age out — never reaches
-`min_distinct_topics` within any single window. This evasion was **built and
-confirmed to work** (§7): the bait peaks at a score of 1 against a threshold of
-4 while covering 12 distinct topics. The cost to the attacker is ~50 covering
-retrievals per hidden topic, which makes `window_size` — not
-`min_distinct_topics` — the parameter that actually prices the attack. Catching
-it would require long-horizon per-document accumulation, which the window-based
-design deliberately trades away for bounded memory and recency.
+**False-positive result: 0 / 60** clean documents flagged.
+
+### 2b. Corpus breadth is itself a defence — and it broke one of our own attacks
+
+Growing the clean corpus from 24 documents across six topics to **60 across
+twelve** was meant to be a routine sample-size improvement. It changed a
+result instead.
+
+**`poison-bait-b` stopped working.** Against 24 documents it held a top-2
+retrieval slot in all four of its target domains and scored 4 topics. Against
+60 it ranked **10th** for its own security trigger — beaten by focused clean
+documents — reached only 3 topics, and was no longer flagged. Detection fell
+from 75% to 50%.
+
+**That is not a detector regression, and scoring it as one would be wrong.**
+The detector's job is to flag documents that achieve broad cross-topic
+presence. A bait that no longer reaches the user has not been missed; it has
+failed. A positive sample in a detection benchmark has to be a working attack.
+
+**Why it failed is the interesting part.** A universal bait has a fixed vector
+budget: every domain it covers dilutes the others. Strengthening bait-b's
+security vocabulary won its security trigger back and *lost* its cycling one —
+tested directly, at four different weightings. Against a larger corpus, each
+domain has more focused competitors, so the budget no longer stretches.
+
+**Measured.** Of all **210** four-domain combinations available in the
+twelve-topic corpus, only **5 still permit a bait to hold a top-2 slot in all
+four domains** — about 2%. Corpus breadth raises the bar for constructing a
+universal bait by roughly 40x, without any detector involvement at all.
+
+**What was changed.** `poison-bait-b` was rewritten with balanced per-domain
+vocabulary so it lands all four domains again and remains a valid positive —
+what a real attacker facing a larger corpus would do. Detection returns to
+**3/4 (75%)**, now with **0 false positives across 60 documents** instead of
+24. The original text is described in-fixture so the finding is not lost.
+
+---
+
+### 2a. Retention: closing the slow drip
+
+**The limitation as it stood.** Detection counted distinct topics inside a
+*global rolling window* (`window_size`, default 50 queries). That bounded
+memory, but it bounded the detection horizon along with it, and a **slow-drip**
+attacker who surfaced a bait document for one unrelated topic per window — 
+letting earlier hits age out — never reached `min_distinct_topics` inside any
+single window. Built and confirmed (§7): the bait peaked at a score of 1
+against a threshold of 4 while covering 12 distinct topics.
+
+**Why it was not simply fixed by a bigger window.** Clustering is quadratic in
+the hits retained *per document*, so a 10× wider window cost ~100× more per
+retrieval. The horizon and the cost were the same knob.
+
+**What changed.** They are now separate knobs, and retention is per document
+rather than global:
+
+| Parameter | Default | What it controls |
+| :-- | ---: | :-- |
+| `retention_horizon` | 500 | How far back a hit still counts — the detection reach, and what prices the drip |
+| `max_queries_per_doc` | 8 | Hits retained per document — bounds memory and clustering cost, independent of the horizon |
+
+**Measured, at the shipped defaults:**
+
+| | before | after |
+| :-- | :-- | :-- |
+| slow drip | evades, peak score 1 | **caught** |
+| evasion cost per hidden topic | ~50 covering retrievals | **~500** (the horizon) |
+| detection rate | 3 / 4 (75%) | 3 / 4 (75%) |
+| false positives | 0 / 24 | 0 / 24 |
+| clean max vs poison (threshold 4) | 3 vs 4 | 3 vs 4 |
+| per-retrieval detector cost | 295.7 µs mean | **438.9 µs mean** |
+| retained hits per document | up to 50 | **at most 8** |
+
+So: a **10× longer detection horizon for 1.5× the cost**, with memory per
+document now hard-bounded rather than traffic-dependent.
+
+**Two defects found by measuring rather than reasoning.**
+
+- **A naive cap creates a cheaper evasion than the one being closed.** With
+  oldest-first eviction, an attacker floods the cap with varied same-topic
+  queries and the bait's earned topics are pushed out for free — ~8 bait
+  retrievals per topic erased, against 500 to out-wait the horizon. Eviction now
+  drops whichever retained hit the *newest* one most duplicates, so a flood
+  evicts itself and displacing a real topic requires supplying a more distinct
+  one, which raises the score. Pinned by
+  `test_flooding_the_retention_cap_cannot_flush_earned_topics`.
+- **The first implementation cost 11× more, not 1.5×.** `cosine()` re-validated
+  512 floats and recomputed both norms on every call — three redundant passes
+  on the hottest path in the module. Vectors are normalized once on admission
+  and compared with a plain dot product (`unit_dot`). That single change took
+  the cap-16 configuration from 3316 µs to 791 µs and is what made the horizon
+  affordable at all.
+
+**The cap was chosen by measurement, not intuition.** Detection is identical at
+caps 8, 12 and 16 (3/4 caught, 0/24 false positives, clean 3 vs poison 4), so
+the cheapest was taken:
+
+| `max_queries_per_doc` | 4 | 6 | **8** | 12 | 16 |
+| :-- | ---: | ---: | ---: | ---: | ---: |
+| mean µs per retrieval | 205 | 328 | **439** | 635 | 791 |
+
+**Limitation — repriced, not removed.** Detection reaches back
+`retention_horizon` queries and no further. An attacker patient enough to leave
+a full horizon between hits still never has two topics counted at once;
+`test_a_drip_slower_than_the_horizon_still_evades` pins that boundary rather
+than claiming the detector became unlimited. What changed is the price: ~500
+covering retrievals per hidden topic instead of ~50. `retention_horizon`
+remains the parameter that prices the attack, and raising it further now costs
+memory only up to the cap rather than quadratic time.
 
 ---
 
@@ -232,21 +346,40 @@ trust-on-first-use limitation.
 
 ## 5. Dashboard — malformed-event resilience
 
-**Test.** `dashboard/test/malformed-event.test.mjs` now exercises the
-authenticated contract. It expects five invalid envelopes (missing required
-identity, bare scalar, malformed UUID) to return permanent `422` responses,
-then submits five events with malformed optional fields and verifies their
-tenant-scoped replay over the authenticated `/api/events` stream.
+**Test.** `dashboard/test/malformed-event.test.mjs` exercises the authenticated
+contract against a live stack: **11 invalid envelopes** must return permanent
+`422` responses, and **5 valid events** must be accepted, defaulted
+server-side, and replayed tenant-scoped over the authenticated `/api/events`
+stream.
 
-The strict boundary is intentional: `module`, `event_type`, tenant/module
-credential scope, and UUID idempotency cannot be guessed safely. Optional
-`severity`, timestamp, and `details` can be normalized to safe values.
+**Result: PASSED — 11 rejected, 5 accepted and replayed.**
 
-**Current live result after the trust-model update: NOT MEASURED.** The updated
-integration test needs a running dashboard and migrated Postgres database. It
-was deliberately not run during the non-Docker validation pass. The same
-normalization and rejection rules are covered by the dashboard's executable
-unit contract suite.
+Running it finally, rather than leaving it NOT MEASURED, found two things.
+
+**1. The documented contract was wrong.** This section previously said optional
+`severity`, timestamp and `details` "can be normalized to safe values", and the
+test asserted exactly that. The implementation does not normalize them — it
+rejects them with `422`. That changed in `39f6998` ("validate security event
+envelopes strictly"), which updated the unit contract suite but not this
+integration test or this document. The stale expectation is the reason the test
+was never green, and leaving it unrun is what hid the drift.
+
+**The strict behaviour is correct and is now what the test pins.** Coercing an
+unrecognised severity to `info` would silently *downgrade* a finding, and
+coercing a non-object `details` would discard the evidence the detection exists
+to carry. A permanent `422` dead-letters the event where a human can see it.
+What genuinely is optional — an absent `severity`, timestamp, or `event_id` —
+is still defaulted server-side, and the test covers that separately.
+
+**2. The test could never have reported success anyway.** Its SSE helper
+released the `/api/events` stream only on the error path. On the success path
+the socket stayed open, Node's event loop never drained, and the process hung
+with its buffered stdout unflushed — indistinguishable from a slow test. Fixed
+by aborting the controller in `finally`.
+
+The strict boundary itself is unchanged and intentional: `module`,
+`event_type`, tenant/module credential scope, and UUID idempotency cannot be
+guessed safely.
 
 ---
 
@@ -302,36 +435,47 @@ Sections 1–3 measure the detectors against the attacks they are built for. Thi
 section does the opposite: it takes the three evasions the module READMEs admit
 in prose and **builds each one, to find out whether the admission is true**.
 
-Two evasions still succeed; the ordinary two-token TraceAudit split is now
-closed by a bounded look-behind. The tests retain the residual boundary rather
-than claiming the detector became unlimited.
+One evasion still succeeds. The ordinary two-token TraceAudit split is closed
+by a bounded look-behind, and the VectorAnchor slow drip is closed by
+per-document retention (§2a) — repriced 10x rather than made impossible. The
+tests retain each residual boundary rather than claiming any detector became
+unlimited.
 
 | Evasion | Module | Outcome | Measured cost / bound |
 | :-- | :-- | :-- | :-- |
-| **Slow drip** — surface the bait for one topic per window, let earlier hits age out | VectorAnchor | **Evades.** Peak score 1 vs. a threshold of 4, across 12 distinct topics — 3× the threshold | ~50 covering retrievals per hidden topic (= `window_size`). Drip any faster and it is caught |
+| **Slow drip** — surface the bait for one topic at a time, let earlier hits age out | VectorAnchor | **Closed at the old rate; still works 10× slower.** A drip at the historical one-topic-per-50-queries is now caught; only a drip slower than the whole horizon still evades | ~500 covering retrievals per hidden topic (= `retention_horizon`), up from ~50. Drip any faster and it is caught |
+| **Retention-cap flood** — fill a document's retained hits with varied same-topic queries to push out earned topics | VectorAnchor | **Blocked.** Found while building the fix above, and cheaper than the attack it would have replaced (~8 retrievals per topic erased) | Eviction drops what the newest hit most duplicates, so a flood evicts itself; displacing a real topic requires a more distinct one, which raises the score |
 | **Token-boundary split** — a secret the tokenizer splits across two tokens | TraceAudit | **Blocked.** All 19 possible split points of a 20-char key are reconstructed and redacted before release | A split across more than the 16-token output window can still evade; the bound keeps streaming latency finite |
-| **First-contact poisoning** — the tool is poisoned the first time it is ever seen | MCP-Shield | **Blocked for known sanitizer patterns.** The tool is removed and no baseline is registered | Novel phrasings outside the sanitizer corpus remain a trust-on-first-use limitation |
+| **First-contact poisoning** — the tool is poisoned the first time it is ever seen | MCP-Shield | **Blocked for known sanitizer patterns; closable entirely.** The tool is removed and no baseline is registered. `MCP_SHIELD_FIRST_CONTACT=approve` additionally withholds *every* unseen tool, regardless of phrasing, until an operator approves it by name | Under the default `trust`, novel phrasings outside the sanitizer corpus remain a trust-on-first-use limitation. Under `approve` the limitation is removed and paid for in operator effort instead |
 
 Reproduce: `python -m pytest tests/test_evasion.py` in `vector-anchor/` and
 `trace-audit/`; `cargo test known_evasion` in `mcp-shield/`.
 
 What the numbers say beyond "it evades":
 
-- **VectorAnchor's real security parameter is `window_size`, not
+- **VectorAnchor's real security parameter is `retention_horizon`, not
   `min_distinct_topics`.** The threshold is what the attacker must stay under;
-  the window is what sets the price of doing so. At the shipped window of 50 the
-  attacker needs ~50 covering retrievals per topic they want to hide — and the
+  the horizon sets the price of doing so. At the shipped horizon of 500 the
+  attacker needs ~500 covering retrievals per topic they want to hide, and the
   test pins the boundary by showing that hits spaced to co-exist inside one
-  window are still caught. Raising the window raises the cost linearly, at the
-  price of memory and recency.
+  horizon are still caught. Raising the horizon now raises the attacker's cost
+  without raising detection cost, because `max_queries_per_doc` bounds the
+  clustering independently — that separation is the whole point of §2a.
 - **TraceAudit now pays bounded latency to close ordinary splits.** It delays
   up to 16 output tokens, scans their concatenation, and releases only redacted
   text when a match crosses token boundaries. The test covers every two-part
   split and the full 16-token window, while retaining a measured evasion at 17+
   fragments so the remaining boundary stays explicit.
-- **MCP-Shield still has a trust-on-first-use boundary** for novel poison that
-  matches none of the sanitizer patterns. Known patterns are blocked before a
-  baseline is registered; the adversarial test pins that enforcement behavior.
+- **MCP-Shield's trust-on-first-use boundary is now a choice, not a fact.**
+  Under the default `trust`, novel poison matching none of the sanitizer
+  patterns is still registered as the baseline — a fingerprint can only prove
+  a schema has not *changed*. `MCP_SHIELD_FIRST_CONTACT=approve` withholds every
+  unseen tool and emits `tool_pending_approval` until an operator runs
+  `mcp-shield --approve <tool>`, which removes the boundary outright at the cost
+  of an approval step per new tool. Four tests pin it: the withholding, the
+  approval, that `trust` is unchanged and remains the default, and that a
+  pending record is *not* overwritten by a later serving — otherwise a server
+  could show a clean tool and swap in a poisoned one just before approval.
 
 ---
 
@@ -355,7 +499,7 @@ machine-specific; the reproduction commands are below.**
 | :-- | :-- | ---: | ---: | ---: | ---: |
 | **MCP-Shield** | per tool in a `tools/list` (canonical serialize + HMAC-SHA256 + description scan) | **6.4 µs** | 5.1 µs | 7.4 µs | 12.5 µs |
 | **TraceAudit** | per streamed token (PII scan + rolling KL update) | **13.0 µs** | 11.8 µs | 16.9 µs | 30.0 µs |
-| **VectorAnchor** | per `/retrieve` (record the query + cluster each returned doc's history) | **295.7 µs** | 273.5 µs | 513.2 µs | 711.7 µs |
+| **VectorAnchor** | per `/retrieve` (record the query + cluster each returned doc's history) | **438.9 µs** | 371.2 µs | 665.2 µs | 1266.1 µs |
 
 In terms an operator would care about:
 
@@ -364,17 +508,19 @@ In terms an operator would care about:
 - A **60-token response** costs **~0.78 ms** of auditing spread across the whole
   stream — roughly 13 µs added to each token's latency, against a model that
   takes tens of milliseconds per token. Invisible.
-- A **retrieval** costs **~0.3 ms**, the most expensive of the three and the one
+- A **retrieval** costs **~0.44 ms**, the most expensive of the three and the one
   worth watching. It is dominated by the topic clustering, which is quadratic in
-  the number of queries a document has ranked for within the window — so the
-  cost scales with `window_size`, the same parameter §7 identifies as what
-  prices the slow-drip evasion. **Widening the window to resist slow-drip makes
-  retrieval more expensive; that trade-off is the real design knob**, and it is
-  the thing to measure again before changing it.
+  the hits a document retains — so the cost scales with `max_queries_per_doc`,
+  and no longer with the detection horizon. **That separation is the change**:
+  this document previously stated that widening the window to resist the slow
+  drip necessarily makes retrieval more expensive, because horizon and cost were
+  one knob. They are two knobs now (§2a), and the horizon grew 10× for 1.5× the
+  cost. The trade-off that remains is memory-per-document against how much
+  evidence a document's score can draw on.
 
 **Honest notes.** These are single-machine numbers with no cross-run variance
 analysis, and the `max` column is dominated by scheduler noise and GC rather
-than the detector (VectorAnchor's 5.9 ms max against a 274 µs median is an
+than the detector (VectorAnchor's 7.8 ms max against a 371 µs median is an
 outlier, not a tail). They establish an order of magnitude — "microseconds, not
 milliseconds" for the two inline hot paths — which is the claim being made, not
 a throughput benchmark.
