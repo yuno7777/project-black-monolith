@@ -2,7 +2,7 @@
   "name": "monolith-dashboard",
   "version": "0.1.0",
   "private": true,
-  "description": "Project Black Monolith — unified real-time threat dashboard",
+  "description": "Project Black Monolith \u2014 unified real-time threat dashboard",
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "next build",
