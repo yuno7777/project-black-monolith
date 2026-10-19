@@ -32,6 +32,13 @@ CORRELATION_HEADER = "x-monolith-correlation-id"
 PERMANENT_HTTP_STATUSES = {400, 401, 403, 413, 422}
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Keep bearer credentials pinned to the configured ingest origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -287,7 +294,8 @@ class EventOutbox:
                 },
                 method="POST",
             )
-            with urllib.request.urlopen(request, timeout=2) as response:
+            opener = urllib.request.build_opener(_NoRedirect)
+            with opener.open(request, timeout=2) as response:
                 return response.status, ""
         except urllib.error.HTTPError as error:
             return error.code, f"http {error.code}"
