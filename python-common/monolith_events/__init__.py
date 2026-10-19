@@ -10,6 +10,7 @@ from .events import (
     context_from_headers,
     make_emitter,
     now_ms,
+    replay_dead_letters,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "context_from_headers",
     "make_emitter",
     "now_ms",
+    "replay_dead_letters",
 ]
