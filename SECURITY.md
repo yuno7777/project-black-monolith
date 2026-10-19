@@ -42,5 +42,22 @@ research project there is no formal SLA, but reports are taken seriously.
 - The default MCP-Shield HMAC key and the offline mock model backend are for
   local development only; see the module READMEs before any real use.
 
+## Known dependency advisories
+
+**Dashboard lint toolchain — `braces` (GHSA-vfj7-8cjw-p6xm and related).**
+The dashboard's `eslint-config-next` pulls in `@next/eslint-plugin-next` →
+`fast-glob` → `micromatch` → `braces`. Every published version of `braces`
+(through 3.0.3) is affected by a stack-exhaustion denial of service through
+deeply nested glob patterns, and **no patched release exists at any version**,
+so the chain cannot be cleared by upgrading. The affected packages are
+lint-time only: they are not part of the running service, the patterns they
+parse come from this repository's own ESLint configuration rather than from
+user input, and the advisory requires an attacker to control those patterns.
+CI therefore gates production dependencies with
+`npm audit --audit-level=high --omit=dev`, which is what actually ships; a
+high or critical advisory in a production dependency still fails the build.
+Re-check when `braces` publishes a fixed release, and drop the `--omit=dev`
+flag once the chain is clear.
+
 See [Identity and access model](docs/IDENTITY_AND_ACCESS.md) for the exact
 principal, role, credential, and route contracts.

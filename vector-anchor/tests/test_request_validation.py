@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from src.main import (
     MAX_DOCUMENT_BATCH_BYTES,
     MAX_DOCUMENT_TEXT_BYTES,
+    MAX_QUERY_BYTES,
     MAX_QUERY_LENGTH,
     AddDocumentsRequest,
     Document,
@@ -35,11 +36,18 @@ def test_queries_are_trimmed_and_valid_k_is_preserved():
     assert request.k == 5
 
 
+def test_query_limit_counts_utf8_bytes():
+    with pytest.raises(ValidationError, match="UTF-8 bytes"):
+        RetrieveRequest.model_validate({"query": "😀" * (MAX_QUERY_BYTES // 4 + 1)})
+
+
 def test_document_ids_and_text_are_bounded():
     with pytest.raises(ValidationError):
         Document.model_validate({"id": " ", "text": "content"})
     with pytest.raises(ValidationError):
         Document.model_validate({"id": "x" * 129, "text": "content"})
+    with pytest.raises(ValidationError, match="printable"):
+        Document.model_validate({"id": "doc\nforged", "text": "content"})
     with pytest.raises(ValidationError):
         Document.model_validate(
             {"id": "large", "text": "x" * (MAX_DOCUMENT_TEXT_BYTES + 1)}
