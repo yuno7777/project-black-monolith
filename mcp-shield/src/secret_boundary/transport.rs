@@ -64,17 +64,50 @@ impl ReqwestHttpsTransport {
 
         #[cfg(test)]
         if let Some(cert_bytes) = root_cert {
-            if let Ok(cert) = reqwest::Certificate::from_der(cert_bytes) {
-                builder = builder.add_root_certificate(cert);
-            } else if let Ok(cert) = reqwest::Certificate::from_pem(cert_bytes) {
-                builder = builder.add_root_certificate(cert);
-            }
+            builder = builder.use_preconfigured_tls(test_client_config(cert_bytes)?);
         }
 
         builder.build().map_err(|e| {
             BoundaryError::TransportError(format!("Failed to build HTTPS client: {}", e))
         })
     }
+}
+
+/// A TLS configuration that trusts exactly one certificate.
+///
+/// This exists because the production client uses the **platform
+/// certificate verifier**, which validates against the operating system's
+/// trust store and therefore ignores any root added through
+/// `add_root_certificate`. A test that trusts its own ephemeral root needs
+/// a configuration that actually contains it, and building one explicitly is
+/// the only way to get that on every platform.
+///
+/// The root store is empty apart from the supplied certificate, so a test
+/// server presenting anything else is rejected — which is exactly what the
+/// "untrusted certificate" test needs to observe.
+#[cfg(test)]
+fn test_client_config(cert_der: &[u8]) -> Result<rustls::ClientConfig, BoundaryError> {
+    // The client config is built with an explicit provider. Without this,
+    // rustls would try to infer one, and the crate has both `ring` (the
+    // dev-dependency) and `aws-lc-rs` (pulled in by reqwest) compiled in,
+    // which is ambiguous. Installing the provider explicitly makes the
+    // choice deterministic. `install_default` fails if a provider is already
+    // installed, which is not an error here — the first one wins.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let mut roots = rustls::RootCertStore::empty();
+    roots
+        .add(rustls::pki_types::CertificateDer::from(cert_der.to_vec()))
+        .map_err(|error| {
+            BoundaryError::ConfigurationError(format!(
+                "Failed to trust the supplied test root certificate: {}",
+                error
+            ))
+        })?;
+
+    Ok(rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth())
 }
 
 /// Incrementally streams the HTTP response body using `resp.chunk()`, enforcing
@@ -175,12 +208,24 @@ impl HttpTransport for ReqwestHttpsTransport {
             };
 
             for (k, v) in &req.headers {
-                if let (Ok(hname), Ok(hval)) = (
-                    reqwest::header::HeaderName::from_bytes(k.as_bytes()),
-                    reqwest::header::HeaderValue::from_str(v),
-                ) {
-                    req_builder = req_builder.header(hname, hval);
-                }
+                // A header that cannot be represented is a failure, not
+                // something to skip: dropping the Authorization header would
+                // send the credential-less request to the approved
+                // destination and surface as an unrelated upstream error.
+                let hname =
+                    reqwest::header::HeaderName::from_bytes(k.as_bytes()).map_err(|_| {
+                        BoundaryError::InvalidRequest(format!(
+                            "Header name '{}' is not a valid HTTP header name",
+                            k
+                        ))
+                    })?;
+                let hval = reqwest::header::HeaderValue::from_str(v).map_err(|_| {
+                    BoundaryError::InvalidRequest(format!(
+                        "Header '{}' has a value that is not a valid HTTP header value",
+                        k
+                    ))
+                })?;
+                req_builder = req_builder.header(hname, hval);
             }
 
             if let Some(body) = &req.body {
@@ -188,7 +233,19 @@ impl HttpTransport for ReqwestHttpsTransport {
             }
 
             let resp = req_builder.send().await.map_err(|e| {
-                BoundaryError::TransportError(format!("HTTPS request failed: {}", e))
+                // reqwest's own message — "error sending request" — says
+                // nothing about *why*. The source chain does: a TLS
+                // verification failure, a refused connection, a timeout, a
+                // name that would not resolve. An operator reading a
+                // detection event needs that distinction, so it is carried
+                // rather than discarded.
+                let mut detail = format!("HTTPS request failed: {e}");
+                let mut cause = std::error::Error::source(&e);
+                while let Some(source) = cause {
+                    detail.push_str(&format!("; caused by: {source}"));
+                    cause = source.source();
+                }
+                BoundaryError::TransportError(detail)
             })?;
 
             let status_code = resp.status().as_u16();

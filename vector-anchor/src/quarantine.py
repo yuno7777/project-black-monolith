@@ -32,6 +32,9 @@ class Quarantine:
     def all(self) -> list[QuarantinedDoc]:
         return list(self._docs.values())
 
+    def list_ids(self) -> list[str]:
+        return list(self._docs.keys())
+
     def remove_many(self, doc_ids: list[str]) -> None:
         for doc_id in doc_ids:
             self._docs.pop(doc_id, None)

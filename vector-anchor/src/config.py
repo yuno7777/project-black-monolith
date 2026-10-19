@@ -67,12 +67,29 @@ class Config:
     agent_id: str | None
     session_id: str | None
 
+    # --- bounding, debounced persistence & telemetry controls -----------
+    max_tracked_docs: int = 50_000
+    state_flush_interval_ms: int = 0
+    log_clean_retrievals: bool = True
+
 
 def _valid_bearer_token(value: str) -> bool:
     return len(value) >= 16 and all(
         char.isascii() and (char.isalnum() or char in "-._~+/=")
         for char in value
     )
+
+
+def _parse_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean (true/false/1/0/yes/no)")
 
 
 def _validate_id(name: str, value: str | None, *, required: bool = False) -> None:
@@ -104,6 +121,10 @@ def _validate_config(cfg: Config) -> Config:
         raise ValueError("MONOLITH_RETENTION_HORIZON must be between 1 and 1000000")
     if not 1 <= cfg.max_queries_per_doc <= 4096:
         raise ValueError("MONOLITH_MAX_QUERIES_PER_DOC must be between 1 and 4096")
+    if not 1 <= cfg.max_tracked_docs <= 100_000:
+        raise ValueError("MONOLITH_MAX_TRACKED_DOCS must be between 1 and 100000")
+    if not 0 <= cfg.state_flush_interval_ms <= 3_600_000:
+        raise ValueError("MONOLITH_STATE_FLUSH_INTERVAL_MS must be between 0 and 3600000")
     if not 1 <= cfg.min_distinct_topics <= cfg.max_queries_per_doc:
         raise ValueError(
             "MONOLITH_MIN_DISTINCT_TOPICS must be between 1 and max queries per document"
@@ -163,5 +184,10 @@ def load_config() -> Config:
         tenant_id=os.environ.get("MONOLITH_TENANT_ID", "default"),
         agent_id=os.environ.get("MONOLITH_AGENT_ID") or None,
         session_id=os.environ.get("MONOLITH_SESSION_ID") or None,
+        max_tracked_docs=int(os.environ.get("MONOLITH_MAX_TRACKED_DOCS", "50000")),
+        state_flush_interval_ms=int(
+            os.environ.get("MONOLITH_STATE_FLUSH_INTERVAL_MS", "0")
+        ),
+        log_clean_retrievals=_parse_bool("MONOLITH_LOG_CLEAN_RETRIEVALS", True),
     )
     return _validate_config(cfg)

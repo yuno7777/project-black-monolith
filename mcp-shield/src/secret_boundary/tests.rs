@@ -714,7 +714,7 @@ async fn test_14_reqwest_builder_refuses_automated_redirects() {
     let url = format!("http://service.example.test:{}/redirect", addr.port());
     let resp = client.get(&url).send().await.unwrap();
 
-    // Must NOT follow redirect â€” returns 302 status immediately
+    // Must NOT follow redirect ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â returns 302 status immediately
     assert_eq!(resp.status().as_u16(), 302);
     assert_eq!(
         resp.headers().get("location").unwrap().to_str().unwrap(),
@@ -992,8 +992,10 @@ fn test_21_https_hostname_and_tls_certificate_verification_fails_closed() {
     }
 }
 
-const TEST_TLS_CERT_HEX: &str = "308201d030820176a003020102021462a425194b5cd7f11b89d046094352ecfccfbed0300a06082a8648ce3d04030230243122302006035504030c19746573742e736563726574626f756e646172792e6c6f63616c301e170d3236313031333139323333345a170d3336313031303139323333345a30243122302006035504030c19746573742e736563726574626f756e646172792e6c6f63616c3059301306072a8648ce3d020106082a8648ce3d0301070342000487d87b5fa8ec6be42c85b7e7e24da21a6d39115b3c346a6548ac1aa0909660e44f217d03ac27090824d1e59fd3df8dc7e0b0c4c4f3684743a1f4a7d1e913a67da38185308182301d0603551d0e041604145403f4c6f529a15b82182125f92e2dc338488484301f0603551d230418301680145403f4c6f529a15b82182125f92e2dc338488484300f0603551d130101ff040530030101ff302f0603551d11042830268219746573742e736563726574626f756e646172792e6c6f63616c82096c6f63616c686f7374300a06082a8648ce3d0403020348003045022100f80b3521c5242fee01da885c43c0bb115eaf15b5a46ceb00b94c9f2a7537d41a02207902a6c855eceda86110460d6500e67061dbd7045edf8513f5a33932b3247c53";
-const TEST_TLS_KEY_HEX: &str = "308187020100301306072a8648ce3d020106082a8648ce3d030107046d306b020101042082ca6dd9af74ba134fbffc7e2e93defe0057174f4e0a5ca77c5b5017d4a369bca1440342000487d87b5fa8ec6be42c85b7e7e24da21a6d39115b3c346a6548ac1aa0909660e44f217d03ac27090824d1e59fd3df8dc7e0b0c4c4f3684743a1f4a7d1e913a67d";
+const TEST_ROOT_CA_HEX: &str = "308201bd30820163a0030201020214528de1e31febd304e5c0672f921ad478a3e8d83e300a06082a8648ce3d040302302b3129302706035504030c2050424d2053656372657420426f756e64617279205465737420526f6f742043413020170d3236313031393231313333325a180f32313236303932353231313333325a302b3129302706035504030c2050424d2053656372657420426f756e64617279205465737420526f6f742043413059301306072a8648ce3d020106082a8648ce3d030107034200043b48999f5e10ca6068c25909853de6e88a525a2cbc626fe2e90287a38d7e3ef496f1ef39071a2944c17e62b6c6c7df15087d029f6405ed84a0776a81aa0f7a18a3633061301d0603551d0e041604144a80b239e327cc7f9f53bd392f8969bf75879c83301f0603551d230418301680144a80b239e327cc7f9f53bd392f8969bf75879c83300f0603551d130101ff040530030101ff300e0603551d0f0101ff040403020106300a06082a8648ce3d040302034800304502205f939125c465c0d28ea7051cfdac07624f5ef123ef9db4896c79794e33e2fc61022100d157a6c6aa6d31ea1e8880ae03bd32a13a483274d4391cb88a0064a36ad09070";
+const TEST_TLS_CERT_HEX: &str = "308201f130820196a00302010202147917f76a41eb734960caea87b39bdab9ebb32d2f300a06082a8648ce3d040302302b3129302706035504030c2050424d2053656372657420426f756e64617279205465737420526f6f742043413020170d3236313031393231313333325a180f32313236303932353231313333325a30243122302006035504030c19746573742e736563726574626f756e646172792e6c6f63616c3059301306072a8648ce3d020106082a8648ce3d03010703420004ade0e02cb90aaabd9d01cb75bd47b975ddfe4f473caa8d5757e7b5fb23eb7bc537cc0b24ab62d3b4d4572805f3c1e1e981e03574c18065c0b69debed82e12db5a3819c308199300c0603551d130101ff04023000300e0603551d0f0101ff0404030205a030130603551d25040c300a06082b0601050507030130240603551d11041d301b8219746573742e736563726574626f756e646172792e6c6f63616c301d0603551d0e041604140d19defab7dad658b31e66ef5b43615a500c7369301f0603551d230418301680144a80b239e327cc7f9f53bd392f8969bf75879c83300a06082a8648ce3d0403020349003046022100fa17f79f4d6132337ac20b4422f2ad85a3cfb402eb14d5a2f54b7602eedbc7fe02210097339242acdc062b9fd28b28d29405f4c3e235e085c6a5a256875022caedbfc5";
+/// The private key for the leaf certificate.
+const TEST_TLS_KEY_HEX: &str = "308187020100301306072a8648ce3d020106082a8648ce3d030107046d306b02010104200f0591cb527ce26d4d074293bdf6e2e95ecae550214345a55dc55cc8a21122e7a14403420004ade0e02cb90aaabd9d01cb75bd47b975ddfe4f473caa8d5757e7b5fb23eb7bc537cc0b24ab62d3b4d4572805f3c1e1e981e03574c18065c0b69debed82e12db5";
 
 fn get_ephemeral_tls_acceptor() -> TlsAcceptor {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -1036,7 +1038,11 @@ async fn test_22_https_real_end_to_end_success_with_trusted_certificate() {
         }
     });
 
-    let cert_der = hex::decode(TEST_TLS_CERT_HEX).unwrap();
+    // The client trusts the ROOT CA, not the leaf the server presents. That
+    // is what a real deployment looks like, and it is what makes the
+    // "untrusted certificate" test meaningful: the leaf is only trusted
+    // because it chains to a root the client has been given.
+    let cert_der = hex::decode(TEST_ROOT_CA_HEX).unwrap();
     let transport = ReqwestHttpsTransport::with_test_root_certificate(&cert_der);
 
     let req = HttpRequestDetails {
@@ -1088,7 +1094,7 @@ async fn test_23_https_real_hostname_mismatch_fails_closed() {
         }
     });
 
-    let cert_der = hex::decode(TEST_TLS_CERT_HEX).unwrap();
+    let cert_der = hex::decode(TEST_ROOT_CA_HEX).unwrap();
     let transport = ReqwestHttpsTransport::with_test_root_certificate(&cert_der);
 
     // Hostname does NOT match certificate SAN ("test.secretboundary.local")
@@ -1450,4 +1456,56 @@ fn test_34_the_shadow_holds_in_monitor_mode_too() {
     );
 
     let _ = std::fs::remove_file(&baseline_path);
+}
+
+#[test]
+fn test_36_env_secret_provider_loads_and_rejects_unprefixed_refs_in_boundary_config() {
+    let mut config = valid_config_value(AGENT_ID);
+    config
+        .as_object_mut()
+        .unwrap()
+        .insert("active_provider".to_string(), json!("env"));
+    first_policy_rule(&mut config).insert(
+        "approved_credential_ref".to_string(),
+        json!("env://PBM_SECRET_WEATHER_TOKEN"),
+    );
+
+    let boundary = ShieldSecretBoundary::from_config_json(&config.to_string())
+        .expect("env provider with valid PBM_SECRET_ reference must load");
+    assert!(boundary.is_secret_tool("get_secure_weather"));
+
+    // Unprefixed env variable reference must fail closed at configuration load
+    let mut bad_config = valid_config_value(AGENT_ID);
+    bad_config
+        .as_object_mut()
+        .unwrap()
+        .insert("active_provider".to_string(), json!("env"));
+    first_policy_rule(&mut bad_config)
+        .insert("approved_credential_ref".to_string(), json!("env://PATH"));
+
+    let err = ShieldSecretBoundary::from_config_json(&bad_config.to_string())
+        .expect_err("env provider must reject references without PBM_SECRET_ prefix");
+    assert!(
+        err.to_string().contains("PBM_SECRET_"),
+        "error should explain required prefix: {err}"
+    );
+}
+
+#[test]
+fn test_37_secret_boundary_audit_event_attributes_operation_id_as_resource() {
+    let details = json!({
+        "subsystem": "secret-boundary",
+        "operation_id": "op-weather-prod",
+        "destination_host": "api.example.com",
+        "credential_ref": "env://PBM_SECRET_WEATHER_TOKEN",
+        "authorized_agent_id": AGENT_ID,
+    });
+    let ev = crate::events::build_shield_event(
+        "secret_operation_executed",
+        crate::events::Severity::Info,
+        details,
+        Some("trace-op-resource"),
+    );
+    assert_eq!(ev.resource_type.as_deref(), Some("operation"));
+    assert_eq!(ev.resource_id.as_deref(), Some("op-weather-prod"));
 }

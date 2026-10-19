@@ -19,6 +19,29 @@ const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 // let a redelivered event insert duplicates.
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+const memoryRef = globalThis as unknown as {
+  __monolithMemoryEvents?: Map<string, MonolithEvent>;
+};
+
+function memoryEventMap(): Map<string, MonolithEvent> {
+  if (!memoryRef.__monolithMemoryEvents) {
+    memoryRef.__monolithMemoryEvents = new Map<string, MonolithEvent>();
+  }
+  return memoryRef.__monolithMemoryEvents;
+}
+
+export function getMemoryEventsForTenant(tenantId: string): MonolithEvent[] {
+  const result: MonolithEvent[] = [];
+  for (const event of memoryEventMap().values()) {
+    if (event.tenant_id === tenantId) result.push(event);
+  }
+  return result;
+}
+
+export function clearMemoryEvents(): void {
+  memoryEventMap().clear();
+}
+
 function optionalText(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "string") throw new Error("event text fields must be strings");
@@ -202,6 +225,20 @@ export async function persistEvents(events: MonolithEvent[]) {
   if (events.some((event) => event.tenant_id !== tenantId)) {
     throw new Error("one database transaction cannot span tenants");
   }
+  if (!process.env.DATABASE_URL) {
+    const store = memoryEventMap();
+    return events.map((event) => {
+      if (store.has(event.event_id)) {
+        return { inserted: false, event: store.get(event.event_id)! };
+      }
+      const stored: MonolithEvent = {
+        ...event,
+        received_ms: event.received_ms ?? Date.now(),
+      };
+      store.set(stored.event_id, stored);
+      return { inserted: true, event: stored };
+    });
+  }
   return withTenantDb(tenantId, async (client) => {
     const results = [];
     for (const event of events) results.push(await insertWithClient(client, event));
@@ -216,6 +253,12 @@ export async function listRecentEvents(
 ): Promise<MonolithEvent[]> {
   const safeLimit = Math.max(1, Math.min(limit, 1_000));
   const cursor = afterEventId && UUID_PATTERN.test(afterEventId) ? afterEventId : null;
+  if (!process.env.DATABASE_URL) {
+    const events = getMemoryEventsForTenant(tenantId).sort(
+      (a, b) => (b.received_ms ?? b.timestamp_ms) - (a.received_ms ?? a.timestamp_ms),
+    );
+    return events.slice(0, safeLimit);
+  }
   return withTenantDb(tenantId, async (db) => {
     const result = await db.query<EventRow>(
       `with cursor as (
@@ -243,6 +286,10 @@ export async function findEventById(
   eventId: string,
 ): Promise<MonolithEvent | null> {
   if (!UUID_PATTERN.test(eventId)) return null;
+  if (!process.env.DATABASE_URL) {
+    const found = memoryEventMap().get(eventId);
+    return found && found.tenant_id === tenantId ? found : null;
+  }
   return withTenantDb(tenantId, async (db) => {
     const result = await db.query<EventRow>(
       `select ${returningColumns} from monolith.security_events
@@ -250,6 +297,33 @@ export async function findEventById(
       [tenantId, eventId],
     );
     return result.rows[0] ? fromRow(result.rows[0]) : null;
+  });
+}
+
+export async function findEventsByIds(
+  tenantId: string,
+  eventIds: string[],
+): Promise<MonolithEvent[]> {
+  const validIds = Array.from(new Set(eventIds.filter((id) => UUID_PATTERN.test(id))));
+  if (!validIds.length) return [];
+  if (validIds.length === 1) {
+    const single = await findEventById(tenantId, validIds[0]);
+    return single ? [single] : [];
+  }
+  if (!process.env.DATABASE_URL) {
+    const store = memoryEventMap();
+    return validIds
+      .map((id) => store.get(id))
+      .filter((event): event is MonolithEvent => Boolean(event && event.tenant_id === tenantId));
+  }
+  return withTenantDb(tenantId, async (db) => {
+    const result = await db.query<EventRow>(
+      `select ${returningColumns} from monolith.security_events
+       where tenant_id = $1 and event_id = any($2::uuid[])
+       order by received_at asc, event_id asc`,
+      [tenantId, validIds],
+    );
+    return result.rows.map(fromRow);
   });
 }
 
