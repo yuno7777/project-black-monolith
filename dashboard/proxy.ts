@@ -2,16 +2,23 @@ import { NextRequest, NextResponse } from "next/server";
 
 const OPERATOR_SESSION_COOKIE = "monolith-session";
 
+export function isAuthDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const key = "MONOLITH_DISABLE_AUTH";
+  // Exact match only, matching lib/route-auth.ts. A looser comparison would
+  // let a value that means nothing on the secure path disable the page guard
+  // and the operator checks behind it.
+  return env[key] === "true";
+}
+
 /**
  * Page guard only. API routes validate the opaque session against Postgres;
  * the proxy checks presence so unauthenticated browsers reach the login page
  * instead of rendering a console that can only receive 401 responses.
  */
 export function proxy(req: NextRequest) {
-  // Matches the API-side escape hatch in lib/route-auth.ts. Read at module
-  // scope because middleware env is resolved when the bundle is built, so
-  // toggling this takes a rebuild (`docker compose up -d --build`).
-  const authDisabled = process.env.MONOLITH_DISABLE_AUTH === "true";
+  // Read at runtime on each request so MONOLITH_DISABLE_AUTH is never baked
+  // into the Docker image at build time.
+  const authDisabled = isAuthDisabled();
   const onLogin = req.nextUrl.pathname === "/login";
 
   if (authDisabled) {

@@ -90,6 +90,20 @@ def configure(env: dict[str, str], ports: list[int]) -> dict[str, str]:
         VECTOR_ANCHOR_INTERNAL_URL=f"http://127.0.0.1:{ports[1]}",
         TRACE_AUDIT_INTERNAL_URL=f"http://127.0.0.1:{ports[2]}",
         MONOLITH_DASHBOARD_URL=f"http://127.0.0.1:{ports[0]}/api/ingest",
+        # The cross-layer breaker revokes a session once N distinct layers
+        # have flagged it at critical severity. The default is 2, which is
+        # right for production: two layers agreeing is enough to cut a
+        # compromised session off.
+        #
+        # This demo drives all three attacks under ONE session on purpose —
+        # that is what proves the layers correlate — so with the default the
+        # demo would trip its own control after the second attack and the
+        # third layer would be refused before it could detect anything. At 3
+        # the session survives until every layer has reported, the
+        # correlation claim stays meaningful, and the breaker still fires on
+        # the third detection. The breaker's behaviour at the production
+        # threshold is verified separately by scripts/verify_circuit_breaker.sh.
+        MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS="3",
     )
     return env
 
@@ -295,7 +309,13 @@ def attacks(runner: Runner, env: dict[str, str], state: Path, ports: list[int]) 
             )
     if result.get("quarantine_size", 0) < 1:
         raise RuntimeError("VectorAnchor did not quarantine the demo poison")
-    for fixture in ("divergence", "pii"):
+    # PII first, then divergence. Both run under the same session, and the
+    # order matters now that the breaker is configured to trip on the third
+    # critical layer (see the dashboard env above): the PII detection is a
+    # warning and never trips it, while the divergence detection is critical
+    # and does. Running PII first means both detections are recorded under
+    # the shared session before the session is cut off.
+    for fixture in ("pii", "divergence"):
         output = runner.run(
             fixture,
             [sys.executable, "fixtures/divergence_prompt.py", fixture],

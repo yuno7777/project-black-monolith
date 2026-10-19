@@ -11,6 +11,7 @@ const tenants = (process.env.MONOLITH_ALERT_TENANTS ?? process.env.MONOLITH_TENA
   .filter(Boolean);
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const MAX_ATTEMPTS = 10;
+const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 
 if (!targetValue && !secret) {
   // Park instead of exiting: `docker compose --wait` treats an exited service as
@@ -42,12 +43,19 @@ if (target.protocol !== "https:" && !(target.protocol === "http:" && LOOPBACK.ha
   throw new Error("alert webhook URL must use HTTPS (HTTP is loopback-only)");
 }
 
-const { Client } = pg;
-const client = new Client({
+const { Pool } = pg;
+const pool = new Pool({
   connectionString: databaseUrl,
   options: "-c role=monolith_app",
   application_name: "project-black-monolith-alert-dispatcher",
+  max: 4,
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 5_000,
 });
+pool.on("error", (error) => {
+  console.error("[alerts] idle database pool client error:", error?.message ?? error);
+});
+
 let stopping = false;
 process.on("SIGINT", () => { stopping = true; });
 process.on("SIGTERM", () => { stopping = true; });
@@ -55,20 +63,23 @@ process.on("SIGTERM", () => { stopping = true; });
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 async function inTenant(tenant, operation) {
-  await client.query("begin");
+  const client = await pool.connect();
   try {
+    await client.query("begin");
     await client.query("select set_config('monolith.tenant_id', $1, true)", [tenant]);
-    const result = await operation();
+    const result = await operation(client);
     await client.query("commit");
     return result;
   } catch (error) {
-    await client.query("rollback");
+    await client.query("rollback").catch(() => {});
     throw error;
+  } finally {
+    client.release();
   }
 }
 
 async function claim(tenant) {
-  return inTenant(tenant, async () => {
+  return inTenant(tenant, async (client) => {
     const selected = await client.query(`
       select event_id::text, payload, attempts
         from monolith.alert_outbox
@@ -91,7 +102,7 @@ async function claim(tenant) {
 }
 
 async function markDelivered(tenant, eventId) {
-  await inTenant(tenant, () => client.query(`
+  await inTenant(tenant, (client) => client.query(`
     update monolith.alert_outbox
        set status = 'delivered', delivered_at = now(), last_error = null
      where tenant_id = $1 and event_id = $2::uuid
@@ -101,13 +112,22 @@ async function markDelivered(tenant, eventId) {
 async function markFailed(tenant, alert, message, permanent) {
   const dead = permanent || alert.attempts >= MAX_ATTEMPTS;
   const backoff = Math.min(300, 2 ** Math.min(alert.attempts, 8));
-  await inTenant(tenant, () => client.query(`
+  await inTenant(tenant, (client) => client.query(`
     update monolith.alert_outbox
        set status = $3,
            next_attempt_at = now() + ($4::text || ' seconds')::interval,
            last_error = $5
      where tenant_id = $1 and event_id = $2::uuid
   `, [tenant, alert.event_id, dead ? "dead" : "pending", backoff, message.slice(0, 512)]));
+}
+
+async function pruneAlertDeliveries() {
+  try {
+    await pool.query("select monolith.prune_alert_deliveries()");
+  } catch {
+    // monolith_app may not hold execute privileges on maintenance pruning in
+    // restricted deployments; ignore non-fatal pruning errors.
+  }
 }
 
 async function deliver(tenant, alert) {
@@ -150,20 +170,29 @@ async function deliver(tenant, alert) {
   }
 }
 
-await client.connect();
 console.log(`[alerts] dispatcher started for ${tenants.length} tenant(s)`);
+let lastPruneMs = 0;
 try {
   while (!stopping) {
+    const now = Date.now();
+    if (now - lastPruneMs >= PRUNE_INTERVAL_MS) {
+      lastPruneMs = now;
+      await pruneAlertDeliveries();
+    }
     let found = false;
     for (const tenant of tenants) {
       if (stopping) break;
-      const alert = await claim(tenant);
-      if (!alert) continue;
-      found = true;
-      await deliver(tenant, alert);
+      try {
+        const alert = await claim(tenant);
+        if (!alert) continue;
+        found = true;
+        await deliver(tenant, alert);
+      } catch (error) {
+        console.error(`[alerts] transient error processing tenant ${tenant}:`, error?.message ?? error);
+      }
     }
     if (!found && !stopping) await delay(2_000);
   }
 } finally {
-  await client.end();
+  await pool.end();
 }

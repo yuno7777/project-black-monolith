@@ -1,9 +1,17 @@
+import { createHash, createHmac } from "node:crypto";
 import { withTenantDb } from "@/lib/db";
+import { getMemoryEventsForTenant } from "@/lib/event-store";
 import type {
   AuditEntry,
+  EvidenceBundle,
+  EvidenceIntegrity,
   Incident,
   IncidentStatus,
+  MonolithEvent,
   Resolution,
+  SessionLayer,
+  SessionRevocation,
+  SessionView,
   Severity,
   Triage,
 } from "@/lib/types";
@@ -15,7 +23,87 @@ const MAX_ASSIGNEE = 128;
 const MAX_NOTE = 2000;
 const MAX_ACTOR = 128;
 
+/**
+ * The circuit breaker trips on the top severity levels only.
+ *
+ * The original spec asked for high/critical; this ledger's levels are
+ * info/warning/critical, so `critical` is the conservative default and
+ * `warning` is an explicit opt-in for operators who accept that routine
+ * detections (a single redacted secret, a logged-only DLP hit) count toward
+ * revoking a session. `MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS` sets how many
+ * distinct modules must agree; it is clamped to the three known layers.
+ */
+export function circuitBreakerSeverities(): Set<Severity> {
+  const raw = process.env.MONOLITH_CIRCUIT_BREAKER_MIN_SEVERITY?.trim().toLowerCase();
+  if (raw === "info") return new Set<Severity>(["info", "warning", "critical"]);
+  if (raw === "warning") return new Set<Severity>(["warning", "critical"]);
+  return new Set<Severity>(["critical"]);
+}
+
+export function circuitBreakerMinLayers(): number {
+  const raw = Number(process.env.MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS ?? "2");
+  return Number.isInteger(raw) && raw >= 1 && raw <= KNOWN_MODULES.size ? raw : 2;
+}
+
 export class IncidentInputError extends Error {}
+
+// --- In-memory fallback stores for unit tests when DATABASE_URL is unset ----
+
+const memoryIncidentRef = globalThis as unknown as {
+  __monolithRevokedSessions?: Map<string, SessionRevocation>;
+  __monolithSessionModules?: Map<string, Set<string>>;
+  __monolithSessionRestoredAt?: Map<string, number>;
+  __monolithMemoryTriage?: Map<string, Triage>;
+  __monolithMemoryAudit?: Map<string, AuditEntry[]>;
+  __monolithNextAuditId?: number;
+};
+
+function revokedSessionMap(): Map<string, SessionRevocation> {
+  if (!memoryIncidentRef.__monolithRevokedSessions) {
+    memoryIncidentRef.__monolithRevokedSessions = new Map<string, SessionRevocation>();
+  }
+  return memoryIncidentRef.__monolithRevokedSessions;
+}
+
+function sessionModulesMap(): Map<string, Set<string>> {
+  if (!memoryIncidentRef.__monolithSessionModules) {
+    memoryIncidentRef.__monolithSessionModules = new Map<string, Set<string>>();
+  }
+  return memoryIncidentRef.__monolithSessionModules;
+}
+
+function sessionRestoredAtMap(): Map<string, number> {
+  if (!memoryIncidentRef.__monolithSessionRestoredAt) {
+    memoryIncidentRef.__monolithSessionRestoredAt = new Map<string, number>();
+  }
+  return memoryIncidentRef.__monolithSessionRestoredAt;
+}
+
+function memoryTriageMap(): Map<string, Triage> {
+  if (!memoryIncidentRef.__monolithMemoryTriage) {
+    memoryIncidentRef.__monolithMemoryTriage = new Map<string, Triage>();
+  }
+  return memoryIncidentRef.__monolithMemoryTriage;
+}
+
+function memoryAuditMap(): Map<string, AuditEntry[]> {
+  if (!memoryIncidentRef.__monolithMemoryAudit) {
+    memoryIncidentRef.__monolithMemoryAudit = new Map<string, AuditEntry[]>();
+  }
+  return memoryIncidentRef.__monolithMemoryAudit;
+}
+
+function sessionKey(tenantId: string, agentId: string, sessionId: string): string {
+  return `${tenantId}\u0000${agentId}\u0000${sessionId}`;
+}
+
+export function clearMemoryRevocations(): void {
+  revokedSessionMap().clear();
+  sessionModulesMap().clear();
+  sessionRestoredAtMap().clear();
+  memoryTriageMap().clear();
+  memoryAuditMap().clear();
+}
 
 // --- reads -----------------------------------------------------------------
 
@@ -244,6 +332,12 @@ export async function listIncidents(query: IncidentQuery): Promise<IncidentPage>
 }
 
 export async function getIncident(eventId: string, tenantId: string): Promise<Incident | null> {
+  if (!process.env.DATABASE_URL) {
+    const found = getMemoryEventsForTenant(tenantId).find((e) => e.event_id === eventId);
+    if (!found) return null;
+    const triage = memoryTriageMap().get(eventId);
+    return { ...found, triage };
+  }
   return withTenantDb(tenantId, async (db) => {
     const result = await db.query<IncidentRow>(
       `select
@@ -265,6 +359,11 @@ export async function getIncident(eventId: string, tenantId: string): Promise<In
 }
 
 export async function getAuditTrail(eventId: string, tenantId: string): Promise<AuditEntry[]> {
+  if (!process.env.DATABASE_URL) {
+    const found = getMemoryEventsForTenant(tenantId).find((e) => e.event_id === eventId);
+    if (!found) return [];
+    return [...(memoryAuditMap().get(eventId) ?? [])];
+  }
   return withTenantDb(tenantId, async (db) => {
     const result = await db.query<{
       audit_id: string;
@@ -297,22 +396,250 @@ export async function getAuditTrail(eventId: string, tenantId: string): Promise<
   });
 }
 
-export interface SessionLayer {
-  module: string;
-  events: number;
-  worst: Severity;
+export type { SessionLayer, SessionRevocation, SessionView };
+
+// --- Cross-layer session revocation & circuit breaker (DASH-1) -------------
+
+type RevokedSessionRow = {
+  tenant_id: string;
+  agent_id: string;
+  session_id: string;
+  revoked_at: Date | string;
+  reason: string;
+  triggered_by: string;
+  layers: string[] | null;
+};
+
+function toSessionRevocation(row: RevokedSessionRow): SessionRevocation {
+  return {
+    tenant_id: row.tenant_id,
+    agent_id: row.agent_id,
+    session_id: row.session_id,
+    revoked_at:
+      row.revoked_at instanceof Date ? row.revoked_at.toISOString() : String(row.revoked_at),
+    reason: row.reason,
+    triggered_by: row.triggered_by,
+    layers: row.layers ?? [],
+  };
 }
 
-export interface SessionView {
-  tenant_id: string;
-  session_id: string;
-  agent_id: string;
-  layers: SessionLayer[];
-  total: number;
-  /** True once more than one defense layer has flagged the same session. */
-  cross_layer: boolean;
-  first_ms: number;
-  last_ms: number;
+export async function listRevokedSessions(tenantId: string): Promise<SessionRevocation[]> {
+  if (!process.env.DATABASE_URL) {
+    const out: SessionRevocation[] = [];
+    for (const entry of revokedSessionMap().values()) {
+      if (entry.tenant_id === tenantId) out.push(entry);
+    }
+    return out.sort((a, b) => b.revoked_at.localeCompare(a.revoked_at));
+  }
+  return withTenantDb(tenantId, async (db) => {
+    const result = await db.query<RevokedSessionRow>(
+      `select tenant_id, agent_id, session_id, revoked_at, reason, triggered_by, layers
+         from monolith.revoked_sessions
+        where tenant_id = $1 and restored_at is null
+        order by revoked_at desc`,
+      [tenantId],
+    );
+    return result.rows.map(toSessionRevocation);
+  });
+}
+
+export async function revokeSession(
+  tenantId: string,
+  agentId: string,
+  sessionId: string,
+  reason: string,
+  triggeredBy: string,
+  layers: string[] = [],
+): Promise<SessionRevocation> {
+  const cleanTenant = text(tenantId, 128, "tenant_id");
+  const cleanAgent = text(agentId, 128, "agent_id");
+  const cleanSession = text(sessionId, 128, "session_id");
+  const cleanReason = text(reason, 512, "reason") ?? "Session quarantined";
+  const cleanTrigger = text(triggeredBy, 128, "triggered_by") ?? "operator";
+  if (!cleanTenant || !cleanAgent || !cleanSession) {
+    throw new IncidentInputError("tenant_id, agent_id, and session_id are required");
+  }
+  const normalizedLayers = Array.from(new Set(layers.filter((l) => KNOWN_MODULES.has(l)))).sort();
+  const key = sessionKey(cleanTenant, cleanAgent, cleanSession);
+  const existing = revokedSessionMap().get(key);
+  const mergedLayers = normalizedLayers.length
+    ? normalizedLayers
+    : (existing?.layers ?? []);
+
+  const entry: SessionRevocation = {
+    tenant_id: cleanTenant,
+    agent_id: cleanAgent,
+    session_id: cleanSession,
+    revoked_at: new Date().toISOString(),
+    reason: cleanReason,
+    triggered_by: cleanTrigger,
+    layers: mergedLayers,
+  };
+  revokedSessionMap().set(key, entry);
+  // A revocation supersedes any earlier restore: the session is live again and
+  // any new detection, including this one, counts from here on.
+  sessionRestoredAtMap().delete(key);
+
+  if (!process.env.DATABASE_URL) {
+    return entry;
+  }
+
+  return withTenantDb(cleanTenant, async (db) => {
+    const result = await db.query<RevokedSessionRow>(
+      `insert into monolith.revoked_sessions
+         (tenant_id, agent_id, session_id, reason, triggered_by, layers, revoked_at)
+       values ($1, $2, $3, $4, $5, $6::text[], now())
+       on conflict (tenant_id, agent_id, session_id) do update set
+         reason = excluded.reason,
+         triggered_by = excluded.triggered_by,
+         layers = case
+           when coalesce(array_length(excluded.layers, 1), 0) > 0 then excluded.layers
+           else monolith.revoked_sessions.layers
+         end,
+         revoked_at = now(),
+         -- Re-revoking a previously restored session re-arms the breaker; its
+         -- earlier history is judged afresh only by what lands from now on.
+         restored_at = null
+       returning tenant_id, agent_id, session_id, revoked_at, reason, triggered_by, layers`,
+      [cleanTenant, cleanAgent, cleanSession, cleanReason, cleanTrigger, mergedLayers],
+    );
+    const saved = toSessionRevocation(result.rows[0]);
+    revokedSessionMap().set(key, saved);
+    return saved;
+  });
+}
+
+export async function restoreSession(
+  tenantId: string,
+  agentId: string,
+  sessionId: string,
+): Promise<boolean> {
+  const cleanTenant = text(tenantId, 128, "tenant_id");
+  const cleanAgent = text(agentId, 128, "agent_id");
+  const cleanSession = text(sessionId, 128, "session_id");
+  if (!cleanTenant || !cleanAgent || !cleanSession) {
+    throw new IncidentInputError("tenant_id, agent_id, and session_id are required");
+  }
+  const key = sessionKey(cleanTenant, cleanAgent, cleanSession);
+  const hadMemory = revokedSessionMap().delete(key);
+  sessionModulesMap().delete(key);
+  // The restore is a watermark, not a deletion: the ledger keeps the evidence
+  // that tripped the breaker, so only events after this instant may re-trip it.
+  sessionRestoredAtMap().set(key, Date.now());
+
+  if (!process.env.DATABASE_URL) {
+    return hadMemory;
+  }
+
+  return withTenantDb(cleanTenant, async (db) => {
+    const result = await db.query(
+      `update monolith.revoked_sessions
+          set restored_at = now()
+        where tenant_id = $1 and agent_id = $2 and session_id = $3
+          and restored_at is null`,
+      [cleanTenant, cleanAgent, cleanSession],
+    );
+    return (result.rowCount ?? 0) > 0 || hadMemory;
+  });
+}
+
+export async function evaluateSessionCircuitBreaker(
+  events: MonolithEvent[],
+): Promise<string[]> {
+  if (!events.length) return [];
+  const tenantId = events[0].tenant_id;
+  const severities = circuitBreakerSeverities();
+  const minLayers = circuitBreakerMinLayers();
+
+  // Track candidate (agent_id, session_id) pairs in this ingest batch.
+  const candidates = new Map<string, { agentId: string; sessionId: string }>();
+  for (const event of events) {
+    if (!event.agent_id || !event.session_id) continue;
+    const key = sessionKey(tenantId, event.agent_id, event.session_id);
+    candidates.set(key, { agentId: event.agent_id, sessionId: event.session_id });
+    if (
+      severities.has(String(event.severity) as Severity)
+      && KNOWN_MODULES.has(event.module)
+      && event.event_type !== "session_quarantined"
+    ) {
+      const set = sessionModulesMap().get(key) ?? new Set<string>();
+      set.add(event.module);
+      sessionModulesMap().set(key, set);
+    }
+  }
+
+  if (!process.env.DATABASE_URL) {
+    for (const [key, { agentId, sessionId }] of candidates) {
+      const modules = new Set<string>(sessionModulesMap().get(key) ?? []);
+      // An analyst restore settles everything received before it. Without the
+      // watermark, the next event for the session re-reads the old evidence
+      // and re-revokes immediately, making restore unusable.
+      const restoredAt = sessionRestoredAtMap().get(key) ?? 0;
+      for (const e of getMemoryEventsForTenant(tenantId)) {
+        if (
+          e.agent_id === agentId
+          && e.session_id === sessionId
+          && severities.has(String(e.severity) as Severity)
+          && KNOWN_MODULES.has(e.module)
+          // Refusals are consequences of a revocation, not fresh evidence:
+          // counting them would let one revocation keep re-tripping itself.
+          && e.event_type !== "session_quarantined"
+          && (e.received_ms ?? e.timestamp_ms) > restoredAt
+        ) {
+          modules.add(e.module);
+        }
+      }
+      if (modules.size >= minLayers && !revokedSessionMap().has(key)) {
+        const layers = Array.from(modules).sort();
+        await revokeSession(
+          tenantId,
+          agentId,
+          sessionId,
+          `Cross-layer circuit breaker tripped across ${layers.join(", ")}`,
+          "auto-circuit-breaker",
+          layers,
+        );
+      }
+    }
+    const revoked = await listRevokedSessions(tenantId);
+    return Array.from(new Set(revoked.map((r) => r.session_id)));
+  }
+
+  const severityList = Array.from(severities);
+  for (const { agentId, sessionId } of candidates.values()) {
+    const layers = await withTenantDb(tenantId, async (db) => {
+      const res = await db.query<{ module: string }>(
+        `select distinct module
+           from monolith.security_events
+          where tenant_id = $1
+            and agent_id = $2
+            and session_id = $3
+            and severity = any($4::text[])
+            -- A refusal caused by the revocation is not new evidence for it.
+            and event_type <> 'session_quarantined'
+            and received_at > coalesce(
+              (select restored_at from monolith.revoked_sessions
+                where tenant_id = $1 and agent_id = $2 and session_id = $3),
+              '-infinity'::timestamptz
+            )`,
+        [tenantId, agentId, sessionId, severityList],
+      );
+      return res.rows.map((r) => r.module).sort();
+    });
+    if (layers.length >= minLayers) {
+      await revokeSession(
+        tenantId,
+        agentId,
+        sessionId,
+        `Cross-layer circuit breaker tripped across ${layers.join(", ")}`,
+        "auto-circuit-breaker",
+        layers,
+      );
+    }
+  }
+
+  const revoked = await listRevokedSessions(tenantId);
+  return Array.from(new Set(revoked.map((r) => r.session_id)));
 }
 
 /**
@@ -323,6 +650,52 @@ export interface SessionView {
  * layers is a compromised agent, and no single module can see that.
  */
 export async function sessionForEvent(eventId: string, tenantId: string): Promise<SessionView | null> {
+  if (!process.env.DATABASE_URL) {
+    const tenantEvents = getMemoryEventsForTenant(tenantId);
+    const target = tenantEvents.find((e) => e.event_id === eventId);
+    if (!target || !target.session_id || !target.agent_id) return null;
+    const sessionEvents = tenantEvents.filter(
+      (e) => e.agent_id === target.agent_id && e.session_id === target.session_id,
+    );
+    if (!sessionEvents.length) return null;
+    const byModule = new Map<string, { events: number; worst: Severity }>();
+    const rank = (s: Severity) => (s === "critical" ? 0 : s === "warning" ? 1 : 2);
+    for (const e of sessionEvents) {
+      const current = byModule.get(e.module);
+      if (!current) {
+        byModule.set(e.module, { events: 1, worst: e.severity });
+      } else {
+        current.events += 1;
+        if (rank(e.severity) < rank(current.worst)) current.worst = e.severity;
+      }
+    }
+    const layers: SessionLayer[] = Array.from(byModule.entries()).map(([module, v]) => ({
+      module,
+      events: v.events,
+      worst: v.worst,
+    }));
+    const rev = revokedSessionMap().get(sessionKey(tenantId, target.agent_id, target.session_id));
+    return {
+      tenant_id: tenantId,
+      session_id: target.session_id,
+      agent_id: target.agent_id,
+      layers,
+      total: layers.reduce((sum, l) => sum + l.events, 0),
+      cross_layer: layers.length > 1,
+      first_ms: Math.min(...sessionEvents.map((e) => e.timestamp_ms)),
+      last_ms: Math.max(...sessionEvents.map((e) => e.timestamp_ms)),
+      revoked: Boolean(rev),
+      revocation: rev
+        ? {
+            revoked_at: rev.revoked_at,
+            reason: rev.reason,
+            triggered_by: rev.triggered_by,
+            layers: rev.layers,
+          }
+        : undefined,
+    };
+  }
+
   return withTenantDb(tenantId, async (db) => {
     const owner = await db.query<{ session_id: string | null; agent_id: string | null }>(
       `select session_id, agent_id from monolith.security_events
@@ -358,6 +731,16 @@ export async function sessionForEvent(eventId: string, tenantId: string): Promis
     );
     if (!result.rows.length) return null;
 
+    const revocationResult = await db.query<RevokedSessionRow>(
+      `select tenant_id, agent_id, session_id, revoked_at, reason, triggered_by, layers
+         from monolith.revoked_sessions
+        where tenant_id = $1 and agent_id = $2 and session_id = $3
+          and restored_at is null
+        limit 1`,
+      [tenantId, agent, session],
+    );
+    const revRow = revocationResult.rows[0] ? toSessionRevocation(revocationResult.rows[0]) : null;
+
     const layers = result.rows.map((r) => ({
       module: r.module,
       events: Number(r.events),
@@ -372,8 +755,88 @@ export async function sessionForEvent(eventId: string, tenantId: string): Promis
       cross_layer: layers.length > 1,
       first_ms: Math.min(...result.rows.map((r) => Number(r.first_ms))),
       last_ms: Math.max(...result.rows.map((r) => Number(r.last_ms))),
+      revoked: Boolean(revRow),
+      revocation: revRow
+        ? {
+            revoked_at: revRow.revoked_at,
+            reason: revRow.reason,
+            triggered_by: revRow.triggered_by,
+            layers: revRow.layers,
+          }
+        : undefined,
     };
   });
+}
+
+// --- Cryptographically signed forensic evidence bundles (DASH-4) ------------
+
+export function canonicalizeJson(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalizeJson(item)).join(",")}]`;
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj)
+    .filter((key) => obj[key] !== undefined)
+    .sort();
+  const entries = keys.map((key) => `${JSON.stringify(key)}:${canonicalizeJson(obj[key])}`);
+  return `{${entries.join(",")}}`;
+}
+
+export function computeEvidenceIntegrity(
+  bundleWithoutIntegrity: Record<string, unknown>,
+  env: NodeJS.ProcessEnv = process.env,
+): EvidenceIntegrity {
+  const canonical = canonicalizeJson(bundleWithoutIntegrity);
+  const canonicalSha256 = createHash("sha256").update(canonical, "utf8").digest("hex");
+  const secret =
+    env.MONOLITH_EVIDENCE_SIGNING_SECRET?.trim()
+    || env.MONOLITH_ALERT_WEBHOOK_SECRET?.trim()
+    || "";
+  if (secret.length >= 32 && !/[\r\n\0]/.test(secret)) {
+    const signature = createHmac("sha256", secret).update(canonical, "utf8").digest("hex");
+    return {
+      algorithm: "HMAC-SHA256",
+      canonical_sha256: canonicalSha256,
+      signature,
+    };
+  }
+  return {
+    algorithm: "SHA-256",
+    canonical_sha256: canonicalSha256,
+    signature: null,
+  };
+}
+
+export async function exportIncidentEvidence(
+  eventId: string,
+  tenantId: string,
+  actor = "system",
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<EvidenceBundle | null> {
+  const [incident, audit, session] = await Promise.all([
+    getIncident(eventId, tenantId),
+    getAuditTrail(eventId, tenantId),
+    sessionForEvent(eventId, tenantId),
+  ]);
+  if (!incident) return null;
+
+  const basePayload = {
+    format: "project-black-monolith/evidence-bundle@1" as const,
+    exported_at: new Date().toISOString(),
+    exported_by: actor,
+    tenant_id: tenantId,
+    incident,
+    audit,
+    session,
+  };
+  const integrity = computeEvidenceIntegrity(basePayload, env);
+  return {
+    ...basePayload,
+    integrity,
+  };
 }
 
 /** Sessions that more than one defense layer has flagged. */
@@ -581,6 +1044,35 @@ export class UnknownEventError extends Error {}
  * would defeat the point of having one.
  */
 export async function applyTransition(t: Transition): Promise<{ triage: Triage }> {
+  if (!process.env.DATABASE_URL) {
+    const found = getMemoryEventsForTenant(t.tenant_id).find((e) => e.event_id === t.event_id);
+    if (!found) throw new UnknownEventError(t.event_id);
+    const prev = memoryTriageMap().get(t.event_id);
+    const triage: Triage = {
+      status: t.status,
+      assignee: t.assignee ?? prev?.assignee,
+      note: t.note ?? prev?.note,
+      resolution: t.resolution,
+      updated_ms: Date.now(),
+      updated_by: t.actor,
+    };
+    memoryTriageMap().set(t.event_id, triage);
+    const trail = memoryAuditMap().get(t.event_id) ?? [];
+    const nextId = (memoryIncidentRef.__monolithNextAuditId = (memoryIncidentRef.__monolithNextAuditId ?? 0) + 1);
+    trail.unshift({
+      audit_id: nextId,
+      at_ms: triage.updated_ms,
+      actor: t.actor,
+      from_status: prev?.status,
+      to_status: t.status,
+      assignee: triage.assignee,
+      resolution: t.resolution,
+      note: t.note,
+    });
+    memoryAuditMap().set(t.event_id, trail);
+    return { triage };
+  }
+
   return withTenantDb(t.tenant_id, async (client) => {
     // Serialize all transitions for this event, including the first one before
     // a triage row exists. A shared event-row lock does not serialize two

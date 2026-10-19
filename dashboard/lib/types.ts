@@ -69,6 +69,16 @@ export interface SessionLayer {
   worst: Severity;
 }
 
+export interface SessionRevocation {
+  tenant_id: string;
+  agent_id: string;
+  session_id: string;
+  revoked_at: string;
+  reason: string;
+  triggered_by: string;
+  layers: string[];
+}
+
 /** An agent session as seen across all three layers at once. */
 export interface SessionView {
   tenant_id: string;
@@ -79,7 +89,32 @@ export interface SessionView {
   cross_layer: boolean;
   first_ms: number;
   last_ms: number;
+  revoked?: boolean;
+  revocation?: {
+    revoked_at: string;
+    reason: string;
+    triggered_by: string;
+    layers?: string[];
+  };
 }
+
+export interface EvidenceIntegrity {
+  algorithm: "HMAC-SHA256" | "SHA-256";
+  canonical_sha256: string;
+  signature: string | null;
+}
+
+export interface EvidenceBundle {
+  format: "project-black-monolith/evidence-bundle@1";
+  exported_at: string;
+  exported_by: string;
+  tenant_id: string;
+  incident: Incident;
+  audit: AuditEntry[];
+  session: SessionView | null;
+  integrity: EvidenceIntegrity;
+}
+
 
 export const INCIDENT_STATUSES: IncidentStatus[] = ["new", "acknowledged", "resolved"];
 
