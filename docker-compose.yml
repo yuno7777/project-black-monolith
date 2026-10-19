@@ -129,6 +129,8 @@ services:
       MONOLITH_ALLOW_INSECURE_MODULE_HEALTH: "true"
       MONOLITH_ALERT_WEBHOOK_URL: ${MONOLITH_ALERT_WEBHOOK_URL:-}
       MONOLITH_ALERT_WEBHOOK_SECRET: ${MONOLITH_ALERT_WEBHOOK_SECRET:-}
+      MONOLITH_CIRCUIT_BREAKER_MIN_SEVERITY: ${MONOLITH_CIRCUIT_BREAKER_MIN_SEVERITY:-critical}
+      MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS: ${MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS:-2}
     depends_on:
       dashboard-migrator:
         condition: service_completed_successfully
@@ -185,6 +187,7 @@ services:
       MONOLITH_EVENT_TOKEN: ${MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR:?set MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR in .env}
       MONOLITH_EVENT_OUTBOX_PATH: /var/lib/monolith/outbox.db
       MONOLITH_DETECTOR_STATE_PATH: /var/lib/monolith/detector_state.json
+      MONOLITH_SESSION_POLL_MS: ${MONOLITH_SESSION_POLL_MS:-15000}
       MONOLITH_ADMIN_TOKEN: ${MONOLITH_ADMIN_TOKEN:?set MONOLITH_ADMIN_TOKEN in .env}
       MONOLITH_TENANT_ID: ${MONOLITH_TENANT_ID:-default}
       # Which agent these detections belong to. The session id is NOT set
@@ -226,6 +229,7 @@ services:
       MONOLITH_ALLOW_INSECURE_DASHBOARD: "true"
       MONOLITH_EVENT_TOKEN: ${MONOLITH_EVENT_TOKEN_TRACE_AUDIT:?set MONOLITH_EVENT_TOKEN_TRACE_AUDIT in .env}
       MONOLITH_EVENT_OUTBOX_PATH: /var/lib/monolith/outbox.db
+      MONOLITH_SESSION_POLL_MS: ${MONOLITH_SESSION_POLL_MS:-15000}
       MONOLITH_ADMIN_TOKEN: ${MONOLITH_ADMIN_TOKEN:?set MONOLITH_ADMIN_TOKEN in .env}
       MONOLITH_TENANT_ID: ${MONOLITH_TENANT_ID:-default}
       # Which agent these detections belong to. The session id is NOT set
@@ -271,6 +275,7 @@ services:
       # JSONL spool, not SQLite: this module keeps to the deps already in
       # Cargo.toml. Same delivery contract as the Python outboxes.
       MONOLITH_EVENT_OUTBOX_PATH: /var/lib/monolith/outbox.jsonl
+      MONOLITH_SESSION_POLL_MS: ${MONOLITH_SESSION_POLL_MS:-15000}
       MONOLITH_TENANT_ID: ${MONOLITH_TENANT_ID:-default}
       # This proxy is spawned per agent session and exits when stdin
       # closes, so one invocation is one session — run_full_demo.sh passes

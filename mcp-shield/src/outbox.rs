@@ -386,8 +386,8 @@ impl Outbox {
         let status = response.status().as_u16();
         let text = read_bounded_response(response).await;
         if (200..300).contains(&status) {
-            // The ingest response is where the circuit breaker's revocations
-            // reach this short-lived process; nothing else polls for them.
+            // Ingest responses carry the circuit breaker's revocations; the
+            // background poller covers the idle case where no event is sent.
             if let Some(count) = observe_revoked_sessions(&text) {
                 if count > 0 {
                     tracing::warn!(revoked_sessions = count, "dashboard revoked sessions");
@@ -716,6 +716,88 @@ pub fn spawn_flusher() -> Option<tokio::task::JoinHandle<()>> {
     }))
 }
 
+/// Derive `GET /api/sessions/revoked` from the configured ingest endpoint.
+fn revocation_poll_url(target: &reqwest::Url) -> Option<reqwest::Url> {
+    let path = target.path().trim_end_matches('/');
+    let prefix = path.strip_suffix("/api/ingest")?;
+    let mut poll = target.clone();
+    poll.set_path(&format!("{prefix}/api/sessions/revoked"));
+    poll.set_query(None);
+    poll.set_fragment(None);
+    Some(poll)
+}
+
+/// Revocation poll cadence; zero (or a bad value) disables polling.
+fn poll_interval_ms() -> Option<u64> {
+    let raw = std::env::var("MONOLITH_SESSION_POLL_MS").unwrap_or_else(|_| "15000".to_string());
+    match raw.trim().parse::<u64>() {
+        Ok(value) if value >= 1_000 => Some(value),
+        _ => None,
+    }
+}
+
+/// Background revocation poller.
+///
+/// A revoked session must be cut off even when this short-lived proxy emits no
+/// events of its own: the dashboard's breaker trips from other layers'
+/// detections, and an idle proxy would otherwise never see it. Each poll
+/// adopts the whole snapshot, so a restore (empty set) also propagates.
+pub fn spawn_revocation_poller() -> Option<tokio::task::JoinHandle<()>> {
+    let outbox = outbox()?;
+    let url = revocation_poll_url(&outbox.target)?;
+    let interval_ms = poll_interval_ms()?;
+    let tenant = std::env::var("MONOLITH_TENANT_ID").unwrap_or_else(|_| "default".to_string());
+    let tenant = tenant.trim().to_string();
+    if tenant.is_empty() || tenant.len() > 128 || tenant.chars().any(char::is_control) {
+        tracing::warn!(
+            "MONOLITH_TENANT_ID is missing or invalid; revoked-session polling disabled"
+        );
+        return None;
+    }
+    let token = outbox.token.clone();
+    let client = match reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(RESPONSE_TIMEOUT)
+        // The bearer credential must never follow a redirect to another host.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            tracing::warn!(%error, "cannot initialize revocation poll client");
+            return None;
+        }
+    };
+    Some(tokio::spawn(async move {
+        loop {
+            match client
+                .get(url.clone())
+                .bearer_auth(&token)
+                .header("x-monolith-tenant-id", &tenant)
+                .header("x-monolith-module", crate::events::MODULE)
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => {
+                    let body = read_bounded_response(response).await;
+                    if let Some(count) = observe_revoked_sessions(&body) {
+                        tracing::debug!(
+                            revoked_sessions = count,
+                            "refreshed revoked-session snapshot"
+                        );
+                    }
+                }
+                Ok(response) => tracing::debug!(
+                    status = response.status().as_u16(),
+                    "revocation snapshot poll rejected"
+                ),
+                Err(error) => tracing::debug!(%error, "revocation snapshot poll failed"),
+            }
+            tokio::time::sleep(Duration::from_millis(interval_ms)).await;
+        }
+    }))
+}
+
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -993,6 +1075,36 @@ mod tests {
         assert!(!valid_event_token("valid-length-token\r\nInjected: yes"));
         assert!(!valid_event_token("valid length token with spaces"));
         assert!(!valid_event_token(&"x".repeat(MAX_EVENT_TOKEN_LENGTH + 1)));
+    }
+
+    #[test]
+    fn revocation_poll_url_is_derived_only_from_an_ingest_endpoint() {
+        let ingest = reqwest::Url::parse("https://dashboard.example/api/ingest").unwrap();
+        assert_eq!(
+            revocation_poll_url(&ingest).unwrap().as_str(),
+            "https://dashboard.example/api/sessions/revoked"
+        );
+        let nested = reqwest::Url::parse("https://dashboard.example/base/api/ingest/").unwrap();
+        assert_eq!(
+            revocation_poll_url(&nested).unwrap().as_str(),
+            "https://dashboard.example/base/api/sessions/revoked"
+        );
+        let unrelated = reqwest::Url::parse("https://dashboard.example/api/events").unwrap();
+        assert!(revocation_poll_url(&unrelated).is_none());
+    }
+
+    #[test]
+    fn revocation_poll_interval_is_bounded_and_zero_disables_it() {
+        std::env::set_var("MONOLITH_SESSION_POLL_MS", "30000");
+        assert_eq!(poll_interval_ms(), Some(30_000));
+        std::env::set_var("MONOLITH_SESSION_POLL_MS", "0");
+        assert_eq!(poll_interval_ms(), None);
+        std::env::set_var("MONOLITH_SESSION_POLL_MS", "250");
+        assert_eq!(poll_interval_ms(), None, "sub-second polls are rejected");
+        std::env::set_var("MONOLITH_SESSION_POLL_MS", "not-a-number");
+        assert_eq!(poll_interval_ms(), None);
+        std::env::remove_var("MONOLITH_SESSION_POLL_MS");
+        assert_eq!(poll_interval_ms(), Some(15_000), "default is 15s");
     }
 
     #[test]
