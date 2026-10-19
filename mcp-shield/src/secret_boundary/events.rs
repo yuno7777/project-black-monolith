@@ -42,6 +42,8 @@ impl AuditLogger for PbmAuditBridge {
         let details = json!({
             "subsystem": "secret-boundary",
             "operation_id": event.operation_id,
+            "resource_type": "operation",
+            "resource_id": event.operation_id,
             "destination_host": event.destination_host,
             "credential_ref": event.credential_ref,
             "decision": format!("{:?}", event.decision),
@@ -63,6 +65,7 @@ impl AuditLogger for PbmAuditBridge {
         // Dispatches through PBM's central emit_traced:
         // - Enforces UUIDv4 event_id
         // - Attaches trusted tenant_id, agent_id, and session_id from process environment
+        // - Populates resource_type = "operation" and resource_id = event.operation_id
         // - Logs under the 'monolith_event' tracing target
         // - Durably spools to outbox.jsonl for dashboard delivery
         events::emit_traced(event_type, severity, details, Some(&event.correlation_id));

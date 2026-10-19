@@ -1451,3 +1451,55 @@ fn test_34_the_shadow_holds_in_monitor_mode_too() {
 
     let _ = std::fs::remove_file(&baseline_path);
 }
+
+#[test]
+fn test_36_env_secret_provider_loads_and_rejects_unprefixed_refs_in_boundary_config() {
+    let mut config = valid_config_value(AGENT_ID);
+    config
+        .as_object_mut()
+        .unwrap()
+        .insert("active_provider".to_string(), json!("env"));
+    first_policy_rule(&mut config).insert(
+        "approved_credential_ref".to_string(),
+        json!("env://PBM_SECRET_WEATHER_TOKEN"),
+    );
+
+    let boundary = ShieldSecretBoundary::from_config_json(&config.to_string())
+        .expect("env provider with valid PBM_SECRET_ reference must load");
+    assert!(boundary.is_secret_tool("get_secure_weather"));
+
+    // Unprefixed env variable reference must fail closed at configuration load
+    let mut bad_config = valid_config_value(AGENT_ID);
+    bad_config
+        .as_object_mut()
+        .unwrap()
+        .insert("active_provider".to_string(), json!("env"));
+    first_policy_rule(&mut bad_config)
+        .insert("approved_credential_ref".to_string(), json!("env://PATH"));
+
+    let err = ShieldSecretBoundary::from_config_json(&bad_config.to_string())
+        .expect_err("env provider must reject references without PBM_SECRET_ prefix");
+    assert!(
+        err.to_string().contains("PBM_SECRET_"),
+        "error should explain required prefix: {err}"
+    );
+}
+
+#[test]
+fn test_37_secret_boundary_audit_event_attributes_operation_id_as_resource() {
+    let details = json!({
+        "subsystem": "secret-boundary",
+        "operation_id": "op-weather-prod",
+        "destination_host": "api.example.com",
+        "credential_ref": "env://PBM_SECRET_WEATHER_TOKEN",
+        "authorized_agent_id": AGENT_ID,
+    });
+    let ev = crate::events::build_shield_event(
+        "secret_operation_executed",
+        crate::events::Severity::Info,
+        details,
+        Some("trace-op-resource"),
+    );
+    assert_eq!(ev.resource_type.as_deref(), Some("operation"));
+    assert_eq!(ev.resource_id.as_deref(), Some("op-weather-prod"));
+}
