@@ -1,9 +1,11 @@
+pub mod env;
 pub mod mock;
 pub mod onepassword;
 
 use crate::error::BoundaryError;
 use crate::secret::SecretString;
 
+pub use env::{EnvSecretProvider, DEFAULT_ENV_SECRET_PREFIX};
 pub use mock::MockSecretProvider;
 pub use onepassword::{
     validate_account_identifier, validate_cli_path, validate_secret_reference,
