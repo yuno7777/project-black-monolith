@@ -1424,11 +1424,18 @@ test("MONOLITH_DISABLE_AUTH is an exact-match opt-out in every auth helper", asy
   const { isAuthDisabled: proxyAuthDisabled } = await import("../proxy");
   const { isAuthDisabled: routeAuthDisabled } = await import("../lib/route-auth");
 
+  const envWith = (value?: string): NodeJS.ProcessEnv => {
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    if (value === undefined) delete env.MONOLITH_DISABLE_AUTH;
+    else env.MONOLITH_DISABLE_AUTH = value;
+    return env;
+  };
+
   // The escape hatch is documented as "the exact string true". A looser
   // comparison turns a value that means nothing on the secure path into one
   // that disables every operator check and grants every requester admin.
   for (const value of ["True", "TRUE", " true", "true ", "yes", "1", "false"]) {
-    const env = { MONOLITH_DISABLE_AUTH: value } as NodeJS.ProcessEnv;
+    const env = envWith(value);
     assert.equal(proxyAuthDisabled(env), false, `proxy accepted ${JSON.stringify(value)}`);
     assert.equal(
       routeAuthDisabled(env),
@@ -1437,18 +1444,13 @@ test("MONOLITH_DISABLE_AUTH is an exact-match opt-out in every auth helper", asy
     );
   }
 
+  assert.equal(proxyAuthDisabled(envWith("true")), true);
+  assert.equal(routeAuthDisabled(envWith("true")), true);
   assert.equal(
-    proxyAuthDisabled({ MONOLITH_DISABLE_AUTH: "true" } as NodeJS.ProcessEnv),
-    true,
-  );
-  assert.equal(
-    routeAuthDisabled({ MONOLITH_DISABLE_AUTH: "true" } as NodeJS.ProcessEnv),
-    true,
-  );
-  assert.equal(
-    proxyAuthDisabled({} as NodeJS.ProcessEnv),
+    proxyAuthDisabled(envWith(undefined)),
     false,
     "an unset variable must not disable authentication",
   );
+  assert.equal(routeAuthDisabled(envWith(undefined)), false);
 });
 
