@@ -1,0 +1,701 @@
+﻿MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	∩╗┐2026-10-19T21:21:36.8524693Z ##[group]Run cargo install cargo-audit --locked --version 0.22.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:36.8525180Z ^[[36;1mcargo install cargo-audit --locked --version 0.22.1^[[0m
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:36.8525504Z ^[[36;1mcargo audit^[[0m
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:36.8588413Z shell: /usr/bin/bash -e {0}
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:36.8588667Z env:
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:36.8588874Z   CARGO_HOME: /home/runner/.cargo
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:36.8589141Z   CARGO_INCREMENTAL: 0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:36.8589372Z   CARGO_TERM_COLOR: always
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:36.8589687Z   pythonLocation: /opt/hostedtoolcache/Python/3.12.15/x64
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:36.8590145Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.12.15/x64/lib/pkgconfig
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:36.8590620Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.15/x64
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:36.8591048Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.15/x64
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:36.8591479Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.15/x64
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:36.8591924Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.12.15/x64/lib
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:36.8592315Z ##[endgroup]
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:36.8877594Z ^[[1m^[[32m    Updating^[[0m crates.io index
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:36.9367466Z ^[[1m^[[32m Downloading^[[0m crates ...
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:36.9608806Z ^[[1m^[[32m  Downloaded^[[0m cargo-audit v0.22.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:36.9999173Z ^[[1m^[[32m  Installing^[[0m cargo-audit v0.22.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:37.0059368Z ^[[1m^[[32m    Updating^[[0m crates.io index
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:37.7117597Z ^[[1m^[[32m    Updating^[[0m crates.io index
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:37.8823989Z ^[[1m^[[32m Downloading^[[0m crates ...
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:37.9356990Z ^[[1m^[[32m  Downloaded^[[0m adler2 v2.0.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:37.9383464Z ^[[1m^[[32m  Downloaded^[[0m anstyle-query v1.1.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:37.9406845Z ^[[1m^[[32m  Downloaded^[[0m colorchoice v1.0.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:37.9430590Z ^[[1m^[[32m  Downloaded^[[0m anstyle-parse v0.2.7
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:37.9469397Z ^[[1m^[[32m  Downloaded^[[0m sha1 v0.10.6
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:37.9514429Z ^[[1m^[[32m  Downloaded^[[0m gix-sec v0.13.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:37.9553887Z ^[[1m^[[32m  Downloaded^[[0m unicode-ident v1.0.22
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:37.9607888Z ^[[1m^[[32m  Downloaded^[[0m http-body v1.0.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:37.9636782Z ^[[1m^[[32m  Downloaded^[[0m itoa v1.0.17
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:37.9704511Z ^[[1m^[[32m  Downloaded^[[0m unicode-bom v2.0.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:37.9762616Z ^[[1m^[[32m  Downloaded^[[0m scopeguard v1.2.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:37.9808882Z ^[[1m^[[32m  Downloaded^[[0m num-conv v0.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:37.9855775Z ^[[1m^[[32m  Downloaded^[[0m rustls-pki-types v1.14.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:37.9929839Z ^[[1m^[[32m  Downloaded^[[0m rand_core v0.9.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:37.9975987Z ^[[1m^[[32m  Downloaded^[[0m miniz_oxide v0.8.9
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.0034750Z ^[[1m^[[32m  Downloaded^[[0m quitters v0.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.0071428Z ^[[1m^[[32m  Downloaded^[[0m quote v1.0.44
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.0122272Z ^[[1m^[[32m  Downloaded^[[0m quinn-udp v0.5.14
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.0161618Z ^[[1m^[[32m  Downloaded^[[0m icu_provider v2.1.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.0206050Z ^[[1m^[[32m  Downloaded^[[0m rayon-core v1.13.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.0258952Z ^[[1m^[[32m  Downloaded^[[0m http v1.4.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.0322080Z ^[[1m^[[32m  Downloaded^[[0m hashbrown v0.16.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.0396427Z ^[[1m^[[32m  Downloaded^[[0m tracing-subscriber v0.3.22
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.0505908Z ^[[1m^[[32m  Downloaded^[[0m rayon v1.11.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.0622246Z ^[[1m^[[32m  Downloaded^[[0m regex v1.12.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.0690994Z ^[[1m^[[32m  Downloaded^[[0m h2 v0.4.13
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.0772815Z ^[[1m^[[32m  Downloaded^[[0m zlib-rs v0.5.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.0843698Z ^[[1m^[[32m  Downloaded^[[0m winnow v0.7.14
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.0958919Z ^[[1m^[[32m  Downloaded^[[0m object v0.37.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.1096434Z ^[[1m^[[32m  Downloaded^[[0m zerocopy v0.8.38
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.1360413Z ^[[1m^[[32m  Downloaded^[[0m rustls v0.23.36
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.1508312Z ^[[1m^[[32m  Downloaded^[[0m rustix v1.1.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.1813971Z ^[[1m^[[32m  Downloaded^[[0m syn v2.0.114
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.1948439Z ^[[1m^[[32m  Downloaded^[[0m regex-syntax v0.8.9
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.2037332Z ^[[1m^[[32m  Downloaded^[[0m wasmparser v0.207.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.2119040Z ^[[1m^[[32m  Downloaded^[[0m bstr v1.12.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.2223807Z ^[[1m^[[32m  Downloaded^[[0m gix v0.78.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.2414881Z ^[[1m^[[32m  Downloaded^[[0m gimli v0.32.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.2507477Z ^[[1m^[[32m  Downloaded^[[0m quinn-proto v0.11.13
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.2593273Z ^[[1m^[[32m  Downloaded^[[0m hyper v1.8.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.2674232Z ^[[1m^[[32m  Downloaded^[[0m hashbrown v0.15.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.2735572Z ^[[1m^[[32m  Downloaded^[[0m color-eyre v0.6.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.2819657Z ^[[1m^[[32m  Downloaded^[[0m unicode-normalization v0.1.25
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.2864226Z ^[[1m^[[32m  Downloaded^[[0m tokio-util v0.7.18
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.2956530Z ^[[1m^[[32m  Downloaded^[[0m tame-index v0.26.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.3009280Z ^[[1m^[[32m  Downloaded^[[0m rand v0.9.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.3055508Z ^[[1m^[[32m  Downloaded^[[0m prodash v31.0.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.3107006Z ^[[1m^[[32m  Downloaded^[[0m petgraph v0.8.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.3339663Z ^[[1m^[[32m  Downloaded^[[0m reqwest v0.13.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.3407450Z ^[[1m^[[32m  Downloaded^[[0m regex-automata v0.4.14
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.3585182Z ^[[1m^[[32m  Downloaded^[[0m icu_locale_core v2.1.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.3660251Z ^[[1m^[[32m  Downloaded^[[0m icu_collections v2.1.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.3731720Z ^[[1m^[[32m  Downloaded^[[0m heapless v0.8.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.3776534Z ^[[1m^[[32m  Downloaded^[[0m gix-ref v0.58.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.3828320Z ^[[1m^[[32m  Downloaded^[[0m jiff v0.2.18
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.4043507Z ^[[1m^[[32m  Downloaded^[[0m typenum v1.19.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.4077620Z ^[[1m^[[32m  Downloaded^[[0m icu_properties v2.1.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.4104852Z ^[[1m^[[32m  Downloaded^[[0m icu_normalizer_data v2.1.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.4131969Z ^[[1m^[[32m  Downloaded^[[0m icu_normalizer v2.1.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.4173165Z ^[[1m^[[32m  Downloaded^[[0m libc v0.2.180
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.4617954Z ^[[1m^[[32m  Downloaded^[[0m gix-transport v0.53.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.4660761Z ^[[1m^[[32m  Downloaded^[[0m tokio v1.49.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.5157808Z ^[[1m^[[32m  Downloaded^[[0m zerovec v0.11.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.5221900Z ^[[1m^[[32m  Downloaded^[[0m smallvec v1.15.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.5246499Z ^[[1m^[[32m  Downloaded^[[0m aws-lc-rs v1.15.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.5368604Z ^[[1m^[[32m  Downloaded^[[0m lock_api v0.4.14
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.5384296Z ^[[1m^[[32m  Downloaded^[[0m litemap v0.8.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.5410654Z ^[[1m^[[32m  Downloaded^[[0m iri-string v0.7.10
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.5499307Z ^[[1m^[[32m  Downloaded^[[0m hyper-rustls v0.27.7
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.5527134Z ^[[1m^[[32m  Downloaded^[[0m gix-worktree v0.47.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.5545581Z ^[[1m^[[32m  Downloaded^[[0m gix-protocol v0.56.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.5581515Z ^[[1m^[[32m  Downloaded^[[0m zerotrie v0.2.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.5621933Z ^[[1m^[[32m  Downloaded^[[0m zeroize v1.8.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.5638096Z ^[[1m^[[32m  Downloaded^[[0m toml_parser v1.0.6+spec-1.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.5664067Z ^[[1m^[[32m  Downloaded^[[0m toml v0.9.11+spec-1.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.5710320Z ^[[1m^[[32m  Downloaded^[[0m time-macros v0.2.25
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.5736488Z ^[[1m^[[32m  Downloaded^[[0m tempfile v3.24.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.5765487Z ^[[1m^[[32m  Downloaded^[[0m static_assertions v1.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.5782626Z ^[[1m^[[32m  Downloaded^[[0m socket2 v0.6.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.5804925Z ^[[1m^[[32m  Downloaded^[[0m quinn v0.11.9
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.5844110Z ^[[1m^[[32m  Downloaded^[[0m once_cell v1.21.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.5872458Z ^[[1m^[[32m  Downloaded^[[0m ppv-lite86 v0.2.21
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.5888549Z ^[[1m^[[32m  Downloaded^[[0m http-body-util v0.1.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.5908403Z ^[[1m^[[32m  Downloaded^[[0m encoding_rs v0.8.35
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6138940Z ^[[1m^[[32m  Downloaded^[[0m gix-submodule v0.25.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6152325Z ^[[1m^[[32m  Downloaded^[[0m gix-shallow v0.8.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6163686Z ^[[1m^[[32m  Downloaded^[[0m gix-revision v0.40.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6185908Z ^[[1m^[[32m  Downloaded^[[0m gix-refspec v0.36.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6204741Z ^[[1m^[[32m  Downloaded^[[0m zmij v1.0.19
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6224507Z ^[[1m^[[32m  Downloaded^[[0m zerovec-derive v0.11.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6241650Z ^[[1m^[[32m  Downloaded^[[0m zerofrom-derive v0.1.6
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6252790Z ^[[1m^[[32m  Downloaded^[[0m yoke v0.8.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6272498Z ^[[1m^[[32m  Downloaded^[[0m writeable v0.6.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6292815Z ^[[1m^[[32m  Downloaded^[[0m toml_writer v1.0.6+spec-1.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6308253Z ^[[1m^[[32m  Downloaded^[[0m tinystr v0.8.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6330626Z ^[[1m^[[32m  Downloaded^[[0m strsim v0.11.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6345715Z ^[[1m^[[32m  Downloaded^[[0m smol_str v0.3.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6363054Z ^[[1m^[[32m  Downloaded^[[0m futures-util v0.3.31
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6507065Z ^[[1m^[[32m  Downloaded^[[0m clap_builder v4.5.57
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6582734Z ^[[1m^[[32m  Downloaded^[[0m mio v1.1.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6650396Z ^[[1m^[[32m  Downloaded^[[0m is_terminal_polyfill v1.70.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6660858Z ^[[1m^[[32m  Downloaded^[[0m powerfmt v0.2.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6673555Z ^[[1m^[[32m  Downloaded^[[0m indenter v0.3.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6687331Z ^[[1m^[[32m  Downloaded^[[0m ident_case v1.0.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6696294Z ^[[1m^[[32m  Downloaded^[[0m heck v0.5.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6710982Z ^[[1m^[[32m  Downloaded^[[0m hash32 v0.3.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6728621Z ^[[1m^[[32m  Downloaded^[[0m gix-validate v0.11.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6741515Z ^[[1m^[[32m  Downloaded^[[0m gix-trace v0.1.17
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6753321Z ^[[1m^[[32m  Downloaded^[[0m zerofrom v0.1.6
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6763018Z ^[[1m^[[32m  Downloaded^[[0m wait-timeout v0.2.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6780069Z ^[[1m^[[32m  Downloaded^[[0m twox-hash v2.1.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6807353Z ^[[1m^[[32m  Downloaded^[[0m topological-sort v0.2.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6819425Z ^[[1m^[[32m  Downloaded^[[0m rustls-webpki v0.103.9
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6855662Z ^[[1m^[[32m  Downloaded^[[0m gix-revwalk v0.26.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6870020Z ^[[1m^[[32m  Downloaded^[[0m walkdir v2.5.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6891820Z ^[[1m^[[32m  Downloaded^[[0m rand_chacha v0.9.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6905339Z ^[[1m^[[32m  Downloaded^[[0m memmap2 v0.9.9
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6925013Z ^[[1m^[[32m  Downloaded^[[0m rustversion v1.0.22
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.6954793Z ^[[1m^[[32m  Downloaded^[[0m rustsec v0.32.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7010450Z ^[[1m^[[32m  Downloaded^[[0m rustls-platform-verifier v0.6.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7054329Z ^[[1m^[[32m  Downloaded^[[0m memchr v2.7.6
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7115557Z ^[[1m^[[32m  Downloaded^[[0m jiff-static v0.2.18
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7146319Z ^[[1m^[[32m  Downloaded^[[0m indexmap v2.13.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7196847Z ^[[1m^[[32m  Downloaded^[[0m idna_adapter v1.2.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7210536Z ^[[1m^[[32m  Downloaded^[[0m utf8parse v0.2.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7221490Z ^[[1m^[[32m  Downloaded^[[0m gix-pack v0.65.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7293727Z ^[[1m^[[32m  Downloaded^[[0m gix-config v0.51.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7343569Z ^[[1m^[[32m  Downloaded^[[0m crossbeam-channel v0.5.15
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7392396Z ^[[1m^[[32m  Downloaded^[[0m cc v1.2.55
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7429798Z ^[[1m^[[32m  Downloaded^[[0m log v0.4.29
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7458231Z ^[[1m^[[32m  Downloaded^[[0m gix-odb v0.75.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7494857Z ^[[1m^[[32m  Downloaded^[[0m gix-object v0.55.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7531489Z ^[[1m^[[32m  Downloaded^[[0m gix-index v0.46.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7572342Z ^[[1m^[[32m  Downloaded^[[0m gix-diff v0.58.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7605899Z ^[[1m^[[32m  Downloaded^[[0m getrandom v0.3.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7644328Z ^[[1m^[[32m  Downloaded^[[0m borsh v1.6.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7722288Z ^[[1m^[[32m  Downloaded^[[0m backtrace v0.3.76
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7779442Z ^[[1m^[[32m  Downloaded^[[0m mime v0.3.17
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7795018Z ^[[1m^[[32m  Downloaded^[[0m kstring v2.0.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7813344Z ^[[1m^[[32m  Downloaded^[[0m rustls-native-certs v0.8.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7840784Z ^[[1m^[[32m  Downloaded^[[0m rustc-stable-hash v0.1.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7858308Z ^[[1m^[[32m  Downloaded^[[0m rustc-hash v2.1.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7872287Z ^[[1m^[[32m  Downloaded^[[0m rustc-demangle v0.1.27
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7891837Z ^[[1m^[[32m  Downloaded^[[0m ipnet v2.11.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7911798Z ^[[1m^[[32m  Downloaded^[[0m platforms v3.8.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7934100Z ^[[1m^[[32m  Downloaded^[[0m parking_lot_core v0.9.12
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7957837Z ^[[1m^[[32m  Downloaded^[[0m parking_lot v0.12.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.7986253Z ^[[1m^[[32m  Downloaded^[[0m owo-colors v4.2.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.8020436Z ^[[1m^[[32m  Downloaded^[[0m gix-worktree-state v0.25.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.8035481Z ^[[1m^[[32m  Downloaded^[[0m uluru v3.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.8045087Z ^[[1m^[[32m  Downloaded^[[0m shell-words v1.1.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.8055359Z ^[[1m^[[32m  Downloaded^[[0m gix-pathspec v0.15.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.8072299Z ^[[1m^[[32m  Downloaded^[[0m gix-path v0.11.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.8093620Z ^[[1m^[[32m  Downloaded^[[0m gix-packetline v0.21.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.8114435Z ^[[1m^[[32m  Downloaded^[[0m gix-filter v0.25.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.8142907Z ^[[1m^[[32m  Downloaded^[[0m gix-features v0.46.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.8170477Z ^[[1m^[[32m  Downloaded^[[0m futures-channel v0.3.31
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.8191577Z ^[[1m^[[32m  Downloaded^[[0m flate2 v1.1.9
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.8246771Z ^[[1m^[[32m  Downloaded^[[0m fixedbitset v0.5.7
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.8269333Z ^[[1m^[[32m  Downloaded^[[0m cvss v2.2.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.8327274Z ^[[1m^[[32m  Downloaded^[[0m clap v4.5.57
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.8430096Z ^[[1m^[[32m  Downloaded^[[0m camino v1.2.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.8452689Z ^[[1m^[[32m  Downloaded^[[0m bytes v1.11.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.8501602Z ^[[1m^[[32m  Downloaded^[[0m linux-raw-sys v0.11.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9207915Z ^[[1m^[[32m  Downloaded^[[0m bitflags v2.10.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9253330Z ^[[1m^[[32m  Downloaded^[[0m same-file v1.0.6
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9268149Z ^[[1m^[[32m  Downloaded^[[0m potential_utf v0.1.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9279586Z ^[[1m^[[32m  Downloaded^[[0m pin-utils v0.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9292414Z ^[[1m^[[32m  Downloaded^[[0m pin-project-lite v0.2.16
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9355575Z ^[[1m^[[32m  Downloaded^[[0m maybe-async v0.2.10
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9385146Z ^[[1m^[[32m  Downloaded^[[0m jobserver v0.1.34
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9407910Z ^[[1m^[[32m  Downloaded^[[0m io-close v0.3.7
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9419143Z ^[[1m^[[32m  Downloaded^[[0m gix-utils v0.3.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9431531Z ^[[1m^[[32m  Downloaded^[[0m gix-url v0.35.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9448588Z ^[[1m^[[32m  Downloaded^[[0m gix-traverse v0.52.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9467864Z ^[[1m^[[32m  Downloaded^[[0m gix-tempfile v21.0.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9482759Z ^[[1m^[[32m  Downloaded^[[0m yoke-derive v0.8.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9493068Z ^[[1m^[[32m  Downloaded^[[0m toml_datetime v0.7.5+spec-1.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9507361Z ^[[1m^[[32m  Downloaded^[[0m toml-span v0.6.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9526835Z ^[[1m^[[32m  Downloaded^[[0m tinyvec v1.10.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9556126Z ^[[1m^[[32m  Downloaded^[[0m time v0.3.45
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9700079Z ^[[1m^[[32m  Downloaded^[[0m termcolor v1.4.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9714015Z ^[[1m^[[32m  Downloaded^[[0m simd-adler32 v0.3.8
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9735226Z ^[[1m^[[32m  Downloaded^[[0m gix-negotiate v0.26.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9747962Z ^[[1m^[[32m  Downloaded^[[0m gix-ignore v0.19.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9759712Z ^[[1m^[[32m  Downloaded^[[0m gix-hash v0.22.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9775421Z ^[[1m^[[32m  Downloaded^[[0m gix-discover v0.46.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9792535Z ^[[1m^[[32m  Downloaded^[[0m gix-credentials v0.35.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9812561Z ^[[1m^[[32m  Downloaded^[[0m gix-commitgraph v0.32.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9829235Z ^[[1m^[[32m  Downloaded^[[0m gix-actor v0.38.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9842267Z ^[[1m^[[32m  Downloaded^[[0m fs-err v3.2.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9864004Z ^[[1m^[[32m  Downloaded^[[0m foldhash v0.2.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9878046Z ^[[1m^[[32m  Downloaded^[[0m foldhash v0.1.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9891868Z ^[[1m^[[32m  Downloaded^[[0m deranged v0.5.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9908303Z ^[[1m^[[32m  Downloaded^[[0m crossbeam-utils v0.8.21
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9938102Z ^[[1m^[[32m  Downloaded^[[0m compression-codecs v0.4.36
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:38.9978618Z ^[[1m^[[32m  Downloaded^[[0m async-compression v0.4.37
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0055601Z ^[[1m^[[32m  Downloaded^[[0m arrayvec v0.7.6
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0078678Z ^[[1m^[[32m  Downloaded^[[0m allocator-api2 v0.2.21
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0108285Z ^[[1m^[[32m  Downloaded^[[0m time-core v0.1.7
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0119769Z ^[[1m^[[32m  Downloaded^[[0m thread_local v1.1.9
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0136792Z ^[[1m^[[32m  Downloaded^[[0m thiserror-impl v2.0.18
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0155090Z ^[[1m^[[32m  Downloaded^[[0m thiserror v2.0.18
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0223363Z ^[[1m^[[32m  Downloaded^[[0m sha1-checked v0.10.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0284940Z ^[[1m^[[32m  Downloaded^[[0m gix-glob v0.24.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0299372Z ^[[1m^[[32m  Downloaded^[[0m gix-config-value v0.17.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0313444Z ^[[1m^[[32m  Downloaded^[[0m gix-chunk v0.5.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0326779Z ^[[1m^[[32m  Downloaded^[[0m gix-bitmap v0.2.15
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0337422Z ^[[1m^[[32m  Downloaded^[[0m futures-sink v0.3.31
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0346137Z ^[[1m^[[32m  Downloaded^[[0m futures-io v0.3.31
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0355142Z ^[[1m^[[32m  Downloaded^[[0m futures-core v0.3.31
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0369776Z ^[[1m^[[32m  Downloaded^[[0m faster-hex v0.10.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0387353Z ^[[1m^[[32m  Downloaded^[[0m equivalent v1.0.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0398204Z ^[[1m^[[32m  Downloaded^[[0m display-error-chain v0.2.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0410027Z ^[[1m^[[32m  Downloaded^[[0m crossbeam-deque v0.8.6
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0425643Z ^[[1m^[[32m  Downloaded^[[0m icu_properties_data v2.1.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0540845Z ^[[1m^[[32m  Downloaded^[[0m serde_json v1.0.149
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0623390Z ^[[1m^[[32m  Downloaded^[[0m abscissa_derive v0.9.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0632360Z ^[[1m^[[32m  Downloaded^[[0m home v0.5.11
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0643071Z ^[[1m^[[32m  Downloaded^[[0m tower-http v0.6.8
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0738630Z ^[[1m^[[32m  Downloaded^[[0m fnv v1.0.7
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0747379Z ^[[1m^[[32m  Downloaded^[[0m clap_lex v0.7.7
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0759478Z ^[[1m^[[32m  Downloaded^[[0m cargo-lock v11.0.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0794943Z ^[[1m^[[32m  Downloaded^[[0m auditable-serde v0.9.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0804036Z ^[[1m^[[32m  Downloaded^[[0m auditable-info v0.10.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0813579Z ^[[1m^[[32m  Downloaded^[[0m addr2line v0.25.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0836249Z ^[[1m^[[32m  Downloaded^[[0m shlex v1.3.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0850614Z ^[[1m^[[32m  Downloaded^[[0m serde_spanned v1.0.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0863029Z ^[[1m^[[32m  Downloaded^[[0m secrecy v0.10.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0872933Z ^[[1m^[[32m  Downloaded^[[0m gix-fs v0.19.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0890513Z ^[[1m^[[32m  Downloaded^[[0m fastrand v2.3.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0904525Z ^[[1m^[[32m  Downloaded^[[0m displaydoc v0.2.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0936768Z ^[[1m^[[32m  Downloaded^[[0m crossbeam-epoch v0.9.18
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0965237Z ^[[1m^[[32m  Downloaded^[[0m compression-core v0.4.31
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0975733Z ^[[1m^[[32m  Downloaded^[[0m clru v0.6.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.0989738Z ^[[1m^[[32m  Downloaded^[[0m clap_derive v4.5.55
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1016294Z ^[[1m^[[32m  Downloaded^[[0m cfg_aliases v0.2.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1028491Z ^[[1m^[[32m  Downloaded^[[0m binfarce v0.2.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1049513Z ^[[1m^[[32m  Downloaded^[[0m gix-quote v0.6.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1060266Z ^[[1m^[[32m  Downloaded^[[0m semver v1.0.27
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1085404Z ^[[1m^[[32m  Downloaded^[[0m gix-hashtable v0.12.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1095121Z ^[[1m^[[32m  Downloaded^[[0m gix-error v0.0.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1112886Z ^[[1m^[[32m  Downloaded^[[0m gix-date v0.13.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1131996Z ^[[1m^[[32m  Downloaded^[[0m gix-attributes v0.30.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1149540Z ^[[1m^[[32m  Downloaded^[[0m futures-task v0.3.31
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1161628Z ^[[1m^[[32m  Downloaded^[[0m filetime v0.2.27
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1179445Z ^[[1m^[[32m  Downloaded^[[0m canonical-path v2.0.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1201285Z ^[[1m^[[32m  Downloaded^[[0m arc-swap v1.8.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1246179Z ^[[1m^[[32m  Downloaded^[[0m abscissa_core v0.9.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1289050Z ^[[1m^[[32m  Downloaded^[[0m gix-prompt v0.13.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1301256Z ^[[1m^[[32m  Downloaded^[[0m gix-lock v21.0.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1313827Z ^[[1m^[[32m  Downloaded^[[0m gix-command v0.7.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1324538Z ^[[1m^[[32m  Downloaded^[[0m eyre v0.6.12
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1362884Z ^[[1m^[[32m  Downloaded^[[0m either v1.15.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1378787Z ^[[1m^[[32m  Downloaded^[[0m crc32fast v1.5.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1399151Z ^[[1m^[[32m  Downloaded^[[0m cmake v0.1.57
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1413707Z ^[[1m^[[32m  Downloaded^[[0m byteorder v1.5.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1431599Z ^[[1m^[[32m  Downloaded^[[0m autocfg v1.5.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1453153Z ^[[1m^[[32m  Downloaded^[[0m anstyle v1.0.13
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1469048Z ^[[1m^[[32m  Downloaded^[[0m anstream v0.6.21
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1491138Z ^[[1m^[[32m  Downloaded^[[0m auditable-extract v0.3.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.1624738Z ^[[1m^[[32m  Downloaded^[[0m aws-lc-sys v0.37.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.5395749Z ^[[1m^[[32m   Compiling^[[0m proc-macro2 v1.0.106
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.5396805Z ^[[1m^[[32m   Compiling^[[0m unicode-ident v1.0.22
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.5397570Z ^[[1m^[[32m   Compiling^[[0m quote v1.0.44
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.5417049Z ^[[1m^[[32m   Compiling^[[0m libc v0.2.180
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.6202080Z ^[[1m^[[32m   Compiling^[[0m memchr v2.7.6
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.8447002Z ^[[1m^[[32m   Compiling^[[0m cfg-if v1.0.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:39.8938870Z ^[[1m^[[32m   Compiling^[[0m regex-syntax v0.8.9
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:40.7709558Z ^[[1m^[[32m   Compiling^[[0m syn v2.0.114
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:41.2088937Z ^[[1m^[[32m   Compiling^[[0m aho-corasick v1.1.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:41.2138209Z ^[[1m^[[32m   Compiling^[[0m smallvec v1.15.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:41.4248305Z ^[[1m^[[32m   Compiling^[[0m once_cell v1.21.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:41.6049044Z ^[[1m^[[32m   Compiling^[[0m bytes v1.11.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:42.6528501Z ^[[1m^[[32m   Compiling^[[0m regex-automata v0.4.14
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:46.5668716Z ^[[1m^[[32m   Compiling^[[0m bstr v1.12.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:48.3241692Z ^[[1m^[[32m   Compiling^[[0m thiserror v2.0.18
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:48.4778383Z ^[[1m^[[32m   Compiling^[[0m thiserror-impl v2.0.18
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:48.6228842Z ^[[1m^[[32m   Compiling^[[0m stable_deref_trait v1.2.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:48.6531646Z ^[[1m^[[32m   Compiling^[[0m crossbeam-utils v0.8.21
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:48.8538798Z ^[[1m^[[32m   Compiling^[[0m tinyvec_macros v0.1.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:48.8868753Z ^[[1m^[[32m   Compiling^[[0m crc32fast v1.5.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:49.0719476Z ^[[1m^[[32m   Compiling^[[0m tinyvec v1.10.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:49.0958238Z ^[[1m^[[32m   Compiling^[[0m fastrand v2.3.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:49.3238390Z ^[[1m^[[32m   Compiling^[[0m gix-trace v0.1.17
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:49.5128367Z ^[[1m^[[32m   Compiling^[[0m unicode-normalization v0.1.25
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:50.0960503Z ^[[1m^[[32m   Compiling^[[0m gix-validate v0.11.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:50.1438786Z ^[[1m^[[32m   Compiling^[[0m parking_lot_core v0.9.12
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:50.2116956Z ^[[1m^[[32m   Compiling^[[0m gix-utils v0.3.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:50.3178137Z ^[[1m^[[32m   Compiling^[[0m gix-path v0.11.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:50.7088158Z ^[[1m^[[32m   Compiling^[[0m scopeguard v1.2.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:50.7508542Z ^[[1m^[[32m   Compiling^[[0m itoa v1.0.17
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:50.9538542Z ^[[1m^[[32m   Compiling^[[0m lock_api v0.4.14
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:51.1528372Z ^[[1m^[[32m   Compiling^[[0m bitflags v2.10.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:51.2858510Z ^[[1m^[[32m   Compiling^[[0m parking_lot v0.12.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:51.4358472Z ^[[1m^[[32m   Compiling^[[0m crossbeam-channel v0.5.15
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:51.4978288Z ^[[1m^[[32m   Compiling^[[0m same-file v1.0.6
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:51.5978645Z ^[[1m^[[32m   Compiling^[[0m walkdir v2.5.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:52.1607457Z ^[[1m^[[32m   Compiling^[[0m prodash v31.0.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:52.3448680Z ^[[1m^[[32m   Compiling^[[0m zlib-rs v0.5.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:52.4408376Z ^[[1m^[[32m   Compiling^[[0m foldhash v0.2.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:52.6188943Z ^[[1m^[[32m   Compiling^[[0m allocator-api2 v0.2.21
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:52.9798184Z ^[[1m^[[32m   Compiling^[[0m typenum v1.19.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:53.2548325Z ^[[1m^[[32m   Compiling^[[0m equivalent v1.0.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:53.2948330Z ^[[1m^[[32m   Compiling^[[0m version_check v0.9.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:53.5498748Z ^[[1m^[[32m   Compiling^[[0m generic-array v0.14.7
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:53.6808627Z ^[[1m^[[32m   Compiling^[[0m hashbrown v0.16.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:54.5168813Z ^[[1m^[[32m   Compiling^[[0m heapless v0.8.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:54.7048641Z ^[[1m^[[32m   Compiling^[[0m byteorder v1.5.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:54.8608549Z ^[[1m^[[32m   Compiling^[[0m hash32 v0.3.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:55.4728704Z ^[[1m^[[32m   Compiling^[[0m gix-features v0.46.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:55.7078187Z ^[[1m^[[32m   Compiling^[[0m crypto-common v0.1.7
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:55.7668500Z ^[[1m^[[32m   Compiling^[[0m block-buffer v0.10.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:55.8518410Z ^[[1m^[[32m   Compiling^[[0m digest v0.10.7
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:55.9990284Z ^[[1m^[[32m   Compiling^[[0m faster-hex v0.10.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:56.4008208Z ^[[1m^[[32m   Compiling^[[0m gix-error v0.0.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:56.8658794Z ^[[1m^[[32m   Compiling^[[0m serde_core v1.0.228
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:56.9638222Z ^[[1m^[[32m   Compiling^[[0m cpufeatures v0.2.17
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:56.9951259Z ^[[1m^[[32m   Compiling^[[0m sha1 v0.10.6
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:57.1077023Z ^[[1m^[[32m   Compiling^[[0m synstructure v0.13.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:57.3601501Z ^[[1m^[[32m   Compiling^[[0m winnow v0.7.14
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:58.5139521Z ^[[1m^[[32m   Compiling^[[0m sha1-checked v0.10.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:59.3618668Z ^[[1m^[[32m   Compiling^[[0m jiff v0.2.18
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:21:59.6328513Z ^[[1m^[[32m   Compiling^[[0m gix-hash v0.22.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:00.2588563Z ^[[1m^[[32m   Compiling^[[0m zerofrom-derive v0.1.6
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:00.3507073Z ^[[1m^[[32m   Compiling^[[0m pin-project-lite v0.2.16
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:00.3908662Z ^[[1m^[[32m   Compiling^[[0m rustix v1.1.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:01.7590538Z ^[[1m^[[32m   Compiling^[[0m zerofrom v0.1.6
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:01.8334752Z ^[[1m^[[32m   Compiling^[[0m gix-hashtable v0.12.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:01.8381855Z ^[[1m^[[32m   Compiling^[[0m yoke-derive v0.8.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:01.9118093Z ^[[1m^[[32m   Compiling^[[0m linux-raw-sys v0.11.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:02.3048782Z ^[[1m^[[32m   Compiling^[[0m jobserver v0.1.34
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:02.6008541Z ^[[1m^[[32m   Compiling^[[0m shlex v1.3.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:02.7098036Z ^[[1m^[[32m   Compiling^[[0m find-msvc-tools v0.1.9
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:02.8968120Z ^[[1m^[[32m   Compiling^[[0m cc v1.2.55
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:03.0678441Z ^[[1m^[[32m   Compiling^[[0m yoke v0.8.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:03.2148170Z ^[[1m^[[32m   Compiling^[[0m zerovec-derive v0.11.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:04.5412696Z ^[[1m^[[32m   Compiling^[[0m gix-date v0.13.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:04.5668248Z ^[[1m^[[32m   Compiling^[[0m memmap2 v0.9.9
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:04.8018687Z ^[[1m^[[32m   Compiling^[[0m gix-actor v0.38.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:05.1398675Z ^[[1m^[[32m   Compiling^[[0m gix-object v0.55.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:06.3201313Z ^[[1m^[[32m   Compiling^[[0m getrandom v0.3.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:06.5558048Z ^[[1m^[[32m   Compiling^[[0m zerovec v0.11.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:07.1778179Z ^[[1m^[[32m   Compiling^[[0m cmake v0.1.57
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:07.3148449Z ^[[1m^[[32m   Compiling^[[0m displaydoc v0.2.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:07.5188543Z ^[[1m^[[32m   Compiling^[[0m serde v1.0.228
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:07.7338354Z ^[[1m^[[32m   Compiling^[[0m fs_extra v1.3.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:07.9533316Z ^[[1m^[[32m   Compiling^[[0m dunce v1.0.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:07.9936522Z ^[[1m^[[32m   Compiling^[[0m futures-core v0.3.31
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:08.0768246Z ^[[1m^[[32m   Compiling^[[0m aws-lc-sys v0.37.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:08.2508565Z ^[[1m^[[32m   Compiling^[[0m serde_derive v1.0.228
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:08.9908627Z ^[[1m^[[32m   Compiling^[[0m socket2 v0.6.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:09.4058533Z ^[[1m^[[32m   Compiling^[[0m mio v1.1.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:10.1848665Z ^[[1m^[[32m   Compiling^[[0m zeroize v1.8.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:10.2118379Z ^[[1m^[[32m   Compiling^[[0m tokio v1.49.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:12.5899035Z ^[[1m^[[32m   Compiling^[[0m tempfile v3.24.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:13.4628660Z ^[[1m^[[32m   Compiling^[[0m gix-chunk v0.5.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:13.6447907Z ^[[1m^[[32m   Compiling^[[0m gix-fs v0.19.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:14.0885534Z ^[[1m^[[32m   Compiling^[[0m adler2 v2.0.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:14.1671181Z ^[[1m^[[32m   Compiling^[[0m simd-adler32 v0.3.8
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:14.2666408Z ^[[1m^[[32m   Compiling^[[0m futures-sink v0.3.31
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:14.3010565Z ^[[1m^[[32m   Compiling^[[0m miniz_oxide v0.8.9
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:15.1128298Z ^[[1m^[[32m   Compiling^[[0m gix-tempfile v21.0.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:15.8209760Z ^[[1m^[[32m   Compiling^[[0m tinystr v0.8.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:15.8895743Z ^[[1m^[[32m   Compiling^[[0m gix-quote v0.6.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:15.9436522Z ^[[1m^[[32m   Compiling^[[0m tracing-core v0.1.36
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:16.1669716Z ^[[1m^[[32m   Compiling^[[0m aws-lc-rs v1.15.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:16.3398155Z ^[[1m^[[32m   Compiling^[[0m litemap v0.8.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:16.4878661Z ^[[1m^[[32m   Compiling^[[0m writeable v0.6.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:16.6668550Z ^[[1m^[[32m   Compiling^[[0m percent-encoding v2.3.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:16.8448158Z ^[[1m^[[32m   Compiling^[[0m icu_locale_core v2.1.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:16.9738384Z ^[[1m^[[32m   Compiling^[[0m zerotrie v0.2.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:17.3208369Z ^[[1m^[[32m   Compiling^[[0m potential_utf v0.1.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:17.4178232Z ^[[1m^[[32m   Compiling^[[0m http v1.4.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:19.4399025Z ^[[1m^[[32m   Compiling^[[0m tracing-attributes v0.1.31
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:19.4820247Z ^[[1m^[[32m   Compiling^[[0m icu_normalizer_data v2.1.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:19.6148231Z ^[[1m^[[32m   Compiling^[[0m icu_properties_data v2.1.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:19.7406256Z ^[[1m^[[32m   Compiling^[[0m slab v0.4.12
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:19.8508674Z ^[[1m^[[32m   Compiling^[[0m fnv v1.0.7
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:19.9057370Z ^[[1m^[[32m   Compiling^[[0m icu_provider v2.1.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:20.0231894Z ^[[1m^[[32m   Compiling^[[0m icu_collections v2.1.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:20.2128355Z ^[[1m^[[32m   Compiling^[[0m gix-commitgraph v0.32.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:20.6943302Z ^[[1m^[[32m   Compiling^[[0m rustls-pki-types v1.14.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:20.7808277Z ^[[1m^[[32m   Compiling^[[0m tracing v0.1.44
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:21.0767609Z ^[[1m^[[32m   Compiling^[[0m gix-glob v0.24.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:21.1468415Z ^[[1m^[[32m   Compiling^[[0m indexmap v2.13.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:21.5278270Z ^[[1m^[[32m   Compiling^[[0m pin-utils v0.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:21.5462552Z ^[[1m^[[32m   Compiling^[[0m gix-revwalk v0.26.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:21.8939057Z ^[[1m^[[32m   Compiling^[[0m http-body v1.0.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:21.9329133Z ^[[1m^[[32m   Compiling^[[0m gix-lock v21.0.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:21.9728237Z ^[[1m^[[32m   Compiling^[[0m tokio-util v0.7.18
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:22.0015727Z ^[[1m^[[32m   Compiling^[[0m rustls v0.23.36
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:22.1091563Z ^[[1m^[[32m   Compiling^[[0m httparse v1.10.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:22.3158752Z ^[[1m^[[32m   Compiling^[[0m untrusted v0.9.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:22.3808351Z ^[[1m^[[32m   Compiling^[[0m futures-task v0.3.31
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:22.4848306Z ^[[1m^[[32m   Compiling^[[0m futures-io v0.3.31
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:22.5435062Z ^[[1m^[[32m   Compiling^[[0m futures-util v0.3.31
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:22.6018320Z ^[[1m^[[32m   Compiling^[[0m icu_properties v2.1.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:23.1432392Z ^[[1m^[[32m   Compiling^[[0m icu_normalizer v2.1.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:24.4163963Z ^[[1m^[[32m   Compiling^[[0m tower-service v0.3.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:24.4268089Z ^[[1m^[[32m   Compiling^[[0m atomic-waker v1.1.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:24.4565577Z ^[[1m^[[32m   Compiling^[[0m unicode-bom v2.0.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:24.4785432Z ^[[1m^[[32m   Compiling^[[0m log v0.4.29
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:24.5926139Z ^[[1m^[[32m   Compiling^[[0m subtle v2.6.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:24.6355314Z ^[[1m^[[32m   Compiling^[[0m try-lock v0.2.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:24.6645963Z ^[[1m^[[32m   Compiling^[[0m h2 v0.4.13
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:24.6800399Z ^[[1m^[[32m   Compiling^[[0m want v0.3.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:24.7498675Z ^[[1m^[[32m   Compiling^[[0m idna_adapter v1.2.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:25.1899352Z ^[[1m^[[32m   Compiling^[[0m flate2 v1.1.9
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:25.5435544Z ^[[1m^[[32m   Compiling^[[0m futures-channel v0.3.31
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:25.6640603Z ^[[1m^[[32m   Compiling^[[0m gix-config-value v0.17.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:25.6999293Z ^[[1m^[[32m   Compiling^[[0m static_assertions v1.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:25.7318670Z ^[[1m^[[32m   Compiling^[[0m compression-core v0.4.31
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:25.8388452Z ^[[1m^[[32m   Compiling^[[0m utf8_iter v1.0.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:25.9342801Z ^[[1m^[[32m   Compiling^[[0m shell-words v1.1.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:26.1328406Z ^[[1m^[[32m   Compiling^[[0m gix-command v0.7.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:26.3948401Z ^[[1m^[[32m   Compiling^[[0m idna v1.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:26.7938770Z ^[[1m^[[32m   Compiling^[[0m compression-codecs v0.4.36
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:27.1015466Z ^[[1m^[[32m   Compiling^[[0m kstring v2.0.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:27.2663761Z ^[[1m^[[32m   Compiling^[[0m form_urlencoded v1.2.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:27.4438774Z ^[[1m^[[32m   Compiling^[[0m sync_wrapper v1.0.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:27.4936055Z ^[[1m^[[32m   Compiling^[[0m hyper v1.8.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:28.8328668Z ^[[1m^[[32m   Compiling^[[0m gix-sec v0.13.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:29.1478374Z ^[[1m^[[32m   Compiling^[[0m encoding_rs v0.8.35
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:31.6848403Z ^[[1m^[[32m   Compiling^[[0m openssl-probe v0.2.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:31.8408245Z ^[[1m^[[32m   Compiling^[[0m base64 v0.22.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:31.8793056Z ^[[1m^[[32m   Compiling^[[0m tower-layer v0.3.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:31.9944201Z ^[[1m^[[32m   Compiling^[[0m ipnet v2.11.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:32.3373515Z ^[[1m^[[32m   Compiling^[[0m hyper-util v0.1.20
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:33.4188420Z ^[[1m^[[32m   Compiling^[[0m tower v0.5.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:33.9477147Z ^[[1m^[[32m   Compiling^[[0m rustls-native-certs v0.8.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:34.5858650Z ^[[1m^[[32m   Compiling^[[0m url v2.5.8
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:34.8018888Z ^[[1m^[[32m   Compiling^[[0m gix-attributes v0.30.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:35.1898340Z ^[[1m^[[32m   Compiling^[[0m async-compression v0.4.37
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:35.6312648Z ^[[1m^[[32m   Compiling^[[0m http-body-util v0.1.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:35.7878264Z ^[[1m^[[32m   Compiling^[[0m semver v1.0.27
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:36.4408411Z ^[[1m^[[32m   Compiling^[[0m zmij v1.0.19
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:36.6058343Z ^[[1m^[[32m   Compiling^[[0m rustversion v1.0.22
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:36.8397069Z ^[[1m^[[32m   Compiling^[[0m iri-string v0.7.10
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:37.4340592Z ^[[1m^[[32m   Compiling^[[0m gix-ref v0.58.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:37.4388708Z ^[[1m^[[32m   Compiling^[[0m gix-url v0.35.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:38.8732167Z ^[[1m^[[32m   Compiling^[[0m tower-http v0.6.8
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:39.6099861Z ^[[1m^[[32m   Compiling^[[0m gix-packetline v0.21.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:39.9768227Z ^[[1m^[[32m   Compiling^[[0m serde_json v1.0.149
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:39.9928342Z ^[[1m^[[32m   Compiling^[[0m mime v0.3.17
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:40.4580167Z ^[[1m^[[32m   Compiling^[[0m gix-prompt v0.13.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:40.8528285Z ^[[1m^[[32m   Compiling^[[0m gix-traverse v0.52.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:40.9007823Z ^[[1m^[[32m   Compiling^[[0m gix-revision v0.40.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:41.7308511Z ^[[1m^[[32m   Compiling^[[0m gix-bitmap v0.2.15
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:41.8108421Z ^[[1m^[[32m   Compiling^[[0m crossbeam-epoch v0.9.18
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:42.3028193Z ^[[1m^[[32m   Compiling^[[0m filetime v0.2.27
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:42.4368776Z ^[[1m^[[32m   Compiling^[[0m arrayvec v0.7.6
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:42.5848191Z ^[[1m^[[32m   Compiling^[[0m autocfg v1.5.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:42.8998132Z ^[[1m^[[32m   Compiling^[[0m rayon-core v1.13.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:43.0250732Z ^[[1m^[[32m   Compiling^[[0m utf8parse v0.2.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:43.0614005Z ^[[1m^[[32m   Compiling^[[0m object v0.37.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:43.2498368Z ^[[1m^[[32m   Compiling^[[0m anstyle-parse v0.2.7
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:43.3581974Z ^[[1m^[[32m   Compiling^[[0m fs-err v3.2.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:43.4633712Z ^[[1m^[[32m   Compiling^[[0m uluru v3.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:43.5178322Z ^[[1m^[[32m   Compiling^[[0m gix-index v0.46.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:43.5278226Z ^[[1m^[[32m   Compiling^[[0m crossbeam-deque v0.8.6
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:43.6411949Z ^[[1m^[[32m   Compiling^[[0m gix-refspec v0.36.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:43.6756377Z ^[[1m^[[32m   Compiling^[[0m arc-swap v1.8.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:43.9331909Z ^[[1m^[[32m   Compiling^[[0m gix-credentials v0.35.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:45.9098631Z ^[[1m^[[32m   Compiling^[[0m gix-ignore v0.19.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:46.3678332Z ^[[1m^[[32m   Compiling^[[0m toml_datetime v0.7.5+spec-1.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:46.7478286Z ^[[1m^[[32m   Compiling^[[0m serde_spanned v1.0.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:46.8228634Z ^[[1m^[[32m   Compiling^[[0m toml_parser v1.0.6+spec-1.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:48.0718293Z ^[[1m^[[32m   Compiling^[[0m is_terminal_polyfill v1.70.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:48.1078332Z ^[[1m^[[32m   Compiling^[[0m colorchoice v1.0.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:48.1512968Z ^[[1m^[[32m   Compiling^[[0m camino v1.2.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:48.3758617Z ^[[1m^[[32m   Compiling^[[0m eyre v0.6.12
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:48.4558200Z ^[[1m^[[32m   Compiling^[[0m anstyle-query v1.1.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:48.5018169Z ^[[1m^[[32m   Compiling^[[0m toml_writer v1.0.6+spec-1.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:48.5588372Z ^[[1m^[[32m   Compiling^[[0m anstyle v1.0.13
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:48.7068182Z ^[[1m^[[32m   Compiling^[[0m clru v0.6.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:48.7618160Z ^[[1m^[[32m   Compiling^[[0m owo-colors v4.2.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:48.9008315Z ^[[1m^[[32m   Compiling^[[0m foldhash v0.1.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:48.9748917Z ^[[1m^[[32m   Compiling^[[0m gimli v0.32.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:49.0008154Z ^[[1m^[[32m   Compiling^[[0m hashbrown v0.15.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:49.0608192Z ^[[1m^[[32m   Compiling^[[0m gix-pack v0.65.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:49.6908203Z ^[[1m^[[32m   Compiling^[[0m anstream v0.6.21
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:50.1468285Z ^[[1m^[[32m   Compiling^[[0m toml v0.9.11+spec-1.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:52.4808548Z ^[[1m^[[32m   Compiling^[[0m addr2line v0.25.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:53.0018372Z ^[[1m^[[32m   Compiling^[[0m gix-worktree v0.47.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:55.9908249Z ^[[1m^[[32m   Compiling^[[0m gix-filter v0.25.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:22:59.5388566Z ^[[1m^[[32m   Compiling^[[0m gix-config v0.51.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:00.1288293Z ^[[1m^[[32m   Compiling^[[0m gix-pathspec v0.15.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:00.2498461Z ^[[1m^[[32m   Compiling^[[0m gix-shallow v0.8.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:00.9582266Z ^[[1m^[[32m   Compiling^[[0m gix-negotiate v0.26.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:02.0948518Z ^[[1m^[[32m   Compiling^[[0m wasmparser v0.207.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:02.2908072Z ^[[1m^[[32m   Compiling^[[0m maybe-async v0.2.10
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:03.0999504Z ^[[1m^[[32m   Compiling^[[0m regex v1.12.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:04.6568883Z ^[[1m^[[32m   Compiling^[[0m io-close v0.3.7
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:04.7748519Z ^[[1m^[[32m   Compiling^[[0m either v1.15.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:04.9308255Z ^[[1m^[[32m   Compiling^[[0m lazy_static v1.5.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:04.9758692Z ^[[1m^[[32m   Compiling^[[0m indenter v0.3.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:05.0298194Z ^[[1m^[[32m   Compiling^[[0m powerfmt v0.2.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:05.2238686Z ^[[1m^[[32m   Compiling^[[0m strsim v0.11.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:06.1088373Z ^[[1m^[[32m   Compiling^[[0m heck v0.5.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:06.2528619Z ^[[1m^[[32m   Compiling^[[0m clap_lex v0.7.7
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:06.5698255Z ^[[1m^[[32m   Compiling^[[0m fixedbitset v0.5.7
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:06.6928414Z ^[[1m^[[32m   Compiling^[[0m binfarce v0.2.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:07.0888533Z ^[[1m^[[32m   Compiling^[[0m rustc-demangle v0.1.27
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:08.2538557Z ^[[1m^[[32m   Compiling^[[0m topological-sort v0.2.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:08.3518738Z ^[[1m^[[32m   Compiling^[[0m auditable-serde v0.9.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:08.7288709Z ^[[1m^[[32m   Compiling^[[0m backtrace v0.3.76
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:09.1168500Z ^[[1m^[[32m   Compiling^[[0m auditable-extract v0.3.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:09.2710734Z ^[[1m^[[32m   Compiling^[[0m petgraph v0.8.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:09.8068187Z ^[[1m^[[32m   Compiling^[[0m clap_builder v4.5.57
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:12.0732204Z ^[[1m^[[32m   Compiling^[[0m clap_derive v4.5.55
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:14.0388699Z ^[[1m^[[32m   Compiling^[[0m deranged v0.5.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:14.8428204Z ^[[1m^[[32m   Compiling^[[0m sharded-slab v0.1.7
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:15.5693589Z ^[[1m^[[32m   Compiling^[[0m rayon v1.11.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:15.5794928Z ^[[1m^[[32m   Compiling^[[0m gix-worktree-state v0.25.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:16.2482940Z ^[[1m^[[32m   Compiling^[[0m gix-submodule v0.25.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:18.4728302Z ^[[1m^[[32m   Compiling^[[0m gix-odb v0.75.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:20.1198429Z ^[[1m^[[32m   Compiling^[[0m gix-discover v0.46.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:21.6435091Z ^[[1m^[[32m   Compiling^[[0m tracing-log v0.2.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:21.9688228Z ^[[1m^[[32m   Compiling^[[0m smol_str v0.3.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:22.1522836Z ^[[1m^[[32m   Compiling^[[0m gix-diff v0.58.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:22.4088546Z ^[[1m^[[32m   Compiling^[[0m matchers v0.2.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:22.4888192Z ^[[1m^[[32m   Compiling^[[0m toml-span v0.6.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:22.9498644Z ^[[1m^[[32m   Compiling^[[0m thread_local v1.1.9
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:23.1488516Z ^[[1m^[[32m   Compiling^[[0m ident_case v1.0.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:23.1996958Z ^[[1m^[[32m   Compiling^[[0m nu-ansi-term v0.50.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:23.7346558Z ^[[1m^[[32m   Compiling^[[0m time-core v0.1.7
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:23.8528244Z ^[[1m^[[32m   Compiling^[[0m twox-hash v2.1.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:23.9398268Z ^[[1m^[[32m   Compiling^[[0m home v0.5.11
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:24.0284357Z ^[[1m^[[32m   Compiling^[[0m rustc-stable-hash v0.1.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:24.1523979Z ^[[1m^[[32m   Compiling^[[0m num-conv v0.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:24.2416194Z ^[[1m^[[32m   Compiling^[[0m time v0.3.45
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:24.8532507Z ^[[1m^[[32m   Compiling^[[0m tracing-subscriber v0.3.22
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:26.2724090Z ^[[1m^[[32m   Compiling^[[0m abscissa_derive v0.9.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:26.7328649Z ^[[1m^[[32m   Compiling^[[0m color-eyre v0.6.5
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:28.0338670Z ^[[1m^[[32m   Compiling^[[0m clap v4.5.57
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:28.0636513Z ^[[1m^[[32m   Compiling^[[0m cargo-lock v11.0.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:28.2718423Z ^[[1m^[[32m   Compiling^[[0m auditable-info v0.10.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:29.3138868Z ^[[1m^[[32m   Compiling^[[0m quitters v0.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:30.0299910Z ^[[1m^[[32m   Compiling^[[0m secrecy v0.10.3
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:30.1078401Z ^[[1m^[[32m   Compiling^[[0m cvss v2.2.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:31.3981199Z ^[[1m^[[32m   Compiling^[[0m platforms v3.8.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:31.8408539Z ^[[1m^[[32m   Compiling^[[0m wait-timeout v0.2.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:32.2517911Z ^[[1m^[[32m   Compiling^[[0m canonical-path v2.0.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:32.4278918Z ^[[1m^[[32m   Compiling^[[0m termcolor v1.4.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:32.5633440Z ^[[1m^[[32m   Compiling^[[0m display-error-chain v0.2.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:32.6263571Z ^[[1m^[[32m   Compiling^[[0m abscissa_core v0.9.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:40.8640048Z ^[[1m^[[32m   Compiling^[[0m rustls-webpki v0.103.9
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:44.5070175Z ^[[1m^[[32m   Compiling^[[0m tokio-rustls v0.26.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:44.5071354Z ^[[1m^[[32m   Compiling^[[0m rustls-platform-verifier v0.6.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:44.7338437Z ^[[1m^[[32m   Compiling^[[0m hyper-rustls v0.27.7
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:45.0768071Z ^[[1m^[[32m   Compiling^[[0m reqwest v0.13.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:46.9113154Z ^[[1m^[[32m   Compiling^[[0m gix-transport v0.53.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:53.4428611Z ^[[1m^[[32m   Compiling^[[0m gix-protocol v0.56.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:56.3418508Z ^[[1m^[[32m   Compiling^[[0m gix v0.78.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:23:56.4618675Z ^[[1m^[[32m   Compiling^[[0m tame-index v0.26.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:01.4758428Z ^[[1m^[[32m   Compiling^[[0m rustsec v0.32.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:04.7918432Z ^[[1m^[[32m   Compiling^[[0m cargo-audit v0.22.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:28.2731549Z ^[[1m^[[32m    Finished^[[0m `release` profile [optimized] target(s) in 2m 51s
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:28.3012216Z ^[[1m^[[32m  Installing^[[0m /home/runner/.cargo/bin/cargo-audit
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:28.3014040Z ^[[1m^[[32m   Installed^[[0m package `cargo-audit v0.22.1` (executable `cargo-audit`)
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:28.6711286Z ^[[0m^[[0m^[[1m^[[32m    Fetching^[[0m advisory database from `https://github.com/RustSec/advisory-db.git`
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.6572330Z ^[[0m^[[0m^[[1m^[[32m      Loaded^[[0m 1338 security advisories (from /home/runner/.cargo/advisory-db)
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.6573602Z ^[[0m^[[0m^[[1m^[[32m    Updating^[[0m crates.io index
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.6714998Z ^[[0m^[[0m^[[1m^[[32m    Scanning^[[0m Cargo.lock for vulnerabilities (203 crate dependencies)
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9100173Z ^[[0m^[[0m^[[1m^[[31mCrate:    ^[[0m quinn-proto
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9101113Z ^[[0m^[[0m^[[1m^[[31mVersion:  ^[[0m 0.11.16
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9102509Z ^[[0m^[[0m^[[1m^[[31mTitle:    ^[[0m Stream reassembly memory-exhaustion guard in quinn-proto can be bypassed
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9103739Z ^[[0m^[[0m^[[1m^[[31mDate:     ^[[0m 2026-08-17
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9104584Z ^[[0m^[[0m^[[1m^[[31mID:       ^[[0m RUSTSEC-2026-0341
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9105718Z ^[[0m^[[0m^[[1m^[[31mURL:      ^[[0m https://rustsec.org/advisories/RUSTSEC-2026-0341
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9106929Z ^[[0m^[[0m^[[1m^[[31mSeverity: ^[[0m 7.5 (high)
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9107795Z ^[[0m^[[0m^[[1m^[[31mSolution: ^[[0m Upgrade to >=0.11.17
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9108591Z ^[[0m^[[0m^[[1m^[[31mDependency tree:
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9109197Z ^[[0mquinn-proto 0.11.16
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9109737Z ΓööΓöÇΓöÇ quinn 0.11.11
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9110236Z     ΓööΓöÇΓöÇ reqwest 0.13.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9110606Z         ΓööΓöÇΓöÇ mcp-shield 0.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9110808Z 
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9111064Z ^[[0m^[[0m^[[1m^[[31mCrate:    ^[[0m quinn-proto
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9111547Z ^[[0m^[[0m^[[1m^[[31mVersion:  ^[[0m 0.11.16
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9112378Z ^[[0m^[[0m^[[1m^[[31mTitle:    ^[[0m Unbounded growth of pending connection ID retirements in quinn-proto
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9113108Z ^[[0m^[[0m^[[1m^[[31mDate:     ^[[0m 2026-08-17
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9113619Z ^[[0m^[[0m^[[1m^[[31mID:       ^[[0m RUSTSEC-2026-0339
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9114367Z ^[[0m^[[0m^[[1m^[[31mURL:      ^[[0m https://rustsec.org/advisories/RUSTSEC-2026-0339
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9115026Z ^[[0m^[[0m^[[1m^[[31mSolution: ^[[0m Upgrade to >=0.11.17
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9115306Z 
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9115498Z ^[[0m^[[0m^[[1m^[[31mCrate:    ^[[0m quinn-proto
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9116255Z ^[[0m^[[0m^[[1m^[[31mVersion:  ^[[0m 0.11.16
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9117231Z ^[[0m^[[0m^[[1m^[[31mTitle:    ^[[0m Zero-length DATAGRAM frames bypass the receive buffer limit in quinn-proto
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9117825Z ^[[0m^[[0m^[[1m^[[31mDate:     ^[[0m 2026-08-17
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9118214Z ^[[0m^[[0m^[[1m^[[31mID:       ^[[0m RUSTSEC-2026-0342
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9118746Z ^[[0m^[[0m^[[1m^[[31mURL:      ^[[0m https://rustsec.org/advisories/RUSTSEC-2026-0342
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9119258Z ^[[0m^[[0m^[[1m^[[31mSolution: ^[[0m Upgrade to >=0.11.17
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9119473Z 
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9119666Z ^[[0m^[[0m^[[1m^[[31mCrate:    ^[[0m quinn-proto
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9120024Z ^[[0m^[[0m^[[1m^[[31mVersion:  ^[[0m 0.11.16
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9120720Z ^[[0m^[[0m^[[1m^[[31mTitle:    ^[[0m Peer minimum ACK delay can panic quinn-proto when ACK_FREQUENCY transmission is enabled
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9121311Z ^[[0m^[[0m^[[1m^[[31mDate:     ^[[0m 2026-09-14
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9121690Z ^[[0m^[[0m^[[1m^[[31mID:       ^[[0m RUSTSEC-2026-0340
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9122215Z ^[[0m^[[0m^[[1m^[[31mURL:      ^[[0m https://rustsec.org/advisories/RUSTSEC-2026-0340
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9122673Z ^[[0m^[[0m^[[1m^[[31mSeverity: ^[[0m 7.5 (high)
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9123064Z ^[[0m^[[0m^[[1m^[[31mSolution: ^[[0m Upgrade to >=0.11.18
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9123273Z 
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9123456Z ^[[0m^[[0m^[[1m^[[31mCrate:    ^[[0m quinn-proto
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9123809Z ^[[0m^[[0m^[[1m^[[31mVersion:  ^[[0m 0.11.16
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9124695Z ^[[0m^[[0m^[[1m^[[31mTitle:    ^[[0m Remote peer can panic quinn-proto with zero-length STREAM frames during unordered reads
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9125295Z ^[[0m^[[0m^[[1m^[[31mDate:     ^[[0m 2026-09-14
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9125668Z ^[[0m^[[0m^[[1m^[[31mID:       ^[[0m RUSTSEC-2026-0338
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9126182Z ^[[0m^[[0m^[[1m^[[31mURL:      ^[[0m https://rustsec.org/advisories/RUSTSEC-2026-0338
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9137071Z ^[[0m^[[0m^[[1m^[[31mSolution: ^[[0m Upgrade to >=0.11.18
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9137474Z 
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9137835Z ^[[0m^[[0m^[[1m^[[31mCrate:    ^[[0m rustls
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9138462Z ^[[0m^[[0m^[[1m^[[31mVersion:  ^[[0m 0.23.45
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9139554Z ^[[0m^[[0m^[[1m^[[31mTitle:    ^[[0m Buffered application data sent to outer server after ECH rejection
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9140530Z ^[[0m^[[0m^[[1m^[[31mDate:     ^[[0m 2026-10-14
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9141187Z ^[[0m^[[0m^[[1m^[[31mID:       ^[[0m RUSTSEC-2026-0347
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9142113Z ^[[0m^[[0m^[[1m^[[31mURL:      ^[[0m https://rustsec.org/advisories/RUSTSEC-2026-0347
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9142993Z ^[[0m^[[0m^[[1m^[[31mSeverity: ^[[0m 2.3 (low)
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9143708Z ^[[0m^[[0m^[[1m^[[31mSolution: ^[[0m Upgrade to >=0.23.46
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9144367Z ^[[0m^[[0m^[[1m^[[31mDependency tree:
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9144859Z ^[[0mrustls 0.23.45
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9145306Z Γö£ΓöÇΓöÇ tokio-rustls 0.26.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9145775Z Γöé   Γö£ΓöÇΓöÇ reqwest 0.13.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9146252Z Γöé   Γöé   ΓööΓöÇΓöÇ mcp-shield 0.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9146933Z Γöé   Γö£ΓöÇΓöÇ mcp-shield 0.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9147420Z Γöé   ΓööΓöÇΓöÇ hyper-rustls 0.27.9
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9147884Z Γöé       ΓööΓöÇΓöÇ reqwest 0.13.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9148397Z Γö£ΓöÇΓöÇ rustls-platform-verifier 0.7.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9148889Z Γöé   ΓööΓöÇΓöÇ reqwest 0.13.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9149292Z Γö£ΓöÇΓöÇ reqwest 0.13.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9149693Z Γö£ΓöÇΓöÇ quinn-proto 0.11.16
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9150108Z Γöé   ΓööΓöÇΓöÇ quinn 0.11.11
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9150521Z Γöé       ΓööΓöÇΓöÇ reqwest 0.13.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9150966Z Γö£ΓöÇΓöÇ quinn 0.11.11
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9151387Z Γö£ΓöÇΓöÇ mcp-shield 0.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9151860Z ΓööΓöÇΓöÇ hyper-rustls 0.27.9
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9152098Z 
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9152414Z ^[[0m^[[0m^[[1m^[[31mCrate:    ^[[0m rustls
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9153034Z ^[[0m^[[0m^[[1m^[[31mVersion:  ^[[0m 0.23.45
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9154260Z ^[[0m^[[0m^[[1m^[[31mTitle:    ^[[0m Brotli certificate decompression can allocate up to 1 GiB before authentication
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9155236Z ^[[0m^[[0m^[[1m^[[31mDate:     ^[[0m 2026-10-14
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9155867Z ^[[0m^[[0m^[[1m^[[31mID:       ^[[0m RUSTSEC-2026-0348
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9156949Z ^[[0m^[[0m^[[1m^[[31mURL:      ^[[0m https://rustsec.org/advisories/RUSTSEC-2026-0348
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9158061Z ^[[0m^[[0m^[[1m^[[31mSeverity: ^[[0m 3.7 (low)
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9158776Z ^[[0m^[[0m^[[1m^[[31mSolution: ^[[0m Upgrade to >=0.23.46
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9159153Z 
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9159460Z ^[[0m^[[0m^[[1m^[[31mCrate:    ^[[0m rustls
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9160067Z ^[[0m^[[0m^[[1m^[[31mVersion:  ^[[0m 0.23.45
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9161347Z ^[[0m^[[0m^[[1m^[[31mTitle:    ^[[0m Unauthenticated ServerHello can downgrade later connections to classical key exchange
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9162441Z ^[[0m^[[0m^[[1m^[[31mDate:     ^[[0m 2026-10-14
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9163125Z ^[[0m^[[0m^[[1m^[[31mID:       ^[[0m RUSTSEC-2026-0349
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9164010Z ^[[0m^[[0m^[[1m^[[31mURL:      ^[[0m https://rustsec.org/advisories/RUSTSEC-2026-0349
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9164810Z ^[[0m^[[0m^[[1m^[[31mSeverity: ^[[0m 3.7 (low)
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9165488Z ^[[0m^[[0m^[[1m^[[31mSolution: ^[[0m Upgrade to >=0.23.46
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9165829Z 
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9166110Z ^[[0m^[[0m^[[1m^[[31mCrate:    ^[[0m rustls
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9166842Z ^[[0m^[[0m^[[1m^[[31mVersion:  ^[[0m 0.23.45
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9167770Z ^[[0m^[[0m^[[1m^[[31mTitle:    ^[[0m `Debug` impls for client session values expose TLS secrets
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9168576Z ^[[0m^[[0m^[[1m^[[31mDate:     ^[[0m 2026-10-14
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9169196Z ^[[0m^[[0m^[[1m^[[31mID:       ^[[0m RUSTSEC-2026-0346
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9170059Z ^[[0m^[[0m^[[1m^[[31mURL:      ^[[0m https://rustsec.org/advisories/RUSTSEC-2026-0346
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9171000Z ^[[0m^[[0m^[[1m^[[31mSeverity: ^[[0m 4 (medium)
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9171640Z ^[[0m^[[0m^[[1m^[[31mSolution: ^[[0m Upgrade to >=0.23.46
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9171980Z 
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9172266Z ^[[0m^[[0m^[[1m^[[33mCrate:    ^[[0m chacha20
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9172836Z ^[[0m^[[0m^[[1m^[[33mVersion:  ^[[0m 0.10.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9173395Z ^[[0m^[[0m^[[1m^[[33mWarning:  ^[[0m yanked
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9173958Z ^[[0m^[[0m^[[1m^[[33mDependency tree:
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9174425Z ^[[0mchacha20 0.10.1
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9174797Z ΓööΓöÇΓöÇ rand 0.10.2
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9175198Z     ΓööΓöÇΓöÇ quinn-proto 0.11.16
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9175636Z         ΓööΓöÇΓöÇ quinn 0.11.11
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9176099Z             ΓööΓöÇΓöÇ reqwest 0.13.4
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9176784Z                 ΓööΓöÇΓöÇ mcp-shield 0.1.0
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9177082Z 
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9177520Z ^[[0m^[[0m^[[1m^[[31merror:^[[0m 9 vulnerabilities found!
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9178246Z ^[[0m^[[0m^[[1m^[[33mwarning:^[[0m 1 allowed warning found
+MCP-Shield (Rust build + test) (ubuntu-latest)	Rust dependency vulnerability gate	2026-10-19T21:24:33.9224168Z ##[error]Process completed with exit code 1.
