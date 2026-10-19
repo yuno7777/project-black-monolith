@@ -42,11 +42,15 @@ CLAUDE.md
 .idea/
 .vscode/
 *.swp
+desktop.ini
+Thumbs.db
 
 # ── Local presentation material (not part of the codebase) ───────────
 AEOS_Guard_*.pdf
 build_aeos_*.py
 _aeos_p*.png
+build_five_project_explanations.py
+output/
 
 # ── Generated benchmark reports (per-run artifacts, uploaded not stored) ──
 **/fixtures/benchmark_results.json

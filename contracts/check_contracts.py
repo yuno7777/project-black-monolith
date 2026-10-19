@@ -32,6 +32,10 @@ def validate() -> None:
     benchmark = validator("benchmark-run.v1.schema.json")
 
     event.validate(load_json(FIXTURES / "event-envelope.valid.json"))
+    # The Secret Boundary emits the same envelope under a different
+    # event_type, with a `details.subsystem` discriminator. It must satisfy
+    # the same contract: a new event type is not a new envelope.
+    event.validate(load_json(FIXTURES / "event-envelope.secret-boundary.valid.json"))
     vector.evolve(schema={"$ref": "#/$defs/retrieveRequest"}).validate(
         load_json(FIXTURES / "vector-retrieve-request.valid.json")
     )
