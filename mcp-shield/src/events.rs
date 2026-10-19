@@ -53,6 +53,8 @@ const POLICY_VERSION: &str = "mcp-shield/1";
 pub enum Severity {
     Info,
     Warning,
+    #[serde(rename = "warning")]
+    High,
     Critical,
 }
 
@@ -77,7 +79,7 @@ pub struct ShieldEvent<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub resource_type: Option<&'static str>,
+    pub resource_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_id: Option<String>,
     pub outcome: String,
@@ -95,10 +97,10 @@ pub struct ShieldEvent<'a> {
 /// than none: it would group unrelated agents together, and the grouping is
 /// the entire point of having one.
 #[derive(Debug, Clone, Default)]
-struct Identity {
-    tenant_id: String,
-    agent_id: Option<String>,
-    session_id: Option<String>,
+pub(crate) struct Identity {
+    pub(crate) tenant_id: String,
+    pub(crate) agent_id: Option<String>,
+    pub(crate) session_id: Option<String>,
 }
 
 fn clean_id(value: String) -> Option<String> {
@@ -112,7 +114,7 @@ fn clean_id(value: String) -> Option<String> {
     Some(trimmed.to_owned())
 }
 
-fn identity() -> &'static Identity {
+pub(crate) fn identity() -> &'static Identity {
     static IDENTITY: OnceLock<Identity> = OnceLock::new();
     IDENTITY.get_or_init(|| Identity {
         tenant_id: std::env::var("MONOLITH_TENANT_ID")
@@ -199,12 +201,18 @@ pub fn emit(event_type: &str, severity: Severity, details: Value) {
 /// Detections from the same `tools/list` exchange share a `trace_id` — a schema
 /// mismatch and the suspicious description that came with it are one finding
 /// seen twice, not two unrelated ones.
-pub fn emit_traced(event_type: &str, severity: Severity, details: Value, trace_id: Option<&str>) {
+pub(crate) fn build_shield_event<'a>(
+    event_type: &'a str,
+    severity: Severity,
+    details: Value,
+    trace_id: Option<&str>,
+) -> ShieldEvent<'a> {
     let id = identity();
     let (resource_type, resource_id) = [
         ("tool", "tool"),
         ("resource", "resource"),
         ("prompt", "prompt"),
+        ("operation", "operation_id"),
     ]
     .into_iter()
     .find_map(|(resource_type, key)| {
@@ -212,12 +220,13 @@ pub fn emit_traced(event_type: &str, severity: Severity, details: Value, trace_i
             .get(key)
             .and_then(Value::as_str)
             .and_then(|value| clean_id(value.to_owned()))
-            .map(|resource_id| (resource_type, resource_id))
+            .map(|resource_id| (resource_type.to_string(), resource_id))
     })
     .map(|(resource_type, resource_id)| (Some(resource_type), Some(resource_id)))
     .unwrap_or((None, None));
     let outcome = details
         .get("action")
+        .or_else(|| details.get("action_taken"))
         .and_then(Value::as_str)
         .map(str::to_owned)
         .unwrap_or_else(|| match event_type {
@@ -227,7 +236,7 @@ pub fn emit_traced(event_type: &str, severity: Severity, details: Value, trace_i
             _ if severity == Severity::Critical => "detected".to_string(),
             _ => "reported".to_string(),
         });
-    let event = ShieldEvent {
+    ShieldEvent {
         event_id: new_event_id(),
         schema_version: SCHEMA_VERSION,
         timestamp_ms: now_ms(),
@@ -244,7 +253,16 @@ pub fn emit_traced(event_type: &str, severity: Severity, details: Value, trace_i
         resource_id,
         outcome,
         policy_version: POLICY_VERSION,
-    };
+    }
+}
+
+/// Emit an event belonging to one operation.
+///
+/// Detections from the same `tools/list` exchange share a `trace_id` — a schema
+/// mismatch and the suspicious description that came with it are one finding
+/// seen twice, not two unrelated ones.
+pub fn emit_traced(event_type: &str, severity: Severity, details: Value, trace_id: Option<&str>) {
+    let event = build_shield_event(event_type, severity, details, trace_id);
     let json = match serde_json::to_string(&event) {
         Ok(j) => j,
         Err(e) => {
@@ -254,7 +272,9 @@ pub fn emit_traced(event_type: &str, severity: Severity, details: Value, trace_i
     };
     match severity {
         Severity::Info => tracing::info!(target: "monolith_event", event = %json),
-        Severity::Warning => tracing::warn!(target: "monolith_event", event = %json),
+        Severity::Warning | Severity::High => {
+            tracing::warn!(target: "monolith_event", event = %json)
+        }
         Severity::Critical => tracing::error!(target: "monolith_event", event = %json),
     }
     if let Some(outbox) = outbox::outbox() {
@@ -319,7 +339,7 @@ mod tests {
             agent_id,
             session_id,
             trace_id,
-            resource_type: Some("tool"),
+            resource_type: Some("tool".to_string()),
             resource_id: Some("read_file".to_string()),
             outcome: "rewritten".to_string(),
             policy_version: POLICY_VERSION,
@@ -383,5 +403,37 @@ mod tests {
     fn trace_ids_are_unique_per_operation() {
         // Two tools/list exchanges must not look like one operation.
         assert_ne!(new_trace_id(), new_trace_id());
+    }
+
+    #[test]
+    fn operation_id_populates_resource_type_and_id_when_no_tool_present() {
+        let evt = build_shield_event(
+            "secret_operation_executed",
+            Severity::Info,
+            serde_json::json!({
+                "subsystem": "secret-boundary",
+                "operation_id": "op_weather",
+                "action": "allowed"
+            }),
+            Some("trace-op"),
+        );
+        assert_eq!(evt.resource_type.as_deref(), Some("operation"));
+        assert_eq!(evt.resource_id.as_deref(), Some("op_weather"));
+        assert_eq!(evt.outcome, "allowed");
+
+        // When "tool" is present, "tool" takes precedence over "operation_id".
+        let tool_evt = build_shield_event(
+            "tool_call_argument_flagged",
+            Severity::Critical,
+            serde_json::json!({
+                "tool": "run_cmd",
+                "operation_id": "op_weather",
+                "action_taken": "blocked"
+            }),
+            None,
+        );
+        assert_eq!(tool_evt.resource_type.as_deref(), Some("tool"));
+        assert_eq!(tool_evt.resource_id.as_deref(), Some("run_cmd"));
+        assert_eq!(tool_evt.outcome, "blocked");
     }
 }

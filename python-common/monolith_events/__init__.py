@@ -7,9 +7,15 @@ from .events import (
     EventContext,
     EventEmitter,
     EventOutbox,
+    RevokedSessionPoller,
+    RevokedSessionRegistry,
     context_from_headers,
+    is_session_revoked,
     make_emitter,
     now_ms,
+    replay_dead_letters,
+    revoked_session_registry,
+    update_revoked_sessions_from_ingest,
 )
 
 __all__ = [
@@ -21,7 +27,13 @@ __all__ = [
     "EventContext",
     "EventEmitter",
     "EventOutbox",
+    "RevokedSessionPoller",
+    "RevokedSessionRegistry",
     "context_from_headers",
+    "is_session_revoked",
     "make_emitter",
     "now_ms",
+    "replay_dead_letters",
+    "revoked_session_registry",
+    "update_revoked_sessions_from_ingest",
 ]

@@ -15,8 +15,14 @@ export default function OperatorBadge() {
     fetch("/api/auth/session")
       .then(async (response) => {
         if (response.status === 401) {
-          router.replace("/login");
-          router.refresh();
+          // `replace`, not `push`: the login page should not become a
+          // history entry the operator can navigate back to. The `cancelled`
+          // guard stops a redirect from firing after the component has
+          // already unmounted.
+          if (!cancelled) {
+            router.replace("/login");
+            router.refresh();
+          }
           return null;
         }
         return response.ok ? response.json() : null;

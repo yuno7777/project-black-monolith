@@ -8,8 +8,9 @@ import {
   revokeOperatorSession,
 } from "@/lib/operator-auth";
 import { jsonBodyError, readJsonBody } from "@/lib/request-body";
-import { AUTH_DISABLED, requireOperator, requireSameOrigin } from "@/lib/route-auth";
+import { isAuthDisabled, requireOperator, requireSameOrigin } from "@/lib/route-auth";
 import {
+  checkOperatorLoginRateLimit,
   clearOperatorLoginAttempts,
   recordOperatorLoginAttempt,
 } from "@/lib/login-rate-limit";
@@ -30,7 +31,7 @@ export async function GET(req: Request) {
   // answered 401 — and OperatorBadge reacts to a 401 by sending the browser to
   // /login, which the proxy bounces straight back to /. That was a reload loop
   // several times a second, not a stuck page.
-  if (AUTH_DISABLED) {
+  if (isAuthDisabled()) {
     const demo = await requireOperator(req);
     if (!(demo instanceof Response)) {
       return Response.json({
@@ -62,7 +63,7 @@ export async function POST(req: Request) {
   if (originError) return originError;
   let rateLimitKey: string;
   try {
-    const rateLimit = await recordOperatorLoginAttempt(req);
+    const rateLimit = await checkOperatorLoginRateLimit(req);
     rateLimitKey = rateLimit.key;
     if (!rateLimit.allowed) {
       return Response.json(
@@ -85,6 +86,18 @@ export async function POST(req: Request) {
   try {
     const identity = await authenticateOperatorCredential(token);
     if (!identity) {
+      try {
+        const failedLimit = await recordOperatorLoginAttempt(req);
+        if (!failedLimit.allowed) {
+          return Response.json(
+            { error: "too many operator sign-in attempts; try again later" },
+            { status: 429, headers: { "Retry-After": "900" } },
+          );
+        }
+      } catch (rateError) {
+        console.error("operator login rate limiter is unavailable", rateError);
+        return Response.json({ error: "operator authentication is unavailable" }, { status: 503 });
+      }
       return Response.json({ error: "invalid operator credential" }, { status: 401 });
     }
     await clearOperatorLoginAttempts(rateLimitKey);

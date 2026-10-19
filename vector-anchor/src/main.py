@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .config import MODULE_NAME, load_config
 from .detector_state import DetectorStateStore
-from .events import context_from_headers, make_emitter
+from .events import context_from_headers, make_emitter, replay_dead_letters
 from .frequency_tracker import FrequencyTracker
 from .quarantine import Quarantine
 from .retriever_proxy import RetrieverProxy
@@ -110,6 +110,7 @@ def build_proxy() -> RetrieverProxy:
         topic_similarity=cfg.topic_similarity,
         retention_horizon=cfg.retention_horizon,
         max_queries_per_doc=cfg.max_queries_per_doc,
+        max_tracked_docs=cfg.max_tracked_docs,
     )
     try:
         restored = state_store.load()
@@ -135,6 +136,7 @@ def build_proxy() -> RetrieverProxy:
             topic_similarity=cfg.topic_similarity,
             retention_horizon=cfg.retention_horizon,
             max_queries_per_doc=cfg.max_queries_per_doc,
+            max_tracked_docs=cfg.max_tracked_docs,
         )
         quarantine = Quarantine()
     return RetrieverProxy(
@@ -160,6 +162,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        app.state.proxy.flush_state()
         emit("service_stop", "info", {"message": "VectorAnchor shutting down"})
         emit.close()
 
@@ -187,6 +190,10 @@ def _require_admin(request: Request) -> None:
         raise HTTPException(status_code=401, detail="invalid administrative credential")
 
 
+def _require_admin_token(request: Request) -> None:
+    _require_admin(request)
+
+
 @app.get("/health")
 def health() -> dict:
     return {
@@ -210,7 +217,7 @@ def add_documents(req: AddDocumentsRequest, request: Request) -> dict:
     single ChromaDB client, so the seed/inject fixtures route all corpus
     mutations through here rather than opening a second client (which would
     contend on ChromaDB's SQLite store)."""
-    _require_admin(request)
+    _require_admin_token(request)
     proxy: RetrieverProxy = app.state.proxy
     total = proxy.upsert_documents([(document.id, document.text) for document in req.documents])
     return {"added": len(req.documents), "total": total}
@@ -218,7 +225,7 @@ def add_documents(req: AddDocumentsRequest, request: Request) -> dict:
 
 @app.get("/quarantine")
 def quarantine(request: Request) -> dict:
-    _require_admin(request)
+    _require_admin_token(request)
     proxy: RetrieverProxy = app.state.proxy
     documents = proxy.quarantine_snapshot()
     return {
@@ -236,9 +243,34 @@ def quarantine(request: Request) -> dict:
     }
 
 
+@app.delete("/quarantine/{doc_id}")
+def delete_quarantined_document(doc_id: str, request: Request) -> dict:
+    _require_admin_token(request)
+    cleaned = doc_id.strip()
+    if (
+        not cleaned
+        or len(cleaned) > 128
+        or any(not character.isprintable() for character in cleaned)
+    ):
+        raise HTTPException(status_code=422, detail="invalid document id")
+    proxy: RetrieverProxy = app.state.proxy
+    if hasattr(proxy, "release_quarantine"):
+        return proxy.release_quarantine(cleaned)
+    released = cleaned in proxy.quarantine.list_ids()
+    proxy.quarantine.remove_many([cleaned])
+    proxy.tracker.reset_doc(cleaned)
+    if hasattr(proxy, "flush_state"):
+        proxy.flush_state()
+    return {
+        "doc_id": cleaned,
+        "released": released,
+        "quarantined_count": len(proxy.quarantine.list_ids()),
+    }
+
+
 @app.get("/stats")
 def stats(request: Request) -> dict:
-    _require_admin(request)
+    _require_admin_token(request)
     proxy: RetrieverProxy = app.state.proxy
     return {
         "module": MODULE_NAME,
@@ -259,7 +291,20 @@ def stats(request: Request) -> dict:
 def reset_detection(request: Request) -> dict:
     """Clear the tracker + quarantine (not the corpus). Lets the demo script
     re-run detection from a clean slate without re-seeding."""
-    _require_admin(request)
+    _require_admin_token(request)
     proxy: RetrieverProxy = app.state.proxy
     proxy.reset_detection()
     return {"status": "reset"}
+
+
+@app.post("/admin/replay-dead-letters")
+def admin_replay_dead_letters(request: Request) -> dict:
+    """Reset dead-lettered outbox events back to pending for immediate retry."""
+    _require_admin_token(request)
+    proxy: RetrieverProxy = app.state.proxy
+    target = (
+        getattr(getattr(proxy, "emit", None), "outbox", None)
+        or getattr(proxy, "outbox", None)
+        or getattr(proxy, "emit", None)
+    )
+    return {"replayed": replay_dead_letters(target)}
