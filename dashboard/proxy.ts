@@ -4,7 +4,10 @@ const OPERATOR_SESSION_COOKIE = "monolith-session";
 
 export function isAuthDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const key = "MONOLITH_DISABLE_AUTH";
-  return env[key]?.trim().toLowerCase() === "true";
+  // Exact match only, matching lib/route-auth.ts. A looser comparison would
+  // let a value that means nothing on the secure path disable the page guard
+  // and the operator checks behind it.
+  return env[key] === "true";
 }
 
 /**
