@@ -68,7 +68,8 @@ def tracker() -> FrequencyTracker:
     return FrequencyTracker(
         min_distinct_topics=CFG.min_distinct_topics,
         topic_similarity=CFG.topic_similarity,
-        window_size=CFG.window_size,
+        retention_horizon=CFG.retention_horizon,
+        max_queries_per_doc=CFG.max_queries_per_doc,
     )
 
 
@@ -131,7 +132,8 @@ def main() -> None:
             "min_distinct_topics": CFG.min_distinct_topics,
             "topic_similarity": CFG.topic_similarity,
             "top_rank_threshold": CFG.top_rank_threshold,
-            "window_size": CFG.window_size,
+            "retention_horizon": CFG.retention_horizon,
+            "max_queries_per_doc": CFG.max_queries_per_doc,
         },
         "notes": (f"Embedding backend: {CFG.embedding}. Positives are engineered "
                   "universal-bait documents; scenario D "

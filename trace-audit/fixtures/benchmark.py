@@ -4,7 +4,7 @@ This is the overhead that matters most in the project: it is paid on every token
 of every stream, so it lands directly in the latency a user feels. The model's
 own generation is excluded — it happens with or without this defense, and
 charging it to the defense would flatter it. What is timed is exactly what
-`stream_proxy` adds per token: the PII scan and the rolling KL update.
+`stream_proxy` adds per token: the bounded cross-fragment PII buffer and the rolling KL update.
 
 The monitor is warmed past `min_tokens_before_check` first, so the KL is
 actually being computed rather than skipped — the cheap path is not the one
@@ -23,7 +23,7 @@ import time
 sys.path.insert(0, ".")
 
 from src.divergence_monitor import DEFAULT_KL_THRESHOLD, DivergenceMonitor  # noqa: E402
-from src.pii_scanner import scan  # noqa: E402
+from src.stream_proxy import PiiStreamBuffer  # noqa: E402
 
 WINDOW = 20
 MIN_TOKENS = 12
@@ -55,17 +55,20 @@ def measure() -> dict[str, float]:
         smoothing=SMOOTHING,
     )
 
+    pii_buffer = PiiStreamBuffer()
+
     # Warm past min_tokens_before_check so KL is genuinely computed below.
     for _ in range(MIN_TOKENS + WINDOW):
-        monitor.observe(rng.choice(VOCAB))
+        fragment = rng.choice(VOCAB) + " "
+        pii_buffer.push(fragment, monitor.observe(fragment))
 
     samples: list[float] = []
     for _ in range(ITERATIONS):
-        token = rng.choice(VOCAB)
+        token = rng.choice(VOCAB) + " "
         start = time.perf_counter()
         # Exactly what stream_proxy does per token.
-        scan(token)
         kl = monitor.observe(token)
+        pii_buffer.push(token, kl)
         monitor.is_divergent(kl)
         samples.append((time.perf_counter() - start) * 1_000_000)
 

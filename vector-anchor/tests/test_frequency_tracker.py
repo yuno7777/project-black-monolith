@@ -23,7 +23,10 @@ def emb(text: str):
 
 def make_tracker():
     return FrequencyTracker(
-        min_distinct_topics=4, topic_similarity=0.30, window_size=50
+        min_distinct_topics=4,
+        topic_similarity=0.30,
+        retention_horizon=500,
+        max_queries_per_doc=64,
     )
 
 
@@ -67,10 +70,16 @@ def test_similar_queries_count_as_one_topic():
     assert t.distinct_topic_count("doc") == 1
 
 
-def test_rolling_window_evicts_old_queries():
-    """Old queries fall out of the window and stop contributing to the
-    topic count."""
-    t = FrequencyTracker(min_distinct_topics=4, topic_similarity=0.30, window_size=3)
+def test_hits_older_than_the_horizon_stop_counting():
+    """A hit beyond the retention horizon no longer contributes to the topic
+    count. The horizon is now the detection reach — see test_evasion.py for
+    what that costs an attacker who drips slower than it."""
+    t = FrequencyTracker(
+        min_distinct_topics=4,
+        topic_similarity=0.30,
+        retention_horizon=3,
+        max_queries_per_doc=64,
+    )
     topics = [
         "prune tomato garden",
         "red giant star galaxy",
@@ -79,19 +88,72 @@ def test_rolling_window_evicts_old_queries():
     ]
     for q in topics:
         t.record_query(["doc"], emb(q))
-    # Window holds only the last 3 queries, so at most 3 distinct topics
-    # remain — never enough to flag.
+    # Only the last 3 queries are still within the horizon, so at most 3
+    # distinct topics remain — never enough to flag.
     assert t.distinct_topic_count("doc") <= 3
     assert not t.is_anomalous("doc")
 
 
-def test_rolling_window_removes_empty_document_records():
-    t = FrequencyTracker(min_distinct_topics=2, topic_similarity=0.30, window_size=1)
+def test_expired_document_records_are_swept():
+    """High-cardinality clean traffic must not leave one empty record per
+    document forever. Pruning is lazy (on touch) with a periodic sweep, so
+    drive enough queries to trigger one."""
+    from src.frequency_tracker import SWEEP_INTERVAL
+
+    t = FrequencyTracker(
+        min_distinct_topics=2,
+        topic_similarity=0.30,
+        retention_horizon=1,
+        max_queries_per_doc=64,
+    )
     t.record_query(["old-doc"], emb("garden soil"))
-    t.record_query(["current-doc"], emb("galaxy star"))
+    for i in range(SWEEP_INTERVAL):
+        t.record_query([f"filler-{i}"], emb(f"galaxy star cluster {i}"))
 
     assert "old-doc" not in t._docs
-    assert set(t._docs) == {"current-doc"}
+
+
+def test_prune_retains_quarantined_docs_and_reset_doc_clears_both():
+    t = FrequencyTracker(
+        min_distinct_topics=2,
+        topic_similarity=0.30,
+        retention_horizon=1,
+        max_queries_per_doc=64,
+    )
+    t.record_query(["quarantined-doc", "clean-doc"], emb("garden soil"))
+    t._quarantined.add("quarantined-doc")
+    t.record_query(["later-doc"], emb("galaxy star"))
+    t._prune()
+
+    assert "clean-doc" not in t._docs
+    assert "quarantined-doc" in t._docs
+
+    t.reset_doc("quarantined-doc")
+    assert "quarantined-doc" not in t._docs
+    assert "quarantined-doc" not in t._quarantined
+
+
+def test_max_tracked_docs_evicts_oldest_non_quarantined_entries():
+    t = FrequencyTracker(
+        min_distinct_topics=2,
+        topic_similarity=0.30,
+        retention_horizon=500,
+        max_queries_per_doc=64,
+        max_tracked_docs=3,
+    )
+    t.record_query(["doc-1"], [1.0, 0.0, 0.0, 0.0])
+    t._quarantined.add("doc-1")
+    t.record_query(["doc-2"], [0.0, 1.0, 0.0, 0.0])
+    t.record_query(["doc-3"], [0.0, 0.0, 1.0, 0.0])
+    # Touch doc-2 so doc-3 becomes the oldest non-quarantined entry.
+    t.record_query(["doc-2"], [0.0, 1.0, 0.0, 0.0])
+    t.record_query(["doc-4"], [0.0, 0.0, 0.0, 1.0])
+
+    assert len(t._docs) == 3
+    assert "doc-1" in t._docs
+    assert "doc-2" in t._docs
+    assert "doc-4" in t._docs
+    assert "doc-3" not in t._docs
 
 
 def test_replaced_documents_lose_old_frequency_history():
@@ -121,7 +183,8 @@ def test_topic_score_is_independent_of_query_arrival_order():
         tracker = FrequencyTracker(
             min_distinct_topics=2,
             topic_similarity=0.7,
-            window_size=10,
+            retention_horizon=500,
+            max_queries_per_doc=64,
         )
         for vector in order:
             tracker.record_query(["doc"], vector)
@@ -130,12 +193,20 @@ def test_topic_score_is_independent_of_query_arrival_order():
     assert scores == [2, 2, 2]
 
 
-@pytest.mark.parametrize("vector", [[], [float("nan")], [float("inf")]])
+@pytest.mark.parametrize("vector", [[], [float("nan")], [float("inf")], [True]])
 def test_invalid_embeddings_cannot_enter_detector_state(vector):
     tracker = make_tracker()
-    with pytest.raises(ValueError, match="non-empty and finite"):
+    with pytest.raises(ValueError, match="non-empty, numeric, and finite"):
         tracker.record_query(["doc"], vector)
     assert tracker._docs == {}
+
+
+def test_embedding_dimensions_cannot_change_midstream():
+    tracker = make_tracker()
+    tracker.record_query(["doc"], [1.0, 0.0])
+    with pytest.raises(ValueError, match="dimensions must remain consistent"):
+        tracker.record_query(["doc"], [1.0])
+    assert tracker.evaluate("doc").total_queries == 1
 
 
 def test_recorded_embeddings_are_not_mutated_by_the_caller():

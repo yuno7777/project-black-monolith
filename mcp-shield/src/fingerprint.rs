@@ -17,10 +17,11 @@ use anyhow::{anyhow, bail, Context, Result};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::Sha256;
-use std::collections::HashMap;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 use tempfile::NamedTempFile;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -89,6 +90,23 @@ pub struct BaselineEntry {
     pub tool: Value,
 }
 
+/// What to do the first time a tool is ever seen.
+///
+/// A fingerprint can only prove that a schema has not *changed*; it cannot tell
+/// a clean first sighting from one that was already poisoned before anyone
+/// looked. The stateless sanitizer closes that for phrasings it recognises, but
+/// novel wording outside its corpus is silently blessed as the baseline.
+/// `Approve` removes the guesswork: an unseen tool is withheld from the agent
+/// and parked as pending until an operator approves it by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirstContact {
+    /// Register the first sighting as trusted. Convenient, and the reason
+    /// "trust on first use" is a documented limitation.
+    Trust,
+    /// Withhold unseen tools until explicitly approved.
+    Approve,
+}
+
 /// Outcome of checking a freshly computed fingerprint against the store.
 #[derive(Debug)]
 pub enum Verdict {
@@ -110,12 +128,39 @@ pub enum Verdict {
 #[derive(Debug)]
 pub struct BaselineStore {
     path: PathBuf,
+    hmac_key: Vec<u8>,
     tools: HashMap<String, BaselineEntry>,
+    /// Seen but not yet approved. Held to the same authentication rules as
+    /// trusted entries so that a pending record cannot be edited on disk into
+    /// a rewrite payload, then promoted.
+    pending: HashMap<String, BaselineEntry>,
+    /// Tools an operator explicitly revoked. A revoked tool is never
+    /// re-registered as trusted and is withheld from the agent until the
+    /// operator approves it again.
+    revoked: HashSet<String>,
+    /// True when in-memory entries or pending records were modified since the
+    /// last load or save.
+    dirty: bool,
+    /// Last observed modification timestamp of the baseline file on disk.
+    last_modified: Option<SystemTime>,
+    /// SHA-256 digest of the last loaded/saved file contents on disk.
+    disk_digest: Option<[u8; 32]>,
+    /// The most recent reload failure, kept so a broken trust store is
+    /// reported once per distinct cause rather than on every tools/list.
+    reload_failure: Option<String>,
+    /// Whether the current `reload_failure` has already been reported.
+    reload_failure_reported: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct BaselineFile {
     tools: HashMap<String, BaselineEntry>,
+    #[serde(default)]
+    pending: HashMap<String, BaselineEntry>,
+    /// Operator revocations. Absent from files written before revocations
+    /// existed, so the field defaults to empty rather than failing to load.
+    #[serde(default)]
+    revoked: HashSet<String>,
 }
 
 impl BaselineStore {
@@ -128,6 +173,12 @@ impl BaselineStore {
         self.tools.contains_key(tool_name)
     }
 
+    /// Whether the store has unsaved in-memory modifications.
+    #[cfg(test)]
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
     /// Load and authenticate the store from disk, starting empty only when the
     /// file genuinely does not exist.
     ///
@@ -137,7 +188,7 @@ impl BaselineStore {
     /// turning the defense into a schema-injection mechanism. Corrupt,
     /// unreadable, legacy-unverifiable, or tampered files fail startup closed.
     pub fn load(path: &Path, hmac_key: &[u8]) -> Result<Self> {
-        match std::fs::metadata(path) {
+        let last_modified = match std::fs::metadata(path) {
             Ok(metadata) if metadata.len() > MAX_BASELINE_BYTES => {
                 bail!(
                     "baseline store {} exceeds the {} byte limit",
@@ -145,14 +196,14 @@ impl BaselineStore {
                     MAX_BASELINE_BYTES
                 );
             }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(metadata) => metadata.modified().ok(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => {
                 return Err(error).with_context(|| {
                     format!("failed to inspect baseline store {}", path.display())
                 });
             }
-        }
+        };
         let raw = match std::fs::read_to_string(path) {
             Ok(raw) => raw,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -162,7 +213,15 @@ impl BaselineStore {
                 );
                 return Ok(Self {
                     path: path.to_path_buf(),
+                    hmac_key: hmac_key.to_vec(),
                     tools: HashMap::new(),
+                    pending: HashMap::new(),
+                    revoked: HashSet::new(),
+                    dirty: false,
+                    last_modified: None,
+                    reload_failure: None,
+                    reload_failure_reported: false,
+                    disk_digest: None,
                 });
             }
             Err(error) => {
@@ -171,6 +230,7 @@ impl BaselineStore {
             }
         };
 
+        let disk_digest: [u8; 32] = Sha256::digest(raw.as_bytes()).into();
         let file: BaselineFile = serde_json::from_str(&raw)
             .with_context(|| format!("baseline store {} is not valid JSON", path.display()))?;
         if file.tools.len() > MAX_BASELINE_TOOLS {
@@ -180,7 +240,21 @@ impl BaselineStore {
                 MAX_BASELINE_TOOLS
             );
         }
-        for (name, entry) in &file.tools {
+        if file.pending.len() > MAX_BASELINE_TOOLS {
+            bail!(
+                "baseline store contains {} pending tools; maximum is {}",
+                file.pending.len(),
+                MAX_BASELINE_TOOLS
+            );
+        }
+        if file.revoked.len() > MAX_BASELINE_TOOLS {
+            bail!(
+                "baseline store contains {} revoked tools; maximum is {}",
+                file.revoked.len(),
+                MAX_BASELINE_TOOLS
+            );
+        }
+        for (name, entry) in file.tools.iter().chain(file.pending.iter()) {
             if name.is_empty() || name.len() > MAX_TOOL_NAME_BYTES {
                 bail!(
                     "baseline tool names must be between 1 and {} bytes",
@@ -221,8 +295,205 @@ impl BaselineStore {
         );
         Ok(Self {
             path: path.to_path_buf(),
+            hmac_key: hmac_key.to_vec(),
             tools: file.tools,
+            pending: file.pending,
+            revoked: file.revoked,
+            dirty: false,
+            last_modified,
+            reload_failure: None,
+            reload_failure_reported: false,
+            disk_digest: Some(disk_digest),
         })
+    }
+
+    /// Check whether the baseline file on disk has been modified since this
+    /// store last loaded or saved it, and reload/merge authenticated entries
+    /// when changed.
+    ///
+    /// This allows out-of-band operator actions (`mcp-shield --approve <tool>`
+    /// or `mcp-shield --revoke <tool>`) to take effect live in a running proxy
+    /// without being overwritten by stale in-memory state.
+    pub fn reload_if_changed(&mut self) -> Result<bool> {
+        let metadata = match std::fs::metadata(&self.path) {
+            Ok(meta) => meta,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if self.disk_digest.is_some() {
+                    self.tools.clear();
+                    self.pending.clear();
+                    self.revoked.clear();
+                    self.last_modified = None;
+                    self.disk_digest = None;
+                    self.dirty = false;
+                    return Ok(true);
+                }
+                return Ok(false);
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to inspect baseline store {}", self.path.display())
+                });
+            }
+        };
+
+        let current_mtime = metadata.modified().ok();
+        let raw = std::fs::read_to_string(&self.path)
+            .with_context(|| format!("failed to read baseline store {}", self.path.display()))?;
+        let current_digest: [u8; 32] = Sha256::digest(raw.as_bytes()).into();
+
+        if self.disk_digest == Some(current_digest) {
+            self.last_modified = current_mtime;
+            return Ok(false);
+        }
+
+        let reloaded = match Self::load(&self.path, &self.hmac_key) {
+            Ok(reloaded) => reloaded,
+            Err(error) => {
+                // A trust store that fails authentication is not a detector
+                // bug: it is a tampered or corrupt baseline. The in-memory
+                // baseline was authenticated when it was loaded and keeps
+                // being enforced; the failure is reported once per distinct
+                // cause so a persistent problem cannot flood the ledger.
+                let message = error.to_string();
+                if self.reload_failure.as_deref() != Some(message.as_str()) {
+                    self.reload_failure = Some(message);
+                    self.reload_failure_reported = false;
+                }
+                return Err(error);
+            }
+        };
+        self.reload_failure = None;
+        self.reload_failure_reported = false;
+        if self.dirty {
+            let mut merged_tools = reloaded.tools;
+            let mut merged_pending = reloaded.pending;
+            // A revocation is sticky: it survives a merge with an in-memory
+            // state that has not seen it yet. Losing a revocation would
+            // re-bless a schema the operator deliberately removed.
+            let mut merged_revoked = reloaded.revoked;
+            merged_revoked.extend(self.revoked.drain());
+            for (name, entry) in self.tools.drain() {
+                merged_tools.entry(name).or_insert(entry);
+            }
+            for (name, entry) in self.pending.drain() {
+                if !merged_tools.contains_key(&name) {
+                    merged_pending.entry(name).or_insert(entry);
+                }
+            }
+            self.tools = merged_tools;
+            self.pending = merged_pending;
+            self.revoked = merged_revoked;
+        } else {
+            self.tools = reloaded.tools;
+            self.pending = reloaded.pending;
+            self.revoked = reloaded.revoked;
+        }
+        self.last_modified = reloaded.last_modified;
+        self.disk_digest = reloaded.disk_digest;
+        Ok(true)
+    }
+
+    /// Whether this tool has been seen and is awaiting approval.
+    #[cfg(test)]
+    pub fn is_pending(&self, tool_name: &str) -> bool {
+        self.pending.contains_key(tool_name)
+    }
+
+    /// Tool names awaiting approval, sorted for stable operator output.
+    pub fn pending_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.pending.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    /// Park an unseen tool as pending. Deliberately does NOT overwrite an
+    /// existing pending record: if a tool is re-served with different content
+    /// while awaiting approval, the operator must approve what they first saw,
+    /// not whatever arrived most recently.
+    pub fn register_pending(
+        &mut self,
+        tool_name: &str,
+        hash: &str,
+        description: &str,
+        tool: &Value,
+    ) -> bool {
+        if self.pending.contains_key(tool_name) {
+            return false;
+        }
+        self.pending.insert(
+            tool_name.to_string(),
+            BaselineEntry {
+                hash: hash.to_string(),
+                description: description.to_string(),
+                first_seen_ms: crate::events::now_ms(),
+                tool: tool.clone(),
+            },
+        );
+        self.dirty = true;
+        true
+    }
+
+    /// Promote a pending tool to trusted. Returns false when nothing is
+    /// pending under that name, so an operator approving a typo is told so
+    /// rather than silently succeeding.
+    pub fn approve(&mut self, tool_name: &str) -> bool {
+        match self.pending.remove(tool_name) {
+            None => false,
+            Some(entry) => {
+                self.tools.insert(tool_name.to_string(), entry);
+                // Approving is the operator lifting a revocation.
+                self.revoked.remove(tool_name);
+                self.dirty = true;
+                true
+            }
+        }
+    }
+
+    /// Take the last reload failure, but only the first time it is seen.
+    ///
+    /// A broken trust store persists until an operator fixes it, and
+    /// `tools/list` can be called repeatedly. Reporting the failure once per
+    /// distinct cause keeps it visible without letting a server flood the
+    /// ledger with the same critical event.
+    pub fn take_reload_failure(&mut self) -> Option<String> {
+        if self.reload_failure_reported {
+            return None;
+        }
+        let message = self.reload_failure.clone()?;
+        self.reload_failure_reported = true;
+        Some(message)
+    }
+
+    /// Whether an operator explicitly revoked this tool.    ///
+    /// A revoked tool is never re-registered as trusted and is withheld from
+    /// the agent until it is approved again.
+    pub fn is_revoked(&self, tool_name: &str) -> bool {
+        self.revoked.contains(tool_name)
+    }
+
+    /// Revoke a tool's trusted baseline.
+    ///
+    /// The previously trusted schema is moved to `pending` rather than
+    /// deleted, so `--approve` restores exactly what the operator had
+    /// approved. The name is also recorded as revoked: without that record the
+    /// next `tools/list` would treat the tool as never seen and re-bless
+    /// whatever the server serves under that name, silently undoing the
+    /// revocation.
+    ///
+    /// Returns true only when a trusted entry was actually revoked, so
+    /// revoking twice reports that there is nothing to revoke.
+    pub fn revoke(&mut self, name: &str) -> bool {
+        let Some(entry) = self.tools.remove(name) else {
+            // Nothing trusted under that name: either it was never approved
+            // or it was already revoked.
+            return false;
+        };
+        // Keep the approved schema as the pending candidate so that approving
+        // it restores the schema the operator already trusted.
+        self.pending.entry(name.to_string()).or_insert(entry);
+        self.revoked.insert(name.to_string());
+        self.dirty = true;
+        true
     }
 
     /// Compare a freshly computed hash against the baseline, registering it
@@ -245,6 +516,7 @@ impl BaselineStore {
                         tool: tool.clone(),
                     },
                 );
+                self.dirty = true;
                 Verdict::Registered
             }
             Some(entry) if entry.hash == hash => Verdict::Match,
@@ -254,17 +526,29 @@ impl BaselineStore {
         }
     }
 
+    /// Persist the store atomically only if in-memory state was modified.
+    pub fn save_if_dirty(&mut self) -> Result<bool> {
+        if !self.dirty {
+            return Ok(false);
+        }
+        self.save()?;
+        Ok(true)
+    }
+
     /// Persist the store atomically (pretty-printed for easy review).
     ///
     /// A direct truncate-and-write can leave a corrupt or empty trust store if
     /// the process or host stops mid-write. Build and fsync a sibling temporary
     /// file first, then atomically replace the destination.
-    pub fn save(&self) -> Result<()> {
+    pub fn save(&mut self) -> Result<()> {
         let file = BaselineFile {
             tools: self.tools.clone(),
+            pending: self.pending.clone(),
+            revoked: self.revoked.clone(),
         };
         let json =
             serde_json::to_string_pretty(&file).context("failed to serialize baseline store")?;
+        let digest: [u8; 32] = Sha256::digest(json.as_bytes()).into();
         let parent = self
             .path
             .parent()
@@ -290,6 +574,11 @@ impl BaselineStore {
                 error.error
             )
         })?;
+        self.last_modified = std::fs::metadata(&self.path)
+            .ok()
+            .and_then(|meta| meta.modified().ok());
+        self.disk_digest = Some(digest);
+        self.dirty = false;
         Ok(())
     }
 }
@@ -427,6 +716,56 @@ mod tests {
 
         let reloaded = BaselineStore::load(&path, key).expect("replacement must stay valid");
         assert_eq!(reloaded.tools.len(), 2);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn dirty_tracking_and_live_reload_preserve_external_approvals_and_revocations() {
+        let path = std::env::temp_dir().join(format!(
+            "mcp-shield-live-reload-baseline-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let key = b"test-key";
+        let tool = json!({
+            "name": "deploy_tool",
+            "description": "Deploy application.",
+            "inputSchema": { "type": "object" }
+        });
+        let hash = fingerprint_tool(key, &tool).unwrap();
+
+        let mut proxy_store = BaselineStore::load(&path, key).unwrap();
+        assert!(!proxy_store.is_dirty());
+        assert!(proxy_store.register_pending("deploy_tool", &hash, "Deploy application.", &tool));
+        assert!(proxy_store.is_dirty());
+        assert!(proxy_store.save_if_dirty().unwrap());
+        assert!(!proxy_store.is_dirty());
+        assert!(!proxy_store.save_if_dirty().unwrap());
+
+        // Simulate operator CLI approving the tool in a separate process
+        let mut cli_store = BaselineStore::load(&path, key).unwrap();
+        assert!(cli_store.approve("deploy_tool"));
+        cli_store.save().unwrap();
+
+        // Running proxy reloads the updated baseline from disk
+        assert!(proxy_store.reload_if_changed().unwrap());
+        assert!(proxy_store.contains("deploy_tool"));
+        assert!(!proxy_store.is_pending("deploy_tool"));
+        assert!(!proxy_store.reload_if_changed().unwrap());
+
+        // Simulate operator CLI revoking the tool
+        let mut revoke_store = BaselineStore::load(&path, key).unwrap();
+        assert!(revoke_store.revoke("deploy_tool"));
+        assert!(!revoke_store.revoke("deploy_tool"));
+        revoke_store.save().unwrap();
+
+        assert!(proxy_store.reload_if_changed().unwrap());
+        assert!(!proxy_store.contains("deploy_tool"));
+        // The revocation is recorded, and the trusted schema waits in
+        // `pending` so that approving it restores what was already trusted.
+        assert!(proxy_store.is_revoked("deploy_tool"));
+        assert!(proxy_store.is_pending("deploy_tool"));
+
         let _ = std::fs::remove_file(path);
     }
 }
