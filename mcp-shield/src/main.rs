@@ -12,8 +12,10 @@
 //!   mcp-shield <server-command> [server-args...]
 //!   mcp-shield --remote-url <https://server.example/mcp>
 //!   mcp-shield --drain-outbox
+//!   mcp-shield --replay-dead-letters
 //!   mcp-shield --list-pending
 //!   mcp-shield --approve <tool-name>
+//!   mcp-shield --revoke <tool-name>
 //!
 //! Example:
 //!   mcp-shield python fixtures/fake_mcp_server.py
@@ -57,7 +59,8 @@ async fn main() -> Result<()> {
         bail!(
             "usage: mcp-shield <server-command> [server-args...]\n\
              or: mcp-shield --remote-url <https://server.example/mcp>\n\
-             or: mcp-shield --list-pending | --approve <tool-name>\n\
+             or: mcp-shield --list-pending | --approve <tool-name> | --revoke <tool-name>\n\
+             or: mcp-shield --drain-outbox | --replay-dead-letters\n\
              example: mcp-shield python fixtures/fake_mcp_server.py"
         );
     }
@@ -83,9 +86,9 @@ async fn main() -> Result<()> {
         ];
     }
 
-    // Operator commands for the first-contact approval gate. Both act on the
+    // Operator commands for the first-contact approval gate. They act on the
     // baseline file and exit without starting a proxy, so they can be run
-    // while an agent is not connected.
+    // while an agent is not connected (or out-of-band while a proxy runs).
     if server_cmd.first().map(String::as_str) == Some("--list-pending") {
         let config = proxy::ShieldConfig::from_env()?;
         let store = fingerprint::BaselineStore::load(&config.baseline_path, &config.hmac_key)?;
@@ -101,9 +104,13 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    if server_cmd.first().map(String::as_str) == Some("--approve") {
+    if matches!(
+        server_cmd.first().map(String::as_str),
+        Some("--approve" | "--reapprove")
+    ) {
+        let flag = &server_cmd[0];
         if server_cmd.len() != 2 {
-            bail!("--approve expects exactly one tool name");
+            bail!("{flag} expects exactly one tool name");
         }
         let tool = &server_cmd[1];
         let config = proxy::ShieldConfig::from_env()?;
@@ -117,8 +124,36 @@ async fn main() -> Result<()> {
                  run --list-pending to see what is"
             );
         }
-        store.save()?;
+        store.save_if_dirty()?;
         eprintln!("approved {tool:?}; it is now the trusted baseline");
+        return Ok(());
+    }
+
+    if server_cmd.first().map(String::as_str) == Some("--revoke") {
+        if server_cmd.len() != 2 {
+            bail!("--revoke expects exactly one tool name");
+        }
+        let tool = &server_cmd[1];
+        let config = proxy::ShieldConfig::from_env()?;
+        let mut store = fingerprint::BaselineStore::load(&config.baseline_path, &config.hmac_key)?;
+        if !store.revoke(tool) {
+            bail!(
+                "no approved tool named {tool:?} in baseline; \
+                 nothing to revoke"
+            );
+        }
+        store.save_if_dirty()?;
+        eprintln!("revoked {tool:?}; moved back to pending approval");
+        return Ok(());
+    }
+
+    if server_cmd == ["--replay-dead-letters"] {
+        let outbox = outbox::outbox_or_from_env_path()
+            .context("failed to initialize outbox for dead-letter replay")?;
+        let replayed = outbox
+            .replay_dead_letters()
+            .context("failed to replay dead-letter events")?;
+        eprintln!("replayed {replayed} dead-letter event(s) back to outbox");
         return Ok(());
     }
 
@@ -133,6 +168,22 @@ async fn main() -> Result<()> {
                  MONOLITH_EVENT_TOKEN, and MONOLITH_EVENT_OUTBOX_PATH"
             )
         })?;
+        if let Ok(bind_addr) = std::env::var("MCP_SHIELD_STATUS_BIND") {
+            let trimmed = bind_addr.trim();
+            if !trimmed.is_empty() {
+                let outbox = outbox::outbox_or_from_env_path()
+                    .context("failed to access outbox for status listener")?;
+                let admin_token = std::env::var("MONOLITH_ADMIN_TOKEN")
+                    .ok()
+                    .or_else(|| std::env::var("MONOLITH_EVENT_TOKEN").ok());
+                let local_addr = outbox::spawn_status_listener(trimmed, outbox, admin_token)
+                    .with_context(|| format!("failed to bind status listener on {trimmed}"))?;
+                tracing::info!(
+                    bind = %local_addr,
+                    "started MCP-Shield outbox status listener"
+                );
+            }
+        }
         flusher.await?;
         return Ok(());
     }
