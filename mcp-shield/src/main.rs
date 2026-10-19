@@ -12,6 +12,10 @@
 //!   mcp-shield <server-command> [server-args...]
 //!   mcp-shield --remote-url <https://server.example/mcp>
 //!   mcp-shield --drain-outbox
+//!   mcp-shield --replay-dead-letters
+//!   mcp-shield --list-pending
+//!   mcp-shield --approve <tool-name>
+//!   mcp-shield --revoke <tool-name>
 //!
 //! Example:
 //!   mcp-shield python fixtures/fake_mcp_server.py
@@ -26,6 +30,7 @@ mod jsonrpc;
 mod outbox;
 mod proxy;
 mod sanitizer;
+pub mod secret_boundary;
 
 use anyhow::{bail, Context, Result};
 use std::io::IsTerminal;
@@ -54,6 +59,8 @@ async fn main() -> Result<()> {
         bail!(
             "usage: mcp-shield <server-command> [server-args...]\n\
              or: mcp-shield --remote-url <https://server.example/mcp>\n\
+             or: mcp-shield --list-pending | --approve <tool-name> | --revoke <tool-name>\n\
+             or: mcp-shield --drain-outbox | --replay-dead-letters\n\
              example: mcp-shield python fixtures/fake_mcp_server.py"
         );
     }
@@ -79,6 +86,80 @@ async fn main() -> Result<()> {
         ];
     }
 
+    // Operator commands for the first-contact approval gate. They act on the
+    // baseline file and exit without starting a proxy, so they can be run
+    // while an agent is not connected (or out-of-band while a proxy runs).
+    if server_cmd.first().map(String::as_str) == Some("--list-pending") {
+        let config = proxy::ShieldConfig::from_env()?;
+        let store = fingerprint::BaselineStore::load(&config.baseline_path, &config.hmac_key)?;
+        let pending = store.pending_names();
+        if pending.is_empty() {
+            eprintln!("no tools are awaiting approval");
+        } else {
+            eprintln!("tools awaiting approval ({}):", pending.len());
+            for name in pending {
+                eprintln!("  {name}");
+            }
+        }
+        return Ok(());
+    }
+
+    if matches!(
+        server_cmd.first().map(String::as_str),
+        Some("--approve" | "--reapprove")
+    ) {
+        let flag = &server_cmd[0];
+        if server_cmd.len() != 2 {
+            bail!("{flag} expects exactly one tool name");
+        }
+        let tool = &server_cmd[1];
+        let config = proxy::ShieldConfig::from_env()?;
+        let mut store = fingerprint::BaselineStore::load(&config.baseline_path, &config.hmac_key)?;
+        if !store.approve(tool) {
+            // Not an error to be swallowed: approving a name that is not
+            // pending means the operator approved something other than what
+            // they think they did.
+            bail!(
+                "no tool named {tool:?} is awaiting approval; \
+                 run --list-pending to see what is"
+            );
+        }
+        store.save_if_dirty()?;
+        eprintln!("approved {tool:?}; it is now the trusted baseline");
+        return Ok(());
+    }
+
+    if server_cmd.first().map(String::as_str) == Some("--revoke") {
+        if server_cmd.len() != 2 {
+            bail!("--revoke expects exactly one tool name");
+        }
+        let tool = &server_cmd[1];
+        let config = proxy::ShieldConfig::from_env()?;
+        let mut store = fingerprint::BaselineStore::load(&config.baseline_path, &config.hmac_key)?;
+        if !store.revoke(tool) {
+            bail!(
+                "no approved tool named {tool:?} in baseline; \
+                 nothing to revoke"
+            );
+        }
+        store.save_if_dirty()?;
+        eprintln!(
+            "revoked {tool:?}; it is withheld from the agent until you approve it again \
+             (mcp-shield --approve {tool})"
+        );
+        return Ok(());
+    }
+
+    if server_cmd == ["--replay-dead-letters"] {
+        let outbox = outbox::outbox_or_from_env_path()
+            .context("failed to initialize outbox for dead-letter replay")?;
+        let replayed = outbox
+            .replay_dead_letters()
+            .context("failed to replay dead-letter events")?;
+        eprintln!("replayed {replayed} dead-letter event(s) back to outbox");
+        return Ok(());
+    }
+
     if server_cmd == ["--drain-outbox"] {
         tracing::info!(
             module = events::MODULE,
@@ -90,16 +171,43 @@ async fn main() -> Result<()> {
                  MONOLITH_EVENT_TOKEN, and MONOLITH_EVENT_OUTBOX_PATH"
             )
         })?;
+        if let Ok(bind_addr) = std::env::var("MCP_SHIELD_STATUS_BIND") {
+            let trimmed = bind_addr.trim();
+            if !trimmed.is_empty() {
+                let outbox = outbox::outbox_or_from_env_path()
+                    .context("failed to access outbox for status listener")?;
+                let admin_token = std::env::var("MONOLITH_ADMIN_TOKEN")
+                    .ok()
+                    .or_else(|| std::env::var("MONOLITH_EVENT_TOKEN").ok());
+                let local_addr = outbox::spawn_status_listener(trimmed, outbox, admin_token)
+                    .with_context(|| format!("failed to bind status listener on {trimmed}"))?;
+                tracing::info!(
+                    bind = %local_addr,
+                    "started MCP-Shield outbox status listener"
+                );
+            }
+        }
+        let revocation_poller = outbox::spawn_revocation_poller();
         flusher.await?;
+        if let Some(poller) = revocation_poller {
+            poller.abort();
+        }
         return Ok(());
     }
 
-    let config = proxy::ShieldConfig::from_env();
+    let mut config = proxy::ShieldConfig::from_env()?;
+    // The Secret Boundary is built only on the proxy path. The operator
+    // commands above deliberately do not touch it: a malformed boundary
+    // configuration must not make `--list-pending` or `--approve`
+    // unusable, because those are how an operator inspects and repairs the
+    // very state the boundary is configured against.
+    config.boundary = secret_boundary::ShieldSecretBoundary::from_env()?;
     tracing::info!(
         module = events::MODULE,
         server_command = ?server_cmd,
         baseline = %config.baseline_path.display(),
         mode = ?config.mode,
+        first_contact = ?config.first_contact,
         "starting MCP-Shield proxy"
     );
 
@@ -107,15 +215,21 @@ async fn main() -> Result<()> {
     // process on a volume), then keeps this run's events flowing to the
     // dashboard live as they are detected.
     let flusher = outbox::spawn_flusher();
+    // The breaker trips from other layers' detections, so an idle proxy must
+    // still learn about its session's revocation.
+    let revocation_poller = outbox::spawn_revocation_poller();
 
     let result = proxy::run(server_cmd, config).await;
 
     // This proxy is short-lived: it exits as soon as the agent closes stdin,
     // so there is no long-running retry loop to fall back on. Stop the
-    // periodic flusher and make one final forced pass — ignoring backoff,
+    // periodic tasks and make one final forced pass — ignoring backoff,
     // since a scheduled retry after exit would never happen.
     if let Some(flusher) = flusher {
         flusher.abort();
+    }
+    if let Some(poller) = revocation_poller {
+        poller.abort();
     }
     outbox::drain(FINAL_DRAIN_BUDGET, true).await;
 

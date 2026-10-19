@@ -102,17 +102,17 @@ def test_a_trace_id_is_minted_when_the_caller_omits_one():
     assert ctx.agent_id is None
 
 
-def test_ids_are_trimmed_clamped_and_blanks_dropped():
+def test_ids_are_trimmed_and_invalid_values_are_dropped():
     assert _clean_id("  session-1  ") == "session-1"
     assert _clean_id("   ") is None
     assert _clean_id("") is None
     assert _clean_id(None) is None
     assert _clean_id(123) is None
-    # The dashboard silently drops over-long text, so a nonsense header must be
-    # clamped rather than cost the detection its correlation.
-    assert len(_clean_id("x" * 500)) == MAX_ID_LENGTH
+    # Reject rather than truncate over-long identities: truncation can collapse
+    # distinct caller-controlled values onto the same correlation key.
+    assert _clean_id("x" * 500) is None
 
 
 def test_an_absurd_header_cannot_strip_correlation(capsys):
     event = emit_once(capsys, ctx=context_from_headers({"x-monolith-session-id": "s" * 900}))
-    assert len(event["session_id"]) == MAX_ID_LENGTH
+    assert "session_id" not in event
