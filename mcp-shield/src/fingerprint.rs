@@ -18,7 +18,7 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -134,6 +134,10 @@ pub struct BaselineStore {
     /// trusted entries so that a pending record cannot be edited on disk into
     /// a rewrite payload, then promoted.
     pending: HashMap<String, BaselineEntry>,
+    /// Tools an operator explicitly revoked. A revoked tool is never
+    /// re-registered as trusted and is withheld from the agent until the
+    /// operator approves it again.
+    revoked: HashSet<String>,
     /// True when in-memory entries or pending records were modified since the
     /// last load or save.
     dirty: bool,
@@ -141,6 +145,11 @@ pub struct BaselineStore {
     last_modified: Option<SystemTime>,
     /// SHA-256 digest of the last loaded/saved file contents on disk.
     disk_digest: Option<[u8; 32]>,
+    /// The most recent reload failure, kept so a broken trust store is
+    /// reported once per distinct cause rather than on every tools/list.
+    reload_failure: Option<String>,
+    /// Whether the current `reload_failure` has already been reported.
+    reload_failure_reported: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -148,6 +157,10 @@ struct BaselineFile {
     tools: HashMap<String, BaselineEntry>,
     #[serde(default)]
     pending: HashMap<String, BaselineEntry>,
+    /// Operator revocations. Absent from files written before revocations
+    /// existed, so the field defaults to empty rather than failing to load.
+    #[serde(default)]
+    revoked: HashSet<String>,
 }
 
 impl BaselineStore {
@@ -203,8 +216,11 @@ impl BaselineStore {
                     hmac_key: hmac_key.to_vec(),
                     tools: HashMap::new(),
                     pending: HashMap::new(),
+                    revoked: HashSet::new(),
                     dirty: false,
                     last_modified: None,
+                    reload_failure: None,
+                    reload_failure_reported: false,
                     disk_digest: None,
                 });
             }
@@ -228,6 +244,13 @@ impl BaselineStore {
             bail!(
                 "baseline store contains {} pending tools; maximum is {}",
                 file.pending.len(),
+                MAX_BASELINE_TOOLS
+            );
+        }
+        if file.revoked.len() > MAX_BASELINE_TOOLS {
+            bail!(
+                "baseline store contains {} revoked tools; maximum is {}",
+                file.revoked.len(),
                 MAX_BASELINE_TOOLS
             );
         }
@@ -275,8 +298,11 @@ impl BaselineStore {
             hmac_key: hmac_key.to_vec(),
             tools: file.tools,
             pending: file.pending,
+            revoked: file.revoked,
             dirty: false,
             last_modified,
+            reload_failure: None,
+            reload_failure_reported: false,
             disk_digest: Some(disk_digest),
         })
     }
@@ -295,6 +321,7 @@ impl BaselineStore {
                 if self.disk_digest.is_some() {
                     self.tools.clear();
                     self.pending.clear();
+                    self.revoked.clear();
                     self.last_modified = None;
                     self.disk_digest = None;
                     self.dirty = false;
@@ -319,10 +346,32 @@ impl BaselineStore {
             return Ok(false);
         }
 
-        let reloaded = Self::load(&self.path, &self.hmac_key)?;
+        let reloaded = match Self::load(&self.path, &self.hmac_key) {
+            Ok(reloaded) => reloaded,
+            Err(error) => {
+                // A trust store that fails authentication is not a detector
+                // bug: it is a tampered or corrupt baseline. The in-memory
+                // baseline was authenticated when it was loaded and keeps
+                // being enforced; the failure is reported once per distinct
+                // cause so a persistent problem cannot flood the ledger.
+                let message = error.to_string();
+                if self.reload_failure.as_deref() != Some(message.as_str()) {
+                    self.reload_failure = Some(message);
+                    self.reload_failure_reported = false;
+                }
+                return Err(error);
+            }
+        };
+        self.reload_failure = None;
+        self.reload_failure_reported = false;
         if self.dirty {
             let mut merged_tools = reloaded.tools;
             let mut merged_pending = reloaded.pending;
+            // A revocation is sticky: it survives a merge with an in-memory
+            // state that has not seen it yet. Losing a revocation would
+            // re-bless a schema the operator deliberately removed.
+            let mut merged_revoked = reloaded.revoked;
+            merged_revoked.extend(self.revoked.drain());
             for (name, entry) in self.tools.drain() {
                 merged_tools.entry(name).or_insert(entry);
             }
@@ -333,9 +382,11 @@ impl BaselineStore {
             }
             self.tools = merged_tools;
             self.pending = merged_pending;
+            self.revoked = merged_revoked;
         } else {
             self.tools = reloaded.tools;
             self.pending = reloaded.pending;
+            self.revoked = reloaded.revoked;
         }
         self.last_modified = reloaded.last_modified;
         self.disk_digest = reloaded.disk_digest;
@@ -390,23 +441,59 @@ impl BaselineStore {
             None => false,
             Some(entry) => {
                 self.tools.insert(tool_name.to_string(), entry);
+                // Approving is the operator lifting a revocation.
+                self.revoked.remove(tool_name);
                 self.dirty = true;
                 true
             }
         }
     }
 
-    /// Remove a tool from both trusted `entries` (`tools`) and `pending` so it
-    /// can be re-baselined or re-approved. Returns true if an entry was removed.
-    pub fn revoke(&mut self, name: &str) -> bool {
-        let removed_tool = self.tools.remove(name).is_some();
-        let removed_pending = self.pending.remove(name).is_some();
-        if removed_tool || removed_pending {
-            self.dirty = true;
-            true
-        } else {
-            false
+    /// Take the last reload failure, but only the first time it is seen.
+    ///
+    /// A broken trust store persists until an operator fixes it, and
+    /// `tools/list` can be called repeatedly. Reporting the failure once per
+    /// distinct cause keeps it visible without letting a server flood the
+    /// ledger with the same critical event.
+    pub fn take_reload_failure(&mut self) -> Option<String> {
+        if self.reload_failure_reported {
+            return None;
         }
+        let message = self.reload_failure.clone()?;
+        self.reload_failure_reported = true;
+        Some(message)
+    }
+
+    /// Whether an operator explicitly revoked this tool.    ///
+    /// A revoked tool is never re-registered as trusted and is withheld from
+    /// the agent until it is approved again.
+    pub fn is_revoked(&self, tool_name: &str) -> bool {
+        self.revoked.contains(tool_name)
+    }
+
+    /// Revoke a tool's trusted baseline.
+    ///
+    /// The previously trusted schema is moved to `pending` rather than
+    /// deleted, so `--approve` restores exactly what the operator had
+    /// approved. The name is also recorded as revoked: without that record the
+    /// next `tools/list` would treat the tool as never seen and re-bless
+    /// whatever the server serves under that name, silently undoing the
+    /// revocation.
+    ///
+    /// Returns true only when a trusted entry was actually revoked, so
+    /// revoking twice reports that there is nothing to revoke.
+    pub fn revoke(&mut self, name: &str) -> bool {
+        let Some(entry) = self.tools.remove(name) else {
+            // Nothing trusted under that name: either it was never approved
+            // or it was already revoked.
+            return false;
+        };
+        // Keep the approved schema as the pending candidate so that approving
+        // it restores the schema the operator already trusted.
+        self.pending.entry(name.to_string()).or_insert(entry);
+        self.revoked.insert(name.to_string());
+        self.dirty = true;
+        true
     }
 
     /// Compare a freshly computed hash against the baseline, registering it
@@ -457,6 +544,7 @@ impl BaselineStore {
         let file = BaselineFile {
             tools: self.tools.clone(),
             pending: self.pending.clone(),
+            revoked: self.revoked.clone(),
         };
         let json =
             serde_json::to_string_pretty(&file).context("failed to serialize baseline store")?;
@@ -673,7 +761,10 @@ mod tests {
 
         assert!(proxy_store.reload_if_changed().unwrap());
         assert!(!proxy_store.contains("deploy_tool"));
-        assert!(!proxy_store.is_pending("deploy_tool"));
+        // The revocation is recorded, and the trusted schema waits in
+        // `pending` so that approving it restores what was already trusted.
+        assert!(proxy_store.is_revoked("deploy_tool"));
+        assert!(proxy_store.is_pending("deploy_tool"));
 
         let _ = std::fs::remove_file(path);
     }

@@ -329,13 +329,50 @@ def test_variable_length_split_token_sk_key_flushed_at_eof():
     assert "tailsecret999" not in text
 
 
-def test_variable_length_split_token_redacts_when_window_tokens_reached():
+def test_variable_length_split_token_hold_is_bounded_by_characters_not_fragments():
+    """The hold back is bounded by characters, not by fragment count.
+
+    A credential that arrives in many fragments must stay redactable as a
+    whole. Releasing it once the fragment count passed a threshold would
+    redact the matched prefix and then release the remainder in plaintext,
+    because the continuation no longer carries the pattern's prefix.
+    """
     buf = PiiStreamBuffer(window_tokens=3)
     assert buf.push("sk-1234567890123456789012", None).outputs == []
     assert buf.push("abcdef", None).outputs == []
-    # 3rd token reaches window_tokens=3 -> redacts immediately
-    d3 = buf.push("ghijkl", None)
-    assert "".join(t.token for t in d3.outputs) == "[REDACTED:openai_style_api_key]"
+    # Past window_tokens the candidate is still held: the match reaches the
+    # end of the buffer and may continue.
+    assert buf.push("ghijkl", None).outputs == []
+
+    # The candidate completes when a non-alphanumeric boundary arrives, and
+    # the whole credential is redacted at once.
+    d4 = buf.push(" done", None)
+    flushed = buf.flush()
+    text = "".join(t.token for t in (d4.outputs + flushed.outputs))
+    assert text == "[REDACTED:openai_style_api_key] done"
+    assert "1234567890123456789012" not in text
+    assert "abcdefghijkl" not in text
+
+
+def test_split_credential_across_many_fragments_leaks_no_plaintext():
+    """Regression: a credential split across many fragments is redacted whole.
+
+    The buffer used to release the candidate once the fragment count passed
+    `window_tokens`, which redacted the matched prefix and then released the
+    tail of the same credential in plaintext.
+    """
+    secret = "sk-" + "A" * 20 + "D" * 59
+    for fragment_size in (2, 3, 4, 5, 8, 11):
+        buf = PiiStreamBuffer()
+        outputs = []
+        for index in range(0, len(secret), fragment_size):
+            outputs.extend(t.token for t in buf.push(secret[index : index + fragment_size], None).outputs)
+        outputs.extend(t.token for t in buf.finish().outputs)
+        text = "".join(outputs)
+        assert secret not in text, f"fragment size {fragment_size} leaked the credential"
+        assert "A" * 5 not in text, f"fragment size {fragment_size} leaked the credential head"
+        assert "D" * 5 not in text, f"fragment size {fragment_size} leaked the credential tail"
+        assert "[REDACTED:openai_style_api_key]" in text
 
 
 def test_upstream_stream_errors_yield_structured_error_frame(tmp_path, monkeypatch):
