@@ -52,6 +52,7 @@ export class IncidentInputError extends Error {}
 const memoryIncidentRef = globalThis as unknown as {
   __monolithRevokedSessions?: Map<string, SessionRevocation>;
   __monolithSessionModules?: Map<string, Set<string>>;
+  __monolithSessionRestoredAt?: Map<string, number>;
   __monolithMemoryTriage?: Map<string, Triage>;
   __monolithMemoryAudit?: Map<string, AuditEntry[]>;
   __monolithNextAuditId?: number;
@@ -69,6 +70,13 @@ function sessionModulesMap(): Map<string, Set<string>> {
     memoryIncidentRef.__monolithSessionModules = new Map<string, Set<string>>();
   }
   return memoryIncidentRef.__monolithSessionModules;
+}
+
+function sessionRestoredAtMap(): Map<string, number> {
+  if (!memoryIncidentRef.__monolithSessionRestoredAt) {
+    memoryIncidentRef.__monolithSessionRestoredAt = new Map<string, number>();
+  }
+  return memoryIncidentRef.__monolithSessionRestoredAt;
 }
 
 function memoryTriageMap(): Map<string, Triage> {
@@ -92,6 +100,7 @@ function sessionKey(tenantId: string, agentId: string, sessionId: string): strin
 export function clearMemoryRevocations(): void {
   revokedSessionMap().clear();
   sessionModulesMap().clear();
+  sessionRestoredAtMap().clear();
   memoryTriageMap().clear();
   memoryAuditMap().clear();
 }
@@ -426,7 +435,7 @@ export async function listRevokedSessions(tenantId: string): Promise<SessionRevo
     const result = await db.query<RevokedSessionRow>(
       `select tenant_id, agent_id, session_id, revoked_at, reason, triggered_by, layers
          from monolith.revoked_sessions
-        where tenant_id = $1
+        where tenant_id = $1 and restored_at is null
         order by revoked_at desc`,
       [tenantId],
     );
@@ -467,6 +476,9 @@ export async function revokeSession(
     layers: mergedLayers,
   };
   revokedSessionMap().set(key, entry);
+  // A revocation supersedes any earlier restore: the session is live again and
+  // any new detection, including this one, counts from here on.
+  sessionRestoredAtMap().delete(key);
 
   if (!process.env.DATABASE_URL) {
     return entry;
@@ -484,7 +496,10 @@ export async function revokeSession(
            when coalesce(array_length(excluded.layers, 1), 0) > 0 then excluded.layers
            else monolith.revoked_sessions.layers
          end,
-         revoked_at = now()
+         revoked_at = now(),
+         -- Re-revoking a previously restored session re-arms the breaker; its
+         -- earlier history is judged afresh only by what lands from now on.
+         restored_at = null
        returning tenant_id, agent_id, session_id, revoked_at, reason, triggered_by, layers`,
       [cleanTenant, cleanAgent, cleanSession, cleanReason, cleanTrigger, mergedLayers],
     );
@@ -508,6 +523,9 @@ export async function restoreSession(
   const key = sessionKey(cleanTenant, cleanAgent, cleanSession);
   const hadMemory = revokedSessionMap().delete(key);
   sessionModulesMap().delete(key);
+  // The restore is a watermark, not a deletion: the ledger keeps the evidence
+  // that tripped the breaker, so only events after this instant may re-trip it.
+  sessionRestoredAtMap().set(key, Date.now());
 
   if (!process.env.DATABASE_URL) {
     return hadMemory;
@@ -515,8 +533,10 @@ export async function restoreSession(
 
   return withTenantDb(cleanTenant, async (db) => {
     const result = await db.query(
-      `delete from monolith.revoked_sessions
-        where tenant_id = $1 and agent_id = $2 and session_id = $3`,
+      `update monolith.revoked_sessions
+          set restored_at = now()
+        where tenant_id = $1 and agent_id = $2 and session_id = $3
+          and restored_at is null`,
       [cleanTenant, cleanAgent, cleanSession],
     );
     return (result.rowCount ?? 0) > 0 || hadMemory;
@@ -537,7 +557,11 @@ export async function evaluateSessionCircuitBreaker(
     if (!event.agent_id || !event.session_id) continue;
     const key = sessionKey(tenantId, event.agent_id, event.session_id);
     candidates.set(key, { agentId: event.agent_id, sessionId: event.session_id });
-    if (severities.has(String(event.severity) as Severity) && KNOWN_MODULES.has(event.module)) {
+    if (
+      severities.has(String(event.severity) as Severity)
+      && KNOWN_MODULES.has(event.module)
+      && event.event_type !== "session_quarantined"
+    ) {
       const set = sessionModulesMap().get(key) ?? new Set<string>();
       set.add(event.module);
       sessionModulesMap().set(key, set);
@@ -547,12 +571,20 @@ export async function evaluateSessionCircuitBreaker(
   if (!process.env.DATABASE_URL) {
     for (const [key, { agentId, sessionId }] of candidates) {
       const modules = new Set<string>(sessionModulesMap().get(key) ?? []);
+      // An analyst restore settles everything received before it. Without the
+      // watermark, the next event for the session re-reads the old evidence
+      // and re-revokes immediately, making restore unusable.
+      const restoredAt = sessionRestoredAtMap().get(key) ?? 0;
       for (const e of getMemoryEventsForTenant(tenantId)) {
         if (
           e.agent_id === agentId
           && e.session_id === sessionId
           && severities.has(String(e.severity) as Severity)
           && KNOWN_MODULES.has(e.module)
+          // Refusals are consequences of a revocation, not fresh evidence:
+          // counting them would let one revocation keep re-tripping itself.
+          && e.event_type !== "session_quarantined"
+          && (e.received_ms ?? e.timestamp_ms) > restoredAt
         ) {
           modules.add(e.module);
         }
@@ -582,7 +614,14 @@ export async function evaluateSessionCircuitBreaker(
           where tenant_id = $1
             and agent_id = $2
             and session_id = $3
-            and severity = any($4::text[])`,
+            and severity = any($4::text[])
+            -- A refusal caused by the revocation is not new evidence for it.
+            and event_type <> 'session_quarantined'
+            and received_at > coalesce(
+              (select restored_at from monolith.revoked_sessions
+                where tenant_id = $1 and agent_id = $2 and session_id = $3),
+              '-infinity'::timestamptz
+            )`,
         [tenantId, agentId, sessionId, severityList],
       );
       return res.rows.map((r) => r.module).sort();
@@ -696,6 +735,7 @@ export async function sessionForEvent(eventId: string, tenantId: string): Promis
       `select tenant_id, agent_id, session_id, revoked_at, reason, triggered_by, layers
          from monolith.revoked_sessions
         where tenant_id = $1 and agent_id = $2 and session_id = $3
+          and restored_at is null
         limit 1`,
       [tenantId, agent, session],
     );
