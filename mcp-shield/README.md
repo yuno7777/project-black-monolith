@@ -61,6 +61,15 @@ repeat warnings are never suppressed. The trusted baseline is never
 overwritten by a mismatch; to re-trust a legitimately updated tool, delete
 its entry (or the whole `baseline_hashes.json`).
 
+**A baseline that cannot be written does not weaken the defence.** The
+rewrite is built *before* the baseline is persisted, so a full disk, a
+read-only mount or a lost directory cannot change what the agent receives:
+the poisoned schema is still swapped out for the trusted one. The failed
+write is reported as `baseline_persist_failed` (critical) instead, and every
+registration made in that cycle stops counting as a trust decision until a
+write succeeds — trust on first use is a guess, and a guess that could not be
+recorded is not an approval.
+
 ## Structured events
 
 Detections are also emitted as single-line JSON events in the shared Project
@@ -83,8 +92,14 @@ path:
 
 Event types: `baseline_registered` (info), `schema_mismatch` (critical, with
 `mode` and `action: rewritten|forwarded`), `suspicious_description`
-(warning), `analysis_error` (warning), `tools_list_changed` (info, see
+(warning), `analysis_error` (warning), `baseline_persist_failed` (critical,
+when the trust store cannot be written), `tools_list_changed` (info, see
 limitations).
+
+An event's `action` says what the agent was actually sent. A detection whose
+enforcement did not reach the agent — because the response could not be
+rebuilt — is reported with `action: not_enforced` rather than claiming a
+rewrite that never happened.
 
 ## Architecture
 
