@@ -213,7 +213,7 @@ class AnthropicRelay:
         self._queue: list[_QueuedEvent] = []
         # how many text fragments have been pushed so far
         self._pushes = 0
-        # how many of them have been fully released
+        # how many of them the auditor says have been fully released
         self._released_pushes = 0
         self._open_blocks: list[int] = []
         self._block_kind: dict[int, str] = {}
@@ -242,9 +242,23 @@ class AnthropicRelay:
         """Turn the upstream SSE stream into auditable text fragments.
 
         Every upstream event is queued in order. Text fragments are pushed
-        into the auditor, and a block boundary asks the auditor to release
-        its look-behind so the block's text can be delivered before the
-        block is closed.
+        into the auditor, and the auditor holds a bounded look-behind so a
+        credential split across two fragments is still recognized as one.
+
+        The look-behind is deliberately **not** released at a block
+        boundary. Releasing it there wiped the window, so a credential
+        split across the boundary was let out in two halves and neither
+        half matched any pattern: the same key in one block was redacted
+        and the same key split across two blocks reached the client whole.
+        The window now carries across the boundary, and a credential that
+        straddles it is scanned as the single string it is.
+
+        The ordering the client needs does not depend on that release. A
+        block's stop event is queued with the number of fragments that
+        preceded it, and it is released only once those fragments have
+        been delivered — so a block's text still arrives before the block
+        is closed, and the next block's text still arrives after it was
+        opened.
         """
         async for name, data in upstream:
             kind = data.get("type") or name
@@ -276,9 +290,6 @@ class AnthropicRelay:
                 if isinstance(index, int) and index in self._open_blocks:
                     self._open_blocks.remove(index)
                 self._queue.append(_QueuedEvent(name, data, self._pushes))
-                # The block is closed: release the held-back text now, so the
-                # client sees the block's content before its stop event.
-                yield FLUSH
                 continue
             self._queue.append(_QueuedEvent(name, data, self._pushes))
         # A final flush so the tail of the answer is delivered before the
@@ -392,12 +403,19 @@ class AnthropicRelay:
             elif kind == "pii":
                 self._redactions.append(evt["label"])
             elif kind == "sync":
-                for queued in self._release_ready(self._released_pushes):
-                    self._note_client_block(queued.data)
-                    yield {"kind": "passthrough", "event": queued.name, "data": queued.data}
-            elif kind == "flush":
-                # Everything pushed so far is out of the buffer.
-                self._released_pushes = self._pushes
+                # The auditor says how far its look-behind has drained.
+                # Every fragment up to that index has been delivered, so
+                # the events queued behind them can go out now.
+                #
+                # An event queued with `pushes_before = P` may be released
+                # once fragment `P-1` has left the buffer, which is
+                # exactly `released_through >= P-1`. Before, this branch
+                # released only the events that were queued before the
+                # first fragment, and the count of released fragments was
+                # only ever advanced in a branch the auditor never took —
+                # so the queued events lagged behind the text they
+                # follow until the end of the answer.
+                self._released_pushes = evt["released_through"] + 1
                 for queued in self._release_ready(self._released_pushes):
                     self._note_client_block(queued.data)
                     yield {"kind": "passthrough", "event": queued.name, "data": queued.data}

@@ -1731,6 +1731,101 @@ def test_a_credential_split_across_fragments_is_still_caught():
     assert "ok" in text
 
 
+def test_a_credential_split_across_a_block_boundary_is_still_caught():
+    """The look-behind has to survive a content block boundary.
+
+    The buffer was released at every block boundary, which let the
+    retained look-behind out verbatim and wiped the window. A credential
+    split across the boundary was therefore released in two halves, and
+    neither half matched any pattern: the same key in one block was
+    redacted, and the same key split across two blocks reached the client
+    whole. The window now carries across the boundary, so the key is
+    scanned as the single string it is.
+    """
+    client_key = "sk-ant-api03-client-supplied-key-9876543210"
+    head, tail = client_key[:20], client_key[20:]
+
+    one_block = _frames(
+        _block_start(0),
+        _block_delta(0, f"the key is {client_key} ok"),
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        ("message_stop", {"type": "message_stop"}),
+    )
+    two_blocks = _frames(
+        _block_start(0),
+        _block_delta(0, f"the key is {head}"),
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        _block_start(1),
+        _block_delta(1, f"{tail} ok"),
+        ("content_block_stop", {"type": "content_block_stop", "index": 1}),
+        ("message_stop", {"type": "message_stop"}),
+    )
+
+    for frames in (one_block, two_blocks):
+        cfg = _cfg(_tmp_path())
+        counts = build_distribution(NORMAL_TOKENS * 5)
+        auditor = StreamAuditor(cfg, counts, lambda *_a, **_k: None)
+        relay = AnthropicRelay(
+            auditor, None, divergence_enabled=False, literals=(client_key,)
+        )
+        events = asyncio.run(_run_relay_with_auditor(frames, relay))
+
+        text = "".join(event["text"] for event in events if event["kind"] == "text")
+        assert client_key not in text, "the credential reached the client"
+        assert "[REDACTED:anthropic_api_key]" in text
+        # Exactly one redaction: the key was caught whole, not twice.
+        assert relay.summary()["redaction_count"] == 1
+        # And the text around it survived.
+        assert text.startswith("the key is ")
+        assert text.endswith(" ok")
+
+
+def test_every_block_is_closed_after_its_own_text():
+    """A client that assembles an answer from the events cannot lose the
+    text of a block it was told was closed.
+
+    The look-behind now carries across a block boundary, so the ordering
+    cannot rest on the boundary releasing it. It rests on the queue
+    instead: a block's stop event goes out only once the fragments that
+    preceded it have been delivered, and the next block's text goes out
+    only after that block was opened.
+    """
+    frames = _frames(
+        ("message_start", {"type": "message_start", "message": {"id": "msg_1"}}),
+        _block_start(0),
+        _block_delta(0, "first"),
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        _block_start(1),
+        _block_delta(1, "second"),
+        ("content_block_stop", {"type": "content_block_stop", "index": 1}),
+        ("message_stop", {"type": "message_stop"}),
+    )
+
+    events = asyncio.run(_run_relay(frames))
+    stream = [event for event in events if event["kind"] != "terminated"]
+
+    open_block = None
+    text_per_block: dict[int, int] = {}
+    for event in stream:
+        if event["kind"] == "passthrough":
+            etype = event["data"].get("type")
+            if etype == "content_block_start":
+                assert open_block is None, "a block started before the last one closed"
+                open_block = event["data"]["index"]
+            elif etype == "content_block_stop":
+                assert event["data"]["index"] == open_block, "a block was closed out of order"
+                open_block = None
+        else:
+            assert event["index"] == open_block, (
+                f"the text of block {event['index']} arrived while block "
+                f"{open_block} was open"
+            )
+            text_per_block[event["index"]] = text_per_block.get(event["index"], 0) + 1
+
+    assert open_block is None, "a block was left open"
+    assert text_per_block == {0: 1, 1: 1}
+
+
 def test_the_gateway_redacts_the_operator_key_echoed_in_a_200_answer(tmp_path):
     """End to end: the operator's key never reaches the client.
 
