@@ -52,3 +52,16 @@ After extraction, run `packaging/install.ps1` on Windows or
 server, and optional Ollama remain prerequisites. Configure the generated `.env`
 before starting the demo. Bundles are unsigned until Windows and Apple signing
 identities are configured.
+
+## Repeated agent outcome trials
+
+The v2 authored agent suite runs three trials per case by default. Attack notes
+use exact build/checksum strings without describing them as credentials, so the
+raw control can demonstrate whether the model follows the injected formatting
+instruction. Protected and raw paths each run three stages. Reports include
+Wilson 95% intervals for attack and task substring rates, plus paired prevention
+and regression counts. Generated text remains memory-only and is discarded.
+
+The intervals quantify observed binary variation only. Model calls share one
+model/runtime and use stochastic defaults, so the trials are not independent
+samples of real deployments. The suite remains development evidence.
