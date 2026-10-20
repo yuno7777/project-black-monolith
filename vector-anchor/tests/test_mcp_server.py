@@ -305,6 +305,32 @@ def test_a_response_that_stops_mid_stream_is_an_error_result_not_a_crash(
         _FakeVectorAnchor.truncate_by = 0
 
 
+def test_a_truncated_error_body_is_an_error_result_not_a_crash(client, fake_service):
+    # The service answers 500 and then stops mid-body. urllib raises
+    # HTTPError for the status, and reading the error body raises
+    # http.client.IncompleteRead — inside the handler that is supposed to
+    # catch it. An exception raised inside an `except` block is not caught
+    # by the sibling clause, so it escapes the call and kills the server
+    # mid-session, taking the agent's retrieve tool with it.
+    _FakeVectorAnchor.raw = b'{"error": "the service is unwell"'
+    _FakeVectorAnchor.truncate_by = 40
+    _FakeVectorAnchor.status = 500
+    try:
+        response = client.call(
+            "tools/call",
+            {"name": "retrieve", "arguments": {"query": "anything"}},
+            request_id=1,
+        )
+        assert response["result"]["isError"] is True
+        assert "HTTP 500" in response["result"]["content"][0]["text"]
+        # The server is still alive and still serving the protocol.
+        assert client.call("ping", {}, request_id=2)["result"] == {}
+    finally:
+        _FakeVectorAnchor.raw = None
+        _FakeVectorAnchor.truncate_by = 0
+        _FakeVectorAnchor.status = 200
+
+
 def test_a_response_that_is_not_utf8_is_an_error_result_not_a_crash(
     client, fake_service
 ):

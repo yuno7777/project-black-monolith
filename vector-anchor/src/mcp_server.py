@@ -143,6 +143,25 @@ def _correlation_headers() -> dict[str, str]:
     return headers
 
 
+def _read_error_detail(error: urllib.error.HTTPError) -> str:
+    """Read the body of an error response without letting the read raise.
+
+    The body of a failing response is the least reliable thing on the wire.
+    A service that dies mid-answer sends a body that stops short of its
+    declared length, and reading it raises ``http.client.IncompleteRead``.
+    An exception raised inside an ``except`` block is not caught by the
+    sibling clause, so that read would escape ``_call_service`` and take the
+    whole MCP server down mid-session — taking the agent's retrieve tool
+    with it. The status code is the part worth reporting; the body is a
+    courtesy.
+    """
+    try:
+        body = error.read()
+    except (http.client.HTTPException, OSError, ValueError):
+        return "(the error body could not be read)"
+    return body.decode("utf-8", errors="replace")[:400]
+
+
 def _call_service(payload: dict) -> dict:
     url = _service_url() + "/retrieve"
     try:
@@ -164,7 +183,7 @@ def _call_service(payload: dict) -> dict:
         with urllib.request.urlopen(request, timeout=_timeout_seconds()) as response:
             body = response.read()
     except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", errors="replace")[:400]
+        detail = _read_error_detail(error)
         raise RuntimeError(f"VectorAnchor returned HTTP {error.code}: {detail}") from error
     except urllib.error.URLError as error:
         raise RuntimeError(
@@ -261,6 +280,17 @@ def _handle_call(request_id, params: dict) -> None:
         response = _call_service(payload)
     except RuntimeError as error:
         _result_text(request_id, str(error), is_error=True)
+        return
+    except Exception as error:
+        # This server is a long-lived child of the agent's host. Anything
+        # that escapes here kills the process and takes the agent's retrieve
+        # tool with it, so an unforeseen failure becomes an error result on
+        # the wire and the session carries on.
+        _result_text(
+            request_id,
+            f"the retrieval failed unexpectedly: {type(error).__name__}: {error}",
+            is_error=True,
+        )
         return
     # A revoked session is a refusal, not an answer. It has to say so on the
     # wire: an agent that reads a refusal as a successful retrieval of zero
