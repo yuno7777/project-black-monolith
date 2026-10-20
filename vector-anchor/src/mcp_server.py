@@ -35,6 +35,7 @@ Environment:
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import sys
@@ -143,12 +144,22 @@ def _correlation_headers() -> dict[str, str]:
 
 
 def _call_service(payload: dict) -> dict:
-    request = urllib.request.Request(
-        _service_url() + "/retrieve",
-        data=json.dumps(payload).encode("utf-8"),
-        headers=_correlation_headers(),
-        method="POST",
-    )
+    url = _service_url() + "/retrieve"
+    try:
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=_correlation_headers(),
+            method="POST",
+        )
+    except ValueError as error:
+        # A malformed URL is an operator error, not a network error, and it
+        # is raised before the request is ever sent. Left unhandled it takes
+        # the whole server down for a typo in an environment variable.
+        raise RuntimeError(
+            f"VectorAnchor URL is not usable: {url!r}. Set "
+            "MONOLITH_VECTOR_ANCHOR_URL to an absolute http(s) URL."
+        ) from error
     try:
         with urllib.request.urlopen(request, timeout=_timeout_seconds()) as response:
             body = response.read()
@@ -160,18 +171,24 @@ def _call_service(payload: dict) -> dict:
             f"VectorAnchor is unreachable at {_service_url()}: {error.reason}. "
             "Is the service running?"
         ) from error
-    except OSError as error:
+    except (OSError, http.client.HTTPException) as error:
         # A read timeout or a connection reset is not a URLError: urllib
         # raises the builtin OSError, and an exception the caller does not
         # catch would take the whole server down mid-session, taking the
         # agent's retrieve tool with it.
+        #
+        # A truncated response is neither: http.client raises IncompleteRead
+        # or BadStatusLine, and HTTPException is *not* an OSError, so it has
+        # to be named explicitly or it escapes the same way.
         raise RuntimeError(
             f"VectorAnchor did not answer at {_service_url()}: {error}. "
             "Is the service running?"
         ) from error
     try:
         decoded = json.loads(body)
-    except json.JSONDecodeError as error:
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        # A body that is not valid UTF-8 is not valid JSON either, but it
+        # raises UnicodeDecodeError, and JSONDecodeError does not catch it.
         raise RuntimeError("VectorAnchor returned a response that is not JSON") from error
     if not isinstance(decoded, dict):
         raise RuntimeError("VectorAnchor returned a response that is not an object")
@@ -245,7 +262,15 @@ def _handle_call(request_id, params: dict) -> None:
     except RuntimeError as error:
         _result_text(request_id, str(error), is_error=True)
         return
-    _result_text(request_id, _render(response))
+    # A revoked session is a refusal, not an answer. It has to say so on the
+    # wire: an agent that reads a refusal as a successful retrieval of zero
+    # documents has no reason to stop, and the next tool call it makes lands
+    # in the same revoked session.
+    _result_text(
+        request_id,
+        _render(response),
+        is_error=bool(response.get("session_quarantined")),
+    )
 
 
 def main() -> int:

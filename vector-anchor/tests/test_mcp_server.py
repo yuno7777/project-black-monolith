@@ -29,6 +29,12 @@ class _FakeVectorAnchor(BaseHTTPRequestHandler):
     payload = {"results": [], "withheld": []}
     status = 200
     received = []
+    # When set, these exact bytes are sent instead of the JSON payload.
+    raw = None
+    # When set, the declared content-length is this much larger than the
+    # body actually written, so the client reads a response that stops
+    # mid-stream.
+    truncate_by = 0
 
     def do_POST(self):  # noqa: N802 - stdlib signature
         length = int(self.headers.get("content-length") or 0)
@@ -40,10 +46,13 @@ class _FakeVectorAnchor(BaseHTTPRequestHandler):
                 "headers": {key.lower(): value for key, value in self.headers.items()},
             }
         )
-        payload = json.dumps(type(self).payload).encode("utf-8")
+        if type(self).raw is not None:
+            payload = type(self).raw
+        else:
+            payload = json.dumps(type(self).payload).encode("utf-8")
         self.send_response(type(self).status)
         self.send_header("content-type", "application/json")
-        self.send_header("content-length", str(len(payload)))
+        self.send_header("content-length", str(len(payload) + type(self).truncate_by))
         self.end_headers()
         self.wfile.write(payload)
 
@@ -59,6 +68,8 @@ def fake_service():
     _FakeVectorAnchor.payload = {"results": [], "withheld": []}
     _FakeVectorAnchor.status = 200
     _FakeVectorAnchor.received = []
+    _FakeVectorAnchor.raw = None
+    _FakeVectorAnchor.truncate_by = 0
     try:
         yield server
     finally:
@@ -265,6 +276,72 @@ def test_a_revoked_session_is_refused_without_retrieving(client, fake_service):
     assert "revoked" in text
     assert "No passages matched" not in text
     assert len(_FakeVectorAnchor.received) == 1
+    # A refusal has to be an error on the wire. An agent that reads it as a
+    # successful retrieval of zero documents has no reason to stop, and its
+    # next tool call lands in the same revoked session.
+    assert response["result"]["isError"] is True
+
+
+def test_a_response_that_stops_mid_stream_is_an_error_result_not_a_crash(
+    client, fake_service
+):
+    # The service declares a body it never finishes sending. The client
+    # sees http.client.IncompleteRead, which is an HTTPException and *not*
+    # an OSError, so a server that only catches OSError lets it escape and
+    # dies mid-session, taking the agent's retrieve tool with it.
+    _FakeVectorAnchor.raw = b'{"results": [{"text": "half an answer'
+    _FakeVectorAnchor.truncate_by = 40
+    try:
+        response = client.call(
+            "tools/call",
+            {"name": "retrieve", "arguments": {"query": "anything"}},
+            request_id=1,
+        )
+        assert response["result"]["isError"] is True
+        # The server is still alive and still serving the protocol.
+        assert client.call("ping", {}, request_id=2)["result"] == {}
+    finally:
+        _FakeVectorAnchor.raw = None
+        _FakeVectorAnchor.truncate_by = 0
+
+
+def test_a_response_that_is_not_utf8_is_an_error_result_not_a_crash(
+    client, fake_service
+):
+    # Bytes that are not valid UTF-8 are not valid JSON either, but
+    # json.loads raises UnicodeDecodeError for them, and json.JSONDecodeError
+    # does not catch it.
+    _FakeVectorAnchor.raw = b"\x80\x81\x82"
+    try:
+        response = client.call(
+            "tools/call",
+            {"name": "retrieve", "arguments": {"query": "anything"}},
+            request_id=1,
+        )
+        assert response["result"]["isError"] is True
+        assert "not JSON" in response["result"]["content"][0]["text"]
+        assert client.call("ping", {}, request_id=2)["result"] == {}
+    finally:
+        _FakeVectorAnchor.raw = None
+
+
+def test_a_malformed_service_url_is_an_error_result_not_a_crash():
+    # A typo in MONOLITH_VECTOR_ANCHOR_URL is an operator error, and it is
+    # raised while the request is being built — before anything is sent.
+    # Unhandled it takes the whole server down for a configuration mistake.
+    handle = _Client("not-a-url")
+    try:
+        response = handle.call(
+            "tools/call",
+            {"name": "retrieve", "arguments": {"query": "anything"}},
+            request_id=1,
+        )
+        assert response["result"]["isError"] is True
+        assert "not usable" in response["result"]["content"][0]["text"]
+        # The server is still alive and still serving the protocol.
+        assert handle.call("ping", {}, request_id=2)["result"] == {}
+    finally:
+        handle.close()
 
 
 def test_a_bad_call_is_reported_to_the_agent_rather_than_crashing(client):
