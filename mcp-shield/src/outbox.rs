@@ -336,6 +336,28 @@ impl Outbox {
         }
         let replayed = dead_records.len();
         let mut pending = read_records(&self.path)?;
+        // Refuse rather than silently discard. The spool bound drops the
+        // oldest records from the front and the replayed dead letters are
+        // appended at the end, so replaying into a full spool destroys
+        // undelivered evidence — and the operator is told only that N
+        // records were replayed.
+        let projected_records = pending.len() + dead_records.len();
+        let projected_bytes: usize = pending
+            .iter()
+            .chain(dead_records.iter())
+            .map(|record| {
+                serde_json::to_string(record)
+                    .map(|s| s.len() + 1)
+                    .unwrap_or(0)
+            })
+            .sum();
+        if projected_records > MAX_SPOOL_RECORDS || projected_bytes > MAX_SPOOL_BYTES {
+            return Err(io::Error::other(format!(
+                "the outbox spool is at its bound ({projected_records} records, \
+                 {projected_bytes} bytes); the dead letters were not replayed and \
+                 no pending event was discarded"
+            )));
+        }
         let now = now_ms();
         for mut record in dead_records {
             record.attempts = 0;
@@ -346,7 +368,13 @@ impl Outbox {
             }
             pending.push(record);
         }
-        enforce_spool_bounds(&mut pending, MAX_SPOOL_RECORDS, MAX_SPOOL_BYTES);
+        let dropped = enforce_spool_bounds(&mut pending, MAX_SPOOL_RECORDS, MAX_SPOOL_BYTES);
+        if dropped > 0 {
+            tracing::error!(
+                dropped,
+                "the outbox spool dropped records while replaying dead letters"
+            );
+        }
         write_records_atomically(&self.path, &pending)?;
         write_records_atomically(&self.dead_path, &[])?;
         Ok(replayed)
@@ -809,17 +837,66 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-fn admin_authorized(expected_token: Option<&str>, auth_header: Option<&str>) -> bool {
+/// The outcome of checking an administrative credential.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdminAuth {
+    /// The credential is valid.
+    Authorized,
+    /// A credential was supplied and it does not match.
+    Rejected,
+    /// No usable administrative credential is configured, so the endpoint
+    /// cannot authenticate anyone.
+    Unavailable,
+}
+
+/// Decide whether an administrative request may proceed.
+///
+/// This fails closed. Treating "no administrative credential is configured" as
+/// "everyone is an administrator" exposed the delivery statistics and the
+/// dead-letter replay to anyone who could reach the port, and an empty
+/// `MONOLITH_ADMIN_TOKEN` — a common "unset by default" pattern — silently
+/// produced exactly that state. The Python modules already refuse the request
+/// in this situation; this does the same.
+fn admin_authorized(expected_token: Option<&str>, auth_header: Option<&str>) -> AdminAuth {
     let Some(expected) = expected_token.map(str::trim).filter(|s| !s.is_empty()) else {
-        return true;
+        return AdminAuth::Unavailable;
     };
+    if expected.len() < MIN_ADMIN_TOKEN_LEN {
+        return AdminAuth::Unavailable;
+    }
     let Some(header) = auth_header else {
-        return false;
+        return AdminAuth::Rejected;
     };
     let Some(supplied) = header.strip_prefix("Bearer ") else {
-        return false;
+        return AdminAuth::Rejected;
     };
-    !supplied.is_empty() && constant_time_eq(supplied.as_bytes(), expected.as_bytes())
+    if supplied.is_empty() || !constant_time_eq(supplied.as_bytes(), expected.as_bytes()) {
+        return AdminAuth::Rejected;
+    }
+    AdminAuth::Authorized
+}
+
+/// The shortest administrative credential that may be configured. Matches the
+/// Python modules, which refuse a shorter one.
+const MIN_ADMIN_TOKEN_LEN: usize = 16;
+
+/// Write the refusal for an administrative request.
+fn refuse_admin(stream: TcpStream, auth: AdminAuth) -> io::Result<()> {
+    match auth {
+        AdminAuth::Authorized => Ok(()),
+        AdminAuth::Rejected => write_http_json_response(
+            stream,
+            401,
+            "Unauthorized",
+            &json!({ "error": "invalid administrative credential" }),
+        ),
+        AdminAuth::Unavailable => write_http_json_response(
+            stream,
+            503,
+            "Service Unavailable",
+            &json!({ "error": "administrative authentication is unavailable" }),
+        ),
+    }
 }
 
 fn write_http_json_response(
@@ -884,13 +961,9 @@ pub fn handle_status_connection(
             }),
         ),
         ("GET", "/stats") => {
-            if !admin_authorized(admin_token, auth_header.as_deref()) {
-                return write_http_json_response(
-                    stream,
-                    401,
-                    "Unauthorized",
-                    &json!({ "error": "invalid administrative credential" }),
-                );
+            let auth = admin_authorized(admin_token, auth_header.as_deref());
+            if auth != AdminAuth::Authorized {
+                return refuse_admin(stream, auth);
             }
             let s = outbox.stats();
             write_http_json_response(
@@ -914,13 +987,9 @@ pub fn handle_status_connection(
             )
         }
         ("POST", "/admin/replay-dead-letters") => {
-            if !admin_authorized(admin_token, auth_header.as_deref()) {
-                return write_http_json_response(
-                    stream,
-                    401,
-                    "Unauthorized",
-                    &json!({ "error": "invalid administrative credential" }),
-                );
+            let auth = admin_authorized(admin_token, auth_header.as_deref());
+            if auth != AdminAuth::Authorized {
+                return refuse_admin(stream, auth);
             }
             match outbox.replay_dead_letters() {
                 Ok(replayed) => {
@@ -1160,6 +1229,54 @@ mod tests {
         assert_eq!(byte_kept[1].event_id, "evt-10");
     }
 
+    /// Replaying into a full spool must not quietly destroy undelivered
+    /// evidence.
+    ///
+    /// The bound drops the oldest records from the front, and the replayed
+    /// dead letters go to the end, so a replay into a full spool deleted
+    /// pending events that had never been delivered. The operator was told
+    /// only that N records were replayed.
+    #[test]
+    fn replay_refuses_rather_than_discarding_pending_events() {
+        let dir = temp_dir("replay-full-spool");
+        let spool_path = dir.join("outbox.jsonl");
+        let outbox = Outbox::for_path(&spool_path).unwrap();
+
+        // Fill the pending spool to its record bound.
+        let pending: Vec<SpoolRecord> = (0..MAX_SPOOL_RECORDS)
+            .map(|index| record(&format!("pending-{index}")))
+            .collect();
+        write_records_atomically(outbox.spool_path(), &pending).unwrap();
+
+        let mut dead = record("dead-1");
+        dead.attempts = 10;
+        append_dead_records_bounded(
+            outbox.dead_letter_path(),
+            &[dead],
+            MAX_SPOOL_RECORDS,
+            MAX_SPOOL_BYTES,
+        )
+        .unwrap();
+
+        let error = outbox
+            .replay_dead_letters()
+            .expect_err("a full spool must refuse the replay");
+        assert!(
+            error.to_string().contains("at its bound"),
+            "the refusal must explain itself: {error}"
+        );
+
+        // Nothing was destroyed: the pending events are all still there and
+        // the dead letter is still dead-lettered.
+        let after = read_records(outbox.spool_path()).unwrap();
+        assert_eq!(after.len(), MAX_SPOOL_RECORDS);
+        assert_eq!(
+            read_records(outbox.dead_letter_path()).unwrap().len(),
+            1,
+            "the dead letter must not be lost either"
+        );
+    }
+
     #[test]
     fn replay_dead_letters_and_stats_work_end_to_end() {
         let dir = temp_dir("replay-stats");
@@ -1271,5 +1388,72 @@ mod tests {
         assert_eq!(replay_body["replayed"], 1);
         assert_eq!(outbox.stats().outbox_pending, 1);
         assert_eq!(outbox.stats().outbox_dead_letter, 0);
+    }
+
+    /// The administrative endpoints must fail closed when no usable
+    /// administrative credential is configured.
+    ///
+    /// They used to treat "no token configured" as "every request is
+    /// authorized", so an empty `MONOLITH_ADMIN_TOKEN` — a common "unset by
+    /// default" pattern — exposed the delivery statistics and the
+    /// dead-letter replay to anyone who could reach the port.
+    #[test]
+    fn admin_endpoints_fail_closed_without_a_configured_credential() {
+        let dir = temp_dir("status-http-noauth");
+        let outbox = Arc::new(Outbox::for_path(dir.join("outbox.jsonl")).unwrap());
+
+        for configured in [None, Some(String::new()), Some("   ".to_string())] {
+            let addr =
+                spawn_status_listener("127.0.0.1:0", Arc::clone(&outbox), configured).unwrap();
+
+            let send_raw = |raw_req: &str| -> String {
+                let mut stream = TcpStream::connect(addr).unwrap();
+                stream.write_all(raw_req.as_bytes()).unwrap();
+                stream.flush().unwrap();
+                let mut resp = String::new();
+                stream.read_to_string(&mut resp).unwrap();
+                resp
+            };
+
+            let stats = send_raw("GET /stats HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            assert!(
+                stats.starts_with("HTTP/1.1 503 Service Unavailable"),
+                "stats must not be served without a configured credential: {stats}"
+            );
+            assert!(!stats.contains("outbox_pending"));
+
+            let replay =
+                send_raw("POST /admin/replay-dead-letters HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            assert!(
+                replay.starts_with("HTTP/1.1 503 Service Unavailable"),
+                "replay must not be served without a configured credential: {replay}"
+            );
+
+            // The liveness check stays open: it reveals nothing.
+            let health = send_raw("GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            assert!(health.starts_with("HTTP/1.1 200 OK"));
+        }
+    }
+
+    /// A configured but wrong credential is rejected, not treated as absent.
+    #[test]
+    fn admin_endpoints_reject_a_wrong_credential() {
+        let dir = temp_dir("status-http-wrongauth");
+        let outbox = Arc::new(Outbox::for_path(dir.join("outbox.jsonl")).unwrap());
+        let token = "super-secret-admin-token-123456";
+        let addr =
+            spawn_status_listener("127.0.0.1:0", Arc::clone(&outbox), Some(token.to_string()))
+                .unwrap();
+
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream
+            .write_all(
+                b"GET /stats HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer wrong\r\n\r\n",
+            )
+            .unwrap();
+        stream.flush().unwrap();
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).unwrap();
+        assert!(resp.starts_with("HTTP/1.1 401 Unauthorized"), "{resp}");
     }
 }

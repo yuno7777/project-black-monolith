@@ -114,17 +114,24 @@ is a finding; agreement across layers is treated as an active compromise.
 ## Retention and cleanup
 
 Evidence is append-only to the dashboard runtime. A database owner may schedule
-bounded retention explicitly:
+bounded retention explicitly, per tenant:
 
 ```sql
-select monolith.prune_security_events(interval '90 days');
-select monolith.prune_alert_deliveries(interval '30 days');
+select monolith.prune_security_events('default', interval '90 days');
+select monolith.prune_alert_deliveries('default', interval '30 days');
 ```
 
-The function accepts one day through ten years and is revoked from the runtime
-role. Operator session cleanup is narrower: the application may delete only
-rows that are already expired or revoked, under the active tenant's RLS
-context.
+Both functions take the tenant they prune. The evidence prune never touches
+another tenant, and it never removes the evidence of an incident that has not
+been resolved, so a scheduled retention job cannot destroy an open
+investigation. The alert prune is called by the alert dispatcher itself, under
+the tenant's row-level-security context.
+
+The functions accept one day through ten years and are revoked from the
+runtime role, with the exception of the alert prune, which the dispatcher
+calls for the tenants it serves. Operator session cleanup is narrower: the
+application may delete only rows that are already expired or revoked, under
+the active tenant's RLS context.
 
 ## First response checklist
 

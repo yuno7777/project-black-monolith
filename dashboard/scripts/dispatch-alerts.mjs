@@ -121,12 +121,24 @@ async function markFailed(tenant, alert, message, permanent) {
   `, [tenant, alert.event_id, dead ? "dead" : "pending", backoff, message.slice(0, 512)]));
 }
 
-async function pruneAlertDeliveries() {
+async function pruneAlertDeliveries(tenant) {
+  // Pruning is tenant-scoped and runs inside the tenant's row-level security
+  // context. The previous global overload is revoked from this role, so every
+  // call raised a permission error that was swallowed: delivered and dead
+  // rows were never removed and the outbox grew without bound.
   try {
-    await pool.query("select monolith.prune_alert_deliveries()");
-  } catch {
-    // monolith_app may not hold execute privileges on maintenance pruning in
-    // restricted deployments; ignore non-fatal pruning errors.
+    const result = await inTenant(tenant, (client) =>
+      client.query("select monolith.prune_alert_deliveries($1) as removed", [tenant]),
+    );
+    const removed = Number(result.rows[0]?.removed ?? 0);
+    if (removed > 0) console.log(`[alerts] pruned ${removed} delivered row(s) for ${tenant}`);
+  } catch (error) {
+    // A failed prune leaves rows behind, so it is reported rather than
+    // hidden. It must not stop delivery: the next sweep will retry.
+    console.error(
+      `[alerts] failed to prune delivered rows for ${tenant}:`,
+      error?.message ?? error,
+    );
   }
 }
 
@@ -177,7 +189,10 @@ try {
     const now = Date.now();
     if (now - lastPruneMs >= PRUNE_INTERVAL_MS) {
       lastPruneMs = now;
-      await pruneAlertDeliveries();
+      for (const tenant of tenants) {
+        if (stopping) break;
+        await pruneAlertDeliveries(tenant);
+      }
     }
     let found = false;
     for (const tenant of tenants) {

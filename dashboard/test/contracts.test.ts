@@ -1273,6 +1273,85 @@ test("forensic evidence export computes canonical SHA-256 and HMAC-SHA256 signat
   delete process.env.MONOLITH_EVIDENCE_SIGNING_SECRET;
 });
 
+test("evidence bundles can be verified, and an unsigned one says so", async () => {
+  const { exportIncidentEvidence, verifyEvidenceIntegrity } = await import(
+    "../lib/incident-store"
+  );
+  const { GET: exportGet } = await import("../app/api/incidents/[eventId]/export/route");
+
+  delete process.env.DATABASE_URL;
+  process.env.OPERATOR_TOKENS_JSON = JSON.stringify({
+    analyst: { token: "analyst-secret-token-0001", role: "analyst", tenant_id: "tenant-cb" },
+  });
+  const eventId = "10000000-0000-4000-8000-000000000001";
+
+  // Without a signing key the bundle is not authenticated, and the export
+  // says so rather than implying the digest is an authenticity claim.
+  delete process.env.MONOLITH_EVIDENCE_SIGNING_SECRET;
+  delete process.env.MONOLITH_ALERT_WEBHOOK_SECRET;
+  const unsigned = await exportIncidentEvidence(eventId, "tenant-cb", "analyst");
+  assert.ok(unsigned);
+  const unsignedCheck = verifyEvidenceIntegrity(unsigned);
+  assert.equal(unsignedCheck.intact, true);
+  assert.equal(unsignedCheck.authenticated, false);
+  assert.match(unsignedCheck.reason, /not authenticated/);
+
+  const unsignedRes = await exportGet(
+    new Request(`http://localhost/api/incidents/${eventId}/export`, {
+      headers: { authorization: "Bearer analyst-secret-token-0001" },
+    }),
+    { params: Promise.resolve({ eventId }) },
+  );
+  assert.equal(unsignedRes.status, 200);
+  assert.equal(unsignedRes.headers.get("X-Monolith-Evidence-Signed"), "false");
+  assert.equal(unsignedRes.headers.get("X-Monolith-Evidence-Signature"), null);
+  assert.equal(unsignedRes.headers.get("X-Monolith-Evidence-Algorithm"), "SHA-256");
+
+  // Signed: the signature verifies, and a tampered body does not.
+  process.env.MONOLITH_EVIDENCE_SIGNING_SECRET = "e".repeat(32);
+  const signed = await exportIncidentEvidence(eventId, "tenant-cb", "analyst");
+  assert.ok(signed);
+  assert.equal(signed.integrity.algorithm, "HMAC-SHA256");
+  const signedCheck = verifyEvidenceIntegrity(signed);
+  assert.equal(signedCheck.intact, true);
+  assert.equal(signedCheck.authenticated, true);
+
+  const tampered = { ...signed, exported_by: "someone-else" };
+  const tamperedCheck = verifyEvidenceIntegrity(tampered);
+  assert.equal(tamperedCheck.intact, false);
+  assert.equal(tamperedCheck.authenticated, false);
+
+  // The alert webhook secret must not double as the evidence key.
+  delete process.env.MONOLITH_EVIDENCE_SIGNING_SECRET;
+  process.env.MONOLITH_ALERT_WEBHOOK_SECRET = "w".repeat(32);
+  const webhookOnly = await exportIncidentEvidence(eventId, "tenant-cb", "analyst");
+  assert.ok(webhookOnly);
+  assert.equal(
+    webhookOnly.integrity.signature,
+    null,
+    "the webhook secret must not sign evidence bundles",
+  );
+  assert.equal(verifyEvidenceIntegrity(webhookOnly).authenticated, false);
+
+  delete process.env.MONOLITH_ALERT_WEBHOOK_SECRET;
+});
+
+test("the evidence export rejects a malformed event id instead of failing open", async () => {
+  const { GET: exportGet } = await import("../app/api/incidents/[eventId]/export/route");
+  delete process.env.DATABASE_URL;
+  process.env.OPERATOR_TOKENS_JSON = JSON.stringify({
+    analyst: { token: "analyst-secret-token-0001", role: "analyst", tenant_id: "tenant-cb" },
+  });
+
+  const res = await exportGet(
+    new Request("http://localhost/api/incidents/not-a-uuid/export", {
+      headers: { authorization: "Bearer analyst-secret-token-0001" },
+    }),
+    { params: Promise.resolve({ eventId: "not-a-uuid" }) },
+  );
+  assert.equal(res.status, 422);
+});
+
 test("operations store probes MCP_SHIELD_INTERNAL_URL and replays dead letters", async () => {
   const { probeModuleRuntimes, replayDeadLetters } = await import("../lib/operations-store");
   const opsSource = readFileSync(new URL("../lib/operations-store.ts", import.meta.url), "utf8");

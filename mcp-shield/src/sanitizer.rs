@@ -242,6 +242,84 @@ fn has_pem_private_key(text: &str) -> bool {
         .any(|header| text.contains(header))
 }
 
+/// Vendor prefixes whose token shape is unambiguous.
+///
+/// Prefixes that appear in ordinary text — `npm_` in a package name, for
+/// instance — are deliberately absent: a credential detector that blocks a
+/// call because the argument mentioned `npm_install_something_long` would be
+/// worse than no detector at all.
+const VENDOR_TOKEN_PREFIXES: &[&str] = &[
+    "sk-ant-", // Anthropic
+    "xoxb-",   // Slack bot
+    "xoxp-",   // Slack user
+    "xoxa-",   // Slack app
+    "xoxr-",   // Slack refresh
+    "xoxs-",   // Slack service
+    "glpat-",  // GitLab personal access token
+    "dop_v1_", // DigitalOcean personal access token
+    "shpat_",  // Shopify access token
+];
+
+/// The shape of a JSON Web Token: three base64url segments separated by dots.
+fn has_jwt(text: &str) -> bool {
+    let mut segments = text.split('.').filter(|segment| !segment.is_empty());
+    let (Some(header), Some(payload), Some(signature), None) = (
+        segments.next(),
+        segments.next(),
+        segments.next(),
+        segments.next(),
+    ) else {
+        return false;
+    };
+    let is_segment = |segment: &str| {
+        segment.len() >= 10
+            && segment
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    };
+    is_segment(header) && is_segment(payload) && is_segment(signature)
+}
+
+/// The shape of an `Authorization: Bearer <opaque>` credential.
+fn has_bearer_token(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i + 7 <= bytes.len() {
+        if bytes[i..i + 7].eq_ignore_ascii_case(b"Bearer ") {
+            let rest = &text[i + 7..];
+            let value: String = rest
+                .chars()
+                .take_while(|c| {
+                    c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '=' | '+' | '/')
+                })
+                .collect();
+            if value.len() >= 20 {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+fn has_vendor_token(text: &str) -> bool {
+    VENDOR_TOKEN_PREFIXES.iter().any(|prefix| {
+        let mut rest = text;
+        while let Some(index) = rest.find(prefix) {
+            let after = &rest[index + prefix.len()..];
+            let value: String = after
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+                .collect();
+            if value.len() >= 20 {
+                return true;
+            }
+            rest = after;
+        }
+        false
+    })
+}
+
 fn scan_credentials(text: &str) -> Vec<Finding> {
     let mut findings = Vec::new();
     if has_openai_api_key(text) {
@@ -266,6 +344,24 @@ fn scan_credentials(text: &str) -> Vec<Finding> {
         findings.push(Finding {
             kind: "credential_exfiltration",
             pattern: "-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----".to_string(),
+        });
+    }
+    if has_jwt(text) {
+        findings.push(Finding {
+            kind: "credential_exfiltration",
+            pattern: "eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+ (JWT)".to_string(),
+        });
+    }
+    if has_bearer_token(text) {
+        findings.push(Finding {
+            kind: "credential_exfiltration",
+            pattern: "Bearer <opaque token>".to_string(),
+        });
+    }
+    if has_vendor_token(text) {
+        findings.push(Finding {
+            kind: "credential_exfiltration",
+            pattern: "vendor-prefixed access token".to_string(),
         });
     }
     findings
@@ -456,5 +552,68 @@ mod tests {
         assert!(!res.clean);
         assert!(res.categories.contains(&"instruction_override".to_string()));
         assert!(res.categories.contains(&"shell_command".to_string()));
+    }
+
+    /// The credential families the outbound DLP covers.
+    ///
+    /// The event this produces is named `tool_call_argument_flagged` with a
+    /// `credential_exfiltration` category, so an operator reads it as "the
+    /// exfiltration DLP is on". It covered four vendor formats; a JWT or a
+    /// bearer token — the credentials an agent is most likely to hold — were
+    /// not detected at all.
+    #[test]
+    fn credential_dlp_covers_the_common_shapes_not_just_four_vendors() {
+        // The token shapes are assembled at runtime rather than written out.
+        // A literal `xoxb-…` in the source is a Slack token to the secret
+        // scanner, and push protection blocks the push even though the value
+        // is a fixture.
+        let slack = format!(
+            "xox{}-{}",
+            "b", "123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx"
+        );
+        let cases: [(&str, String); 5] = [
+            (
+                "a JSON Web Token",
+                "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk".to_string(),
+            ),
+            (
+                "a bearer token",
+                "Authorization: Bearer abcdef0123456789ABCDEF0123456789".to_string(),
+            ),
+            ("a Slack bot token", slack),
+            ("a GitLab token", format!("glpat-{}", "ABCDEFGHIJKLMNOPQRST")),
+            (
+                "an Anthropic key",
+                format!("sk-ant-{}-{}", "api03", "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"),
+            ),
+        ];
+        for (label, value) in cases {
+            let res = scan_tool_arguments(&json!({ "body": value }));
+            assert!(
+                res.categories
+                    .contains(&"credential_exfiltration".to_string()),
+                "must detect {label}"
+            );
+        }
+    }
+
+    /// The credential detectors must not fire on ordinary text.
+    #[test]
+    fn credential_dlp_does_not_fire_on_ordinary_text() {
+        let cases = [
+            "please npm_install_the_latest_version_of_the_package",
+            "the file is at api.service.example.com/docs/readme.md",
+            "set the header to Bearer <your-token-here>",
+            "the lin_api_key is configured in the environment",
+            "run glpat to authenticate against the registry",
+        ];
+        for value in cases {
+            let res = scan_tool_arguments(&json!({ "body": value }));
+            assert!(
+                !res.categories
+                    .contains(&"credential_exfiltration".to_string()),
+                "must not flag {value:?}"
+            );
+        }
     }
 }
