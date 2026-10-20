@@ -616,6 +616,39 @@ test("a trusted proxy's forwarded host is the one the closest proxy wrote", asyn
   });
 });
 
+test("a trusted proxy has to forward the scheme as well as the host", async () => {
+  await withEnv({ OPERATOR_TRUST_PROXY_HEADERS: "true" }, () => {
+    // The public name is forwarded but the scheme is not, so the scheme falls
+    // back to the request URL's own protocol and the origin no longer matches.
+    // The request is refused rather than assumed to be the one the browser
+    // sent: a proxy that rewrites Host has to forward both.
+    assert.equal(
+      requireSameOrigin(new Request("http://dashboard:3000/api/auth/session", {
+        method: "POST",
+        headers: {
+          origin: "https://console.example",
+          host: "dashboard:3000",
+          "x-forwarded-host": "console.example",
+        },
+      }))?.status,
+      403,
+    );
+    // With the scheme forwarded too, the same request is same-origin.
+    assert.equal(
+      requireSameOrigin(new Request("http://dashboard:3000/api/auth/session", {
+        method: "POST",
+        headers: {
+          origin: "https://console.example",
+          host: "dashboard:3000",
+          "x-forwarded-host": "console.example",
+          "x-forwarded-proto": "https",
+        },
+      })),
+      null,
+    );
+  });
+});
+
 test("the same-origin check normalises the host it compares", async () => {
   await withEnv({ OPERATOR_TRUST_PROXY_HEADERS: "false" }, () => {
     // A proxy that forwards the authority with the default port included.
