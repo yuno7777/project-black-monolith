@@ -82,7 +82,8 @@ is written by a path that cannot roll the event back.
 
 ### 3. Every revocation snapshot is truncated at 64 KiB, so the breaker goes stale
 
-**Status:** verified. **Where:** `dashboard/app/api/ingest/route.ts`,
+**Status:** verified, and fixed by `fix(revocation): page the snapshot so a
+large one is never half-read`. **Where:** `dashboard/app/api/ingest/route.ts`,
 `dashboard/app/api/sessions/revoked/route.ts`,
 `dashboard/lib/incident-store.ts`, `python-common/monolith_events/events.py`,
 `mcp-shield/src/outbox.rs`. **Effort:** medium.
@@ -106,9 +107,26 @@ after the threshold is never refused. Restores require an analyst and
 revocations never expire on a timer, so the live set only grows. The
 documented design — "fails closed" — fails **open** on new revocations.
 
+**The fix.** The snapshot is paged. The dashboard sends the whole set inline
+when it fits in 16 KiB and pages it otherwise, by a keyset cursor on
+`(session_id, agent_id)`; a page is bounded by the number of ids *and* by
+the bytes they take, because a bound in only one of them is a bound that can
+be passed. Both readers follow the pages and install the mirror only once
+the whole snapshot has been read, so a partial set is never installed — a
+partial set would forget every revocation that is not on the pages read so
+far, and a forgotten revocation is a quarantined session that keeps working.
+The ingest response, which has no room to page, carries the snapshot only
+while it fits and otherwise carries the count alone.
+
+The residual is stated rather than hidden: a module mirrors at most 64
+pages, so a tenant with more live revocations than that (~8,000 sessions of
+128 characters) still keeps the set it had. That is a bound an operator can
+see, and it is far above the ~1,700 where the defect began.
+
 ### 4. The MCP-Shield status listener falls back to the ingest token as its admin credential
 
-**Status:** verified. **Where:** `mcp-shield/src/main.rs`,
+**Status:** verified, and fixed by `fix(mcp-shield): keep the ingest token
+out of the status listener`. **Where:** `mcp-shield/src/main.rs`,
 `docker-compose.yml`. **Effort:** small.
 
 `MONOLITH_ADMIN_TOKEN.ok().or_else(|| MONOLITH_EVENT_TOKEN.ok())` — the
@@ -127,6 +145,10 @@ double as an administrative one.
 
 The check itself is sound — `admin_authorized` fails closed on a missing or
 short token. The problem is credential conflation, not a missing check.
+
+**The fix.** The fallback is gone: the administrative endpoints answer 503
+when no administrative credential is configured, and the operator is told why
+at startup. The ingest token no longer unlocks dead-letter replay.
 
 ### 5. The tool layer's fail-open path discards enforcement it has already computed
 
@@ -188,7 +210,9 @@ while every pre-existing test still passes.
 
 ### 7. The VectorAnchor MCP server still dies on a truncated error body
 
-**Status:** reported. **Where:** `vector-anchor/src/mcp_server.py`. **Effort:** small.
+**Status:** verified, and fixed by `fix(vector-anchor): survive a truncated
+error body from the service`. **Where:** `vector-anchor/src/mcp_server.py`.
+**Effort:** small.
 
 `except urllib.error.HTTPError as error: detail = error.read()...` reads the
 body of a 5xx **inside** the handler, and `error.read()` raises
@@ -200,6 +224,10 @@ the agent's retrieve tool with it.
 
 The existing test covers only the 200 path — it sets the truncation but
 leaves `status = 200`.
+
+**The fix.** The error body is read defensively, so a service that stops
+mid-body produces an error result instead of a dead process. The test now
+covers the truncated 5xx path, which is the path that was never taken.
 
 ### 8. The revocation snapshot carries session ids only
 
@@ -221,26 +249,50 @@ which agent was cut off.
 
 ### 9. The live-event listener schedules no reconnect after a failed initial LISTEN
 
-**Status:** reported. **Where:** `dashboard/lib/event-ingest.ts`. **Effort:** small.
+**Status:** verified, and fixed by `fix(dashboard): keep the live event
+listener alive when it cannot start`. **Where:**
+`dashboard/lib/event-ingest.ts`, `dashboard/lib/live-event-listener.ts`,
+`dashboard/lib/event-stream-client.ts`, `dashboard/app/page.tsx`.
+**Effort:** small.
 
 A listener failure during the **initial** `LISTEN` schedules no reconnect, so
 open SSE streams go silently stale — a client keeps a connection that will
 never carry another event and has no way to tell.
 
+**The fix.** The listener reconnects after a failed connect, a failed
+`LISTEN`, an `'error'` and an `'end'`. The browser's `EventSource` cannot
+recover from a non-2xx response at all — a failed response is permanent, not
+transient — so the client side needed its own wrapper: a source that a 503
+leaves in the `CLOSED` state is replaced, and a source that is still
+`CONNECTING` is left to the browser.
+
 ### 10. The Python outbox raises out of the emitter on an oversized payload
 
-**Status:** reported. **Where:** `python-common/monolith_events/events.py`.
-**Effort:** small.
+**Status:** verified, and fixed by `fix(python-common): trim an oversized
+event instead of losing it`. **Where:**
+`python-common/monolith_events/events.py`. **Effort:** small.
 
 An oversized event payload raises out of the emitter instead of being
 spooled, so the event is lost entirely rather than being delivered late.
 
+**The fix.** An event whose evidence is too large is trimmed rather than
+dropped, and the trimmed event says that it was trimmed. Evidence that
+cannot be trimmed a piece at a time leaves a marker in its place. The
+emitter also catches `ValueError` now: a detection that takes the process
+down with it is a detection that did not happen.
+
 ### 11. The Rust outbox's fallback target points at the SSE endpoint with an empty token
 
-**Status:** reported. **Where:** `mcp-shield/src/outbox.rs`. **Effort:** small.
+**Status:** verified, and fixed by `fix(mcp-shield): give an outbox with no
+endpoint no endpoint`. **Where:** `mcp-shield/src/outbox.rs`. **Effort:** small.
 
 When no dashboard URL is configured, the fallback target is the SSE endpoint
 with an empty credential, so every event dead-letters.
+
+**The fix.** An outbox opened by path alone has no delivery target at all.
+The guessed address was worse than no address: every event posted to it was
+rejected, and a rejection reads like a rejected event rather than like an
+endpoint that was never set up.
 
 ---
 

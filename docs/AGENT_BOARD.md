@@ -38,7 +38,7 @@ Read it before starting work. Write to it while you work.
 | security | `feature/video-explainer` | the AEOS Guard explainer, rescued off a branch that was about to be deleted | pushed, 1 commit |
 | security | `fix/mcp-shield/baseline-persist-failure` | the tool layer's fail-open path discarded enforcement it had already computed (`FINDINGS.md` §5) | merged into `main` as PR #64 (`1b6e8ed`); the fix is proved by mutating it back to the old behaviour and watching the new test fail. The branch was rebased onto `main` after #60 and #62 merged, so its history was rewritten and it was force-pushed |
 | security | `fix/mcp-shield/malformed-tool-entry` | one malformed tool entry voided the whole `tools/list` defence for that server (`FINDINGS.md` §6) | merged into `main` as PR #66 (`f42721d`); the fix is proved by mutating it back to the old behaviour — one defective entry rejecting the whole listing — and watching all six new tests fail. Branched off `main` at `1b6e8ed`; no history rewrite, so nothing was force-pushed |
-| silent-defenses | `fix/silent-defense-failures` | the standing work that a failure turns a defence off without saying so: the shield's admin credential, the memory layer's truncated body, the Python outbox's oversized payload, the Rust outbox's fallback target, the dashboard's listener reconnect, and the revocation snapshot that stops being complete | worktree `C:/Users/Abhi/Desktop/monolith-wt/silent-defenses`, branched off `origin/main` (`1b6e8ed`). One commit per finding, each proved by a test that fails before the fix |
+| silent-defenses | `fix/silent-defense-failures` | the standing work that a failure turns a defence off without saying so: the shield's admin credential, the memory layer's truncated body, the Python outbox's oversized payload, the Rust outbox's fallback target, the dashboard's listener reconnect, and the revocation snapshot that stops being complete | worktree `C:/Users/Abhi/Desktop/monolith-wt/silent-defenses`. Six findings fixed (`FINDINGS.md` §3, §4, §7, §9, §10, §11), one commit each, every one proved by a test that fails before the fix. Rebased onto `origin/main` (`f42721d`) and pushed; awaiting a merge |
 | integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI green on `b19513b` |
 | integrator | Dependabot | #24 merged (codeql-action); #15, #16 closed as superseded; #26 superseded by a direct hmac 0.13 migration | the queue is empty: **zero open PRs** |
 
@@ -94,10 +94,13 @@ to `main` by ref. Use a dedicated worktree for every branch.
 | `python-common/monolith_events/events.py` | silent-defenses | the oversized payload |
 | `dashboard/lib/live-event-listener.ts` | silent-defenses | the reconnect after a failed LISTEN |
 | `dashboard/app/api/ingest/route.ts`, `dashboard/app/api/sessions/revoked/route.ts`, `dashboard/lib/incident-store.ts` | silent-defenses | the revocation snapshot pagination. Overlaps the standing `dashboard/lib/incident-store.ts` / `dashboard/app/api/ingest/**` claim, whose batch merged on 2026-10-20 |
+| `dashboard/lib/event-stream-client.ts`, `dashboard/app/page.tsx` | silent-defenses | the browser-side reconnect, because an `EventSource` that got a 503 never reconnects by itself |
+| `mcp-shield/src/proxy.rs` | silent-defenses | one test lock, shared with `mcp-shield/src/outbox.rs`: the revoked-session mirror is process-wide, so the tests that write it cannot interleave |
+| `dashboard/test/contracts.test.ts`, `dashboard/test/live-event-listener.test.ts`, `dashboard/test/event-stream-client.test.ts`, `python-common/tests/test_revoked_sessions.py` | silent-defenses | the tests for the findings above |
 | `dashboard/lib/incident-store.ts`, `dashboard/app/api/ingest/**` | security | circuit breaker and ingest path |
 | `dashboard/lib/login-rate-limit.ts`, `dashboard/scripts/dispatch-alerts.mjs` | security | rate limiting and alert delivery |
 | `supabase/migrations/**` | security | retention scoping migration |
-| `contracts/openapi.yaml` | security | corrected the revocation snapshot wording |
+| `contracts/openapi.yaml` | security | corrected the revocation snapshot wording. **silent-defenses extended it** for the paged snapshot: `IngestResponse.revoked_sessions` is now optional, and `/api/sessions/revoked` is documented and required by `contracts/check_contracts.py`. Coordinate before editing it again |
 | `main` | integrator | Merges and verification only; branch work happens in a worktree. |
 
 Free to claim: `vector-anchor/**`, `trace-audit/**`, `dashboard/app/api/operations/**`,
@@ -116,10 +119,41 @@ reader's lead, not yet checked). The items below are the board's own list.
 | --- | --- | --- | --- |
 | 1 | The reasoning layer's KL divergence is off in every shipped configuration: nothing ever writes the baseline's `model` key, so the gate can never open. | `trace-audit/src/main.py` | **high** — see `FINDINGS.md` §1 |
 | 2 | A notification failure rolls back the evidence it was raised for: the alert-job row shares the security event's transaction. | `dashboard/lib/event-store.ts` | **high** — see `FINDINGS.md` §2 |
-| 3 | Every revocation snapshot is truncated at 64 KiB, so past ~1,700 live revocations the modules keep a stale set forever and the breaker fails open. | `dashboard/app/api/ingest/route.ts`, `python-common`, `mcp-shield` | **high** — see `FINDINGS.md` §3 |
-| 4 | The MCP-Shield status listener falls back to the module's ingest token as its admin credential. | `mcp-shield/src/main.rs` | medium — see `FINDINGS.md` §4 |
-| 5 | The ingest response carries the tenant's whole revocation set on every request, so the payload grows with the total number of quarantines. The fix needs the dashboard *and* `python-common` to agree on snapshot-versus-delta. | `dashboard/app/api/ingest/route.ts`, `python-common/monolith_events/events.py` | low — contract change |
+| 3 | ~~Every revocation snapshot is truncated at 64 KiB, so past ~1,700 live revocations the modules keep a stale set forever and the breaker fails open.~~ **Fixed** by `fix(revocation): page the snapshot so a large one is never half-read`: the snapshot is paged by a keyset cursor and both readers install it only once it has been read whole. | `dashboard/app/api/ingest/route.ts`, `python-common`, `mcp-shield` | **high** — see `FINDINGS.md` §3 |
+| 4 | ~~The MCP-Shield status listener falls back to the module's ingest token as its admin credential.~~ **Fixed** by `fix(mcp-shield): keep the ingest token out of the status listener`: the administrative endpoints answer 503 without an administrative credential. | `mcp-shield/src/main.rs` | medium — see `FINDINGS.md` §4 |
+| 5 | The ingest response carries the tenant's whole revocation set on every request, so the payload grows with the total number of quarantines. The fix needs the dashboard *and* `python-common` to agree on snapshot-versus-delta. **Bounded, not made a delta:** the ingest response carries the snapshot only while it fits in 16 KiB and otherwise carries the count alone, and the poll endpoint pages the whole set. The wire format is still a snapshot, so no module has to change its contract beyond the paging. | `dashboard/app/api/ingest/route.ts`, `python-common/monolith_events/events.py` | low — contract change |
 | 6 | The AWS secret access key has no detector. Deliberately: 40 characters of base64 has a false-positive rate that would hard-block ordinary calls. Needs a shape-aware detector, not a regex. | `mcp-shield/src/sanitizer.rs` | low |
+
+The silent-defenses branch also closed four of the survey's own items while it
+was in the same files: the memory layer's truncated error body (`FINDINGS.md`
+§7), the Python outbox's oversized payload (§10), the Rust outbox's fallback
+delivery target (§11), and the dashboard listener's missing reconnect (§9).
+Each is one commit, and each is proved by a test that fails before the fix
+and passes after it.
+
+### The revocation snapshot is paged now (read this before touching it)
+
+`GET /api/sessions/revoked` answers with either the whole set or one page of
+it, and the answer says which:
+
+- `revoked_sessions_complete: true` — the array is the whole set. Adopt it.
+- `revoked_sessions_complete: false` — the array is one page. Follow
+  `next_cursor` (`?cursor=…`) until there is no cursor, and adopt the set
+  only then.
+
+The cursor is a keyset on `(session_id, agent_id)`, base64url-encoded, and it
+is the reader's job to validate it: only the base64url alphabet is put into
+a URL. A page is bounded by the number of ids **and** by the bytes they take.
+
+**A partial set is never adopted.** A reader that installs half a snapshot
+forgets every revocation that is not in it, and a forgotten revocation is a
+quarantined session that keeps working. Both readers therefore keep the set
+they had until the whole snapshot has been read.
+
+`POST /api/ingest` carries the snapshot only while it fits in 16 KiB, and
+otherwise carries `revoked_sessions_total` alone. An old module that reads
+that response keeps the set it had, which is what it already did; a module
+that understands the contract reads the paged snapshot.
 
 Done: the module dead-letter replay is now scoped to one tenant across the
 dashboard, both module endpoints, the shared Python outbox and the Rust spool

@@ -108,6 +108,7 @@ def validate() -> None:
         "/api/benchmarks",
         "/api/operations",
         "/api/incidents/{eventId}/session",
+        "/api/sessions/revoked",
     }
     missing_paths = required_paths - set(openapi.get("paths", {}))
     if missing_paths:

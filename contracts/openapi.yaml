@@ -230,10 +230,65 @@ paths:
             it, so a session that was quarantined earlier is still listed.
             The same set is available without an event flow from
             `GET /api/sessions/revoked`.
+
+            The snapshot is carried only while it fits in 16 KiB. A reader
+            that reads a response body under a hard byte cap cannot parse a
+            larger one, and a snapshot it cannot parse is a snapshot it keeps
+            replacing with a stale one. So when the set does not fit, the
+            response carries `revoked_sessions_total` alone and
+            `revoked_sessions_complete: false`, and the whole set is read
+            from the paged snapshot endpoint instead.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/IngestResponse"
+  /api/sessions/revoked:
+    get:
+      operationId: readRevokedSessions
+      description: |
+        The tenant's quarantined sessions, for a module that has no event
+        traffic of its own to learn the revocation from.
+
+        The set is paged, because a module reads a response body under a
+        hard byte cap and a set larger than that cap cannot be parsed at
+        all. The answer says which it is:
+
+        - `revoked_sessions_complete: true` — `revoked_sessions` is the
+          whole set. Adopt it.
+        - `revoked_sessions_complete: false` — `revoked_sessions` is one
+          page. Follow `next_cursor` with `?cursor=…` until there is no
+          cursor, and adopt the set only then.
+
+        A partial set is never adopted: it would forget every revocation
+        that is not on the pages read so far, and a forgotten revocation is a
+        quarantined session that keeps working.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          description: |
+            Where the next page starts. A keyset on `(session_id, agent_id)`,
+            base64url-encoded. A cursor that cannot be read is refused with
+            422 rather than being turned into a query.
+          schema: { "type": "string", "maxLength": 512 }
+        - name: limit
+          in: query
+          required: false
+          description: How many ids one page may carry.
+          schema: { "type": "integer", "minimum": 1, "maximum": 500 }
+      responses:
+        "200":
+          description: The whole set, or one page of it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RevocationSnapshot"
+        "401":
+          description: The module credential or the tenant header is missing or wrong.
+        "422":
+          description: The cursor or the limit cannot be read.
   /api/operations:
     get:
       operationId: readOperationsHealth
@@ -354,7 +409,7 @@ components:
       pattern: "^[^\\u0000-\\u001f\\u007f]+$"
     IngestResponse:
       type: object
-      required: ["accepted", "duplicates", "event_ids", "revoked_sessions"]
+      required: ["accepted", "duplicates", "event_ids"]
       properties:
         accepted: { "type": "integer", "minimum": 0 }
         duplicates: { "type": "integer", "minimum": 0 }
@@ -362,8 +417,42 @@ components:
           type: array
           items: { "$ref": "#/components/schemas/CorrelationIdentity" }
         revoked_sessions:
+          description: |
+            The tenant's quarantined sessions, present only while the set
+            fits in 16 KiB. A reader that gets a response without it keeps
+            the set it already had, which is what it already did.
           type: array
           items: { "type": "string", "minLength": 1, "maxLength": 128 }
+        revoked_sessions_complete:
+          description: Whether `revoked_sessions` is the whole set.
+          type: boolean
+        revoked_sessions_total:
+          description: How many sessions the tenant has quarantined.
+          type: integer
+          minimum: 0
+    RevocationSnapshot:
+      type: object
+      required: ["tenant_id", "generated_at_ms", "revoked_sessions", "revoked_sessions_complete"]
+      properties:
+        tenant_id: { "$ref": "#/components/schemas/CorrelationIdentity" }
+        generated_at_ms: { "type": "integer", "minimum": 0 }
+        revoked_sessions:
+          description: |
+            The whole set, or one page of it. `null` when the set does not
+            fit in one response and the reader has to page it.
+          type: [array, "null"]
+          items: { "type": "string", "minLength": 1, "maxLength": 128 }
+        revoked_sessions_complete:
+          description: Whether `revoked_sessions` is the whole set.
+          type: boolean
+        revoked_sessions_total:
+          description: How many sessions the tenant has quarantined.
+          type: integer
+          minimum: 0
+        next_cursor:
+          description: Where the next page starts. Absent when there is none.
+          type: [string, "null"]
+          maxLength: 512
     OperationsReplayResponse:
       type: object
       required: ["tenant_id", "alerts_replayed", "total_replayed", "modules"]
