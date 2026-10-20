@@ -9,7 +9,9 @@ drive it through POST /retrieve.
 from __future__ import annotations
 
 import logging
+import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 from secrets import compare_digest
 
 from fastapi import FastAPI, HTTPException, Request
@@ -46,6 +48,12 @@ class RetrieveRequest(StrictRequest):
         if len(value.encode("utf-8")) > MAX_QUERY_BYTES:
             raise ValueError(f"query must be at most {MAX_QUERY_BYTES} UTF-8 bytes")
         return value
+
+
+class SeedDemoRequest(StrictRequest):
+    """Ask for the local detection-fixture corpus to be loaded."""
+
+    include_bait: bool = False
 
 
 class Document(StrictRequest):
@@ -221,6 +229,52 @@ def add_documents(req: AddDocumentsRequest, request: Request) -> dict:
     proxy: RetrieverProxy = app.state.proxy
     total = proxy.upsert_documents([(document.id, document.text) for document in req.documents])
     return {"added": len(req.documents), "total": total}
+
+
+def _demo_corpus() -> tuple[list[tuple[str, str]], str, str]:
+    """Load the demo corpus fixture.
+
+    The corpus lives with the other fixtures so that exactly one copy of it
+    exists in the repository, and the dashboard can seed the corpus without
+    holding a second copy. It is imported lazily and defensively: the
+    service has to start even where the fixtures were not shipped, and only
+    this endpoint needs them.
+    """
+    fixtures = Path(__file__).resolve().parents[1] / "fixtures"
+    if str(fixtures) not in sys.path:
+        sys.path.insert(0, str(fixtures))
+    try:
+        from corpus_data import CLEAN_DOCS, POISON_DOC_ID, POISON_DOC_TEXT
+    except ImportError as error:
+        raise HTTPException(
+            status_code=503, detail="the demo corpus fixture is not available"
+        ) from error
+    return [(doc_id, text) for doc_id, text in CLEAN_DOCS], POISON_DOC_ID, POISON_DOC_TEXT
+
+
+@app.post("/admin/seed-demo")
+def seed_demo(req: SeedDemoRequest, request: Request) -> dict:
+    """Load the local demo corpus into the collection.
+
+    Every document here is a synthetic detection fixture — benign text across
+    twelve unrelated topics, plus optionally one "universal bait" document
+    that exists so the memory layer's quarantine can be demonstrated. This
+    endpoint is what the dashboard's onboarding page calls so that an
+    operator does not have to run the seed fixture by hand.
+
+    Seeding is idempotent: documents are upserted by id, so pressing the
+    button twice leaves the corpus in the same state.
+    """
+    _require_admin_token(request)
+    clean, bait_id, bait_text = _demo_corpus()
+    documents = clean + ([(bait_id, bait_text)] if req.include_bait else [])
+    proxy: RetrieverProxy = app.state.proxy
+    total = proxy.upsert_documents(documents)
+    return {
+        "added": len(documents),
+        "total": total,
+        "bait": bool(req.include_bait),
+    }
 
 
 @app.get("/quarantine")
