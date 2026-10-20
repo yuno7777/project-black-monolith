@@ -177,9 +177,8 @@ class AnthropicRelay:
                 if isinstance(index, int):
                     self._open_blocks.append(index)
                     block = data.get("content_block")
-                    self._block_kind[index] = (
-                        block.get("type") if isinstance(block, dict) and isinstance(block.get("type"), str) else "text"
-                    )
+                    block_type = block.get("type") if isinstance(block, dict) else None
+                    self._block_kind[index] = block_type if isinstance(block_type, str) else "text"
             elif kind == "content_block_delta":
                 delta = data.get("delta")
                 if isinstance(delta, dict) and delta.get("type") in AUDITED_DELTA_KINDS:
@@ -403,7 +402,7 @@ def upstream_timeout() -> httpx.Timeout:
 def standalone_refusal_sse(model: str, message_id: str) -> str:
     """A complete, well-formed refusal for a request that never reached the
     model — a session the circuit breaker has revoked, for instance."""
-    events = [
+    events: list[dict[str, Any]] = [
         {
             "kind": "passthrough",
             "event": "message_start",

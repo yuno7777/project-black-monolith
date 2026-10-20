@@ -24,9 +24,6 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .config import MODULE_NAME, load_config
-from .events import EventContext, context_from_headers, is_session_revoked, make_emitter, now_ms
-from .stream_proxy import POLICY_VERSION, SAFE_REFUSAL, StreamAuditor
 from .anthropic_gateway import (
     AnthropicRelay,
     build_upstream_request,
@@ -36,6 +33,9 @@ from .anthropic_gateway import (
     standalone_refusal_sse,
     upstream_timeout,
 )
+from .config import MODULE_NAME, load_config
+from .events import EventContext, context_from_headers, is_session_revoked, make_emitter, now_ms
+from .stream_proxy import POLICY_VERSION, SAFE_REFUSAL, StreamAuditor
 
 # Sessions this process already refused, so the refusal event fires once per
 # session instead of once per request from a retrying agent.

@@ -255,7 +255,7 @@ class _Injector:
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
-    def __enter__(self) -> "_Injector":
+    def __enter__(self) -> _Injector:
         self.thread.start()
         return self
 
@@ -400,7 +400,7 @@ def print_session_report(dashboard_url: str, session_id: str, operator_token: st
     by_module = summary.get("by_module") or {}
     by_severity = summary.get("by_severity") or {}
     print("\n  Session report")
-    print(f"  --------------")
+    print("  --------------")
     print(f"  session    {session_id}")
     print(f"  events     {summary.get('total', 0)}")
     print(
