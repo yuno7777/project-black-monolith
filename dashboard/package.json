@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start -p 3000",
     "lint": "eslint . --max-warnings 0",
-    "test": "node scripts/check-migrations.mjs && tsx --test test/contracts.test.ts test/onboarding.test.ts test/event-store.test.ts test/incident-triage.test.ts test/incident-queue.test.ts"
+    "test": "node scripts/check-migrations.mjs && tsx --test test/contracts.test.ts test/onboarding.test.ts test/event-store.test.ts test/incident-triage.test.ts test/incident-queue.test.ts test/benchmark-ledger.test.ts"
   },
   "dependencies": {
     "jose": "^6.2.12",
