@@ -157,7 +157,7 @@ Configuration (environment variables):
 | Variable              | Default                         | Purpose                                  |
 | --------------------- | ------------------------------- | ---------------------------------------- |
 | `MCP_SHIELD_MODE`     | `enforce`                       | `enforce` (rewrite/block on mismatch) or `monitor` (log only) |
-| `MCP_SHIELD_FIRST_CONTACT` | `trust`                    | `trust` (register an unseen tool as the baseline) or `approve` (withhold it until an operator approves it by name) |
+| `MCP_SHIELD_FIRST_CONTACT` | `trust`                    | `trust` (register an unseen tool as the baseline) or `approve` (withhold it until an operator approves it by name). An unrecognised value **fails closed to `approve`** and emits a `configuration_invalid` event |
 | `MCP_SHIELD_KEY`      | built-in dev key (banner-warns) | HMAC-SHA256 secret key                   |
 | `MCP_SHIELD_BASELINE` | `baseline_hashes.json`          | baseline store path                      |
 | `MONOLITH_DASHBOARD_URL` | *(unset)*                    | if set (e.g. `http://localhost:3000/api/ingest`), events are also POSTed here |

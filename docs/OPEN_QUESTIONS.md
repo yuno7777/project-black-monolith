@@ -160,6 +160,12 @@ default to blessing whatever it sees first.
 how often a legitimate new tool would be withheld and need an operator. That
 number is not known, because the gate is opt-in and rarely enabled.
 
+**This question is about the default, not about typos.** An *unrecognised*
+value of `MCP_SHIELD_FIRST_CONTACT` now fails closed to `approve` and emits
+a `configuration_invalid` event, because a mistyped value must not be the
+thing that disarms the gate. The *unset* default is still `trust`, and
+changing it is still the open question above.
+
 ---
 
 ## 7. What should happen to the *oldest* evidence when the spool is full?

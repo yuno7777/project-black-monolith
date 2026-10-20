@@ -79,6 +79,32 @@ pub enum ShieldMode {
     Enforce,
 }
 
+/// Read the first-contact policy out of an environment value.
+///
+/// `None` — the variable is unset — keeps the documented default of `trust`
+/// (see `docs/OPEN_QUESTIONS.md` #6 for why that default is deliberate).
+///
+/// An unrecognised *explicit* value fails closed. The operator either asked
+/// for the approval gate and misspelled it, or asked for trust and
+/// misspelled that; in the first case the typo silently disarms the gate, and
+/// in the second case disarming it is the wrong way to be wrong. Requiring an
+/// operator to approve an unseen tool is the outcome that cannot lose a
+/// detection, so the shield takes it and says so loudly.
+///
+/// The second element of the returned pair is the offending value, if any,
+/// for the caller to report.
+fn parse_first_contact(raw: Option<&str>) -> (FirstContact, Option<String>) {
+    let Some(raw) = raw else {
+        return (FirstContact::Trust, None);
+    };
+    let trimmed = raw.trim();
+    match trimmed.to_ascii_lowercase().as_str() {
+        "trust" => (FirstContact::Trust, None),
+        "approve" => (FirstContact::Approve, None),
+        _ => (FirstContact::Approve, Some(trimmed.to_string())),
+    }
+}
+
 /// Runtime configuration, sourced from environment variables.
 pub struct ShieldConfig {
     pub hmac_key: Vec<u8>,
@@ -134,20 +160,29 @@ impl ShieldConfig {
                 }
             },
         };
-        let first_contact = match std::env::var("MCP_SHIELD_FIRST_CONTACT").ok().as_deref() {
-            None => FirstContact::Trust,
-            Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
-                "trust" => FirstContact::Trust,
-                "approve" => FirstContact::Approve,
-                other => {
-                    tracing::warn!(
-                        value = other,
-                        "unrecognized MCP_SHIELD_FIRST_CONTACT (expected trust|approve);                          defaulting to trust"
-                    );
-                    FirstContact::Trust
-                }
-            },
-        };
+        let (first_contact, invalid_first_contact) =
+            parse_first_contact(std::env::var("MCP_SHIELD_FIRST_CONTACT").ok().as_deref());
+        if let Some(value) = &invalid_first_contact {
+            tracing::warn!(
+                value = %value,
+                "unrecognized MCP_SHIELD_FIRST_CONTACT (expected trust|approve); \
+                 requiring operator approval for every unseen tool"
+            );
+            // The operator's stderr is the agent host's MCP log, not the
+            // console they watch. The ledger is where a disabled control
+            // has to show up.
+            events::emit(
+                "configuration_invalid",
+                Severity::Warning,
+                json!({
+                    "variable": "MCP_SHIELD_FIRST_CONTACT",
+                    "value": value,
+                    "expected": "trust|approve",
+                    "applied": "approve",
+                    "action": "failed_closed",
+                }),
+            );
+        }
         Ok(Self {
             hmac_key,
             baseline_path,
@@ -1519,6 +1554,39 @@ mod tests {
         ));
         let _ = std::fs::remove_file(&path);
         BaselineStore::load(&path, KEY).expect("fresh test baseline")
+    }
+
+    #[test]
+    fn an_unset_first_contact_keeps_the_documented_default() {
+        assert_eq!(parse_first_contact(None), (FirstContact::Trust, None));
+    }
+
+    #[test]
+    fn a_recognised_first_contact_is_taken_as_written() {
+        assert_eq!(parse_first_contact(Some("trust")), (FirstContact::Trust, None));
+        assert_eq!(
+            parse_first_contact(Some("approve")),
+            (FirstContact::Approve, None)
+        );
+        assert_eq!(
+            parse_first_contact(Some("  APPROVE  ")),
+            (FirstContact::Approve, None)
+        );
+    }
+
+    #[test]
+    fn a_mistyped_first_contact_fails_closed_to_the_approval_gate() {
+        // The operator asked for a gate and misspelled the value. Blessing
+        // every unseen tool is the one outcome that loses a detection, so the
+        // gate stays on and the offending value is reported.
+        let (policy, invalid) = parse_first_contact(Some("aprove"));
+        assert_eq!(policy, FirstContact::Approve);
+        assert_eq!(invalid.as_deref(), Some("aprove"));
+
+        // And the other direction: a typo must not turn the gate off.
+        let (policy, invalid) = parse_first_contact(Some("trst"));
+        assert_eq!(policy, FirstContact::Approve);
+        assert_eq!(invalid.as_deref(), Some("trst"));
     }
 
     fn tools_list_response(description: &str) -> JsonRpcMessage {
