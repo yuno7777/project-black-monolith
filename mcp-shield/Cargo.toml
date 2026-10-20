@@ -13,8 +13,12 @@ serde_json = "1"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-hmac = "0.12"
-sha2 = "0.10"
+hmac = "0.13"
+# hmac 0.13 is built on the digest 0.11 line, so sha2 has to move to 0.11 as
+# well. sha2 0.11.1 raises its MSRV to 1.88, which is above this crate's
+# rust-version (1.86) and above the toolchain CI pins, so 0.11.0 is pinned
+# exactly. Relax it once the whole workspace moves to 1.88.
+sha2 = "=0.11.0"
 hex = "0.4"
 tempfile = "3"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
