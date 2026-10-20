@@ -2198,3 +2198,129 @@ test("a session report that cannot hold every event says so", async () => {
   clearMemoryEvents();
 });
 
+test("an operational failure is not a detection", async () => {
+  const { summarizeSession } = await import("../lib/session-report");
+
+  // A warning that means "the defense did not run" is not a warning that
+  // means "the defense found something". The upstream broke, the answer
+  // was cut short, the shield could not analyse a message: none of those
+  // is a finding, and a run in which nothing was flagged has to read as
+  // zero detections.
+  const operational = summarizeSession([
+    {
+      event_id: "11111111-1111-4111-8111-111111111111",
+      schema_version: 2,
+      timestamp_ms: 1,
+      module: "trace-audit",
+      event_type: "upstream_stream_error",
+      severity: "warning",
+      details: {},
+      tenant_id: "tenant-ops",
+      outcome: "error",
+    },
+    {
+      event_id: "22222222-2222-4222-8222-222222222222",
+      schema_version: 2,
+      timestamp_ms: 2,
+      module: "mcp-shield",
+      event_type: "analysis_error",
+      severity: "warning",
+      details: {},
+      tenant_id: "tenant-ops",
+      outcome: "degraded",
+    },
+    {
+      event_id: "33333333-3333-4333-8333-333333333333",
+      schema_version: 2,
+      timestamp_ms: 3,
+      module: "trace-audit",
+      event_type: "generation_truncated",
+      severity: "warning",
+      details: {},
+      tenant_id: "tenant-ops",
+      outcome: "terminated",
+    },
+  ]);
+
+  assert.equal(operational.detections, 0);
+  // The truncation did stop the agent getting its answer, so it counts as a
+  // block: the gap between detections and blocks is the number an operator
+  // reads to see whether anything actually happened.
+  assert.equal(operational.blocks, 1);
+  // And the events are all still there.
+  assert.equal(operational.total, 3);
+});
+
+test("the ledger path returns the same fields as the memory path", async () => {
+  const { listSessionIncidents } = await import("../lib/session-report");
+  const globalRef = globalThis as unknown as { __monolithPool?: unknown };
+  const previousPool = globalRef.__monolithPool;
+  const statements: string[] = [];
+
+  globalRef.__monolithPool = {
+    connect: async () => ({
+      query: async (text: string) => {
+        statements.push(text);
+        return {
+          rows: [
+            {
+              event_id: "44444444-4444-4444-8444-444444444444",
+              schema_version: 2,
+              occurred_at_ms: "1700000000000",
+              received_ms: "1700000000100",
+              module: "trace-audit",
+              event_type: "generation_truncated",
+              severity: "warning",
+              details: {},
+              tenant_id: "tenant-pg",
+              correlation_id: null,
+              session_id: "sess-pg",
+              trace_id: null,
+              agent_id: "agent-pg",
+              outcome: "terminated",
+              source: "module",
+              resource_type: "reasoning_trace",
+              resource_id: "trace-pg",
+              policy_version: "policy-v1",
+              status: null,
+              assignee: null,
+              note: null,
+              resolution: null,
+              updated_ms: null,
+              updated_by: null,
+              total_count: "1",
+            },
+          ],
+        };
+      },
+      release: () => {},
+    }),
+  };
+
+  try {
+    await withEnv({ DATABASE_URL: "postgresql://unused/unused" }, async () => {
+      const page = await listSessionIncidents("tenant-pg", "sess-pg");
+      assert.equal(page.incidents.length, 1);
+      const incident = page.incidents[0];
+      // The four columns the ledger carries and the memory path returns.
+      // A report whose shape depends on whether a database is configured is
+      // a report whose fields go missing in exactly the deployment that
+      // stores the ledger.
+      assert.equal(incident.source, "module");
+      assert.equal(incident.resource_type, "reasoning_trace");
+      assert.equal(incident.resource_id, "trace-pg");
+      assert.equal(incident.policy_version, "policy-v1");
+    });
+
+    // And the query asks the database for them: a mapping that reads a
+    // column the SELECT never fetched is a mapping of nothing.
+    const select = statements.find((statement) => statement.includes("security_events"));
+    assert.ok(select, "the session report never ran its query");
+    for (const column of ["e.source", "e.resource_type", "e.resource_id", "e.policy_version"]) {
+      assert.ok(select.includes(column), `the query does not select ${column}`);
+    }
+  } finally {
+    globalRef.__monolithPool = previousPool;
+  }
+});
+

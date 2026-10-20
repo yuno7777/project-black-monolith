@@ -64,11 +64,25 @@ const REVOCATION_EVENTS = new Set(["session_quarantined"]);
  * `retrieval` and `generation_completed` are the two an operator sees most
  * of and would otherwise have to read past every time. Neither is a finding;
  * counting them as detections would drown the ones that matter.
+ *
+ * The three operational failures are here for the same reason, and it is
+ * the sharper one. `upstream_stream_error` (the model provider broke),
+ * `generation_truncated` (the provider cut the answer short) and
+ * `analysis_error` (mcp-shield could not analyse a message and forwarded
+ * it unmodified) are all warnings — but a warning that means "the defense
+ * did not run" is not a warning that means "the defense found something".
+ * Counting them would make a run in which nothing was flagged read as a
+ * detection, which is exactly the number an operator reads first. They stay
+ * in the report's event list, so nothing is hidden; and `generation_truncated`
+ * still counts as a block, because the agent did not get its answer.
  */
 const NON_DETECTION_EVENTS = new Set([
   "service_start",
   "service_stop",
   "generation_completed",
+  "generation_truncated",
+  "upstream_stream_error",
+  "analysis_error",
   "retrieval",
   "baseline_registered",
   "baseline_reloaded",
@@ -172,6 +186,10 @@ export async function listSessionIncidents(
       trace_id: string | null;
       agent_id: string | null;
       outcome: string | null;
+      source: string | null;
+      resource_type: string | null;
+      resource_id: string | null;
+      policy_version: string | null;
       status: string | null;
       assignee: string | null;
       note: string | null;
@@ -185,6 +203,7 @@ export async function listSessionIncidents(
          (extract(epoch from e.received_at) * 1000)::bigint as received_ms,
          e.module, e.event_type, e.severity, e.details, e.tenant_id,
          e.correlation_id, e.session_id, e.trace_id, e.agent_id, e.outcome,
+         e.source, e.resource_type, e.resource_id, e.policy_version,
          t.status, t.assignee, t.note, t.resolution,
          (extract(epoch from t.updated_at) * 1000)::bigint as updated_ms,
          t.updated_by,
@@ -214,6 +233,14 @@ export async function listSessionIncidents(
       trace_id: row.trace_id ?? undefined,
       agent_id: row.agent_id ?? undefined,
       outcome: row.outcome ?? undefined,
+      // The ledger carries these four and the in-memory path returns them,
+      // so the Postgres path has to select them too: a report whose shape
+      // depends on whether a database is configured is a report whose
+      // fields go missing in exactly the deployment that stores the ledger.
+      source: row.source ?? undefined,
+      resource_type: row.resource_type ?? undefined,
+      resource_id: row.resource_id ?? undefined,
+      policy_version: row.policy_version ?? undefined,
       triage: row.status
         ? {
             status: row.status as never,
