@@ -65,6 +65,15 @@ same failure.
 under test. A timeout anywhere else — in a test, in a fixture, in a
 module's own code — is the branch's.
 
+**The fix raises the ceiling; it does not remove it.** With PR #70's
+five-minute first-byte budget, the check still failed once: the runner
+took more than five minutes to answer, which the 30-second budget would
+also have failed. The rerun of the same commit passed in the ordinary
+time. So a `ReadTimeout` here is still a statement about the runner, and
+the rerun is the right next step — but read the traceback first, because a
+timeout in a *test* is the branch's and a timeout in the backend client is
+not.
+
 ### Requirement floors now match their locks (resolved)
 
 The merged Dependabot PRs raised the floors in `vector-anchor/requirements.txt`
