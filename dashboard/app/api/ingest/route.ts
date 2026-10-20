@@ -53,9 +53,19 @@ export async function POST(req: Request) {
     if (newlyAccepted.length) {
       getEventBroker().publish(newlyAccepted);
     }
-    const revokedSessions = await evaluateSessionCircuitBreaker(
-      persisted.map((result) => result.event),
-    );
+    // The circuit breaker runs after the events are committed, so its failure
+    // must not fail the request: a 5xx here would tell the module that the
+    // batch was not accepted, and the module would retry it and finally
+    // dead-letter an event that is already in the ledger. The breaker is a
+    // reaction to the evidence, not a precondition for accepting it.
+    let revokedSessions: string[] = [];
+    try {
+      revokedSessions = await evaluateSessionCircuitBreaker(
+        persisted.map((result) => result.event),
+      );
+    } catch (breakerError) {
+      console.error("session circuit breaker evaluation failed", breakerError);
+    }
     return Response.json({
       accepted: newlyAccepted.length,
       duplicates: persisted.filter((result) => !result.inserted).length,
