@@ -61,6 +61,32 @@ repeat warnings are never suppressed. The trusted baseline is never
 overwritten by a mismatch; to re-trust a legitimately updated tool, delete
 its entry (or the whole `baseline_hashes.json`).
 
+**A baseline that cannot be written does not weaken the defence.** The
+rewrite is built *before* the baseline is persisted, so a full disk, a
+read-only mount or a lost directory cannot change what the agent receives:
+the poisoned schema is still swapped out for the trusted one. The failed
+write is reported as `baseline_persist_failed` (critical) instead, and every
+registration made in that cycle stops counting as a trust decision until a
+write succeeds — trust on first use is a guess, and a guess that could not be
+recorded is not an approval.
+
+**One malformed tool does not disable the defence for the others.** Each
+advertised tool is inspected on its own; the listing is never rejected as a
+whole. That matters because a server that appends one broken tool used to
+turn off *both* rug-pull fingerprinting and description sanitization for
+every tool it offers — a single decoy was enough to disarm the layer.
+
+A defect therefore belongs to a tool, and there are two kinds:
+
+| Defect                                                                 | What happens to that tool | Why |
+| ---------------------------------------------------------------------- | ------------------------- | --- |
+| not an object, no usable name, a name that is too long or claimed twice, a description that is not text | **withheld** — it never reaches the agent, and it never seeds a baseline | The shield cannot say what it would be handing on: there is no identity to baseline it against, no way to scan it, or no single tool the name refers to |
+| a missing or non-object `inputSchema`                                | **kept** — still fingerprinted, still scanned, still baselined, still served | A spec violation, not a security signal. The shield does not read the input schema: the description is what it scans and the fingerprint covers the whole tool object, so the tool is still fully checked |
+
+Withheld tools are reported as `tool_malformed` with
+`action: withheld_malformed` (warning); a spec violation the shield worked
+around is reported as `tool_malformed` with `action: analysed` (info).
+
 ## Structured events
 
 Detections are also emitted as single-line JSON events in the shared Project
@@ -83,8 +109,15 @@ path:
 
 Event types: `baseline_registered` (info), `schema_mismatch` (critical, with
 `mode` and `action: rewritten|forwarded`), `suspicious_description`
-(warning), `analysis_error` (warning), `tools_list_changed` (info, see
-limitations).
+(warning), `analysis_error` (warning), `baseline_persist_failed` (critical,
+when the trust store cannot be written), `tool_malformed` (warning when the
+tool is withheld, info when it is only a spec violation — see above),
+`tools_list_changed` (info, see limitations).
+
+An event's `action` says what the agent was actually sent. A detection whose
+enforcement did not reach the agent — because the response could not be
+rebuilt — is reported with `action: not_enforced` rather than claiming a
+rewrite that never happened.
 
 ## Architecture
 
@@ -157,7 +190,7 @@ Configuration (environment variables):
 | Variable              | Default                         | Purpose                                  |
 | --------------------- | ------------------------------- | ---------------------------------------- |
 | `MCP_SHIELD_MODE`     | `enforce`                       | `enforce` (rewrite/block on mismatch) or `monitor` (log only) |
-| `MCP_SHIELD_FIRST_CONTACT` | `trust`                    | `trust` (register an unseen tool as the baseline) or `approve` (withhold it until an operator approves it by name) |
+| `MCP_SHIELD_FIRST_CONTACT` | `trust`                    | `trust` (register an unseen tool as the baseline) or `approve` (withhold it until an operator approves it by name). An unrecognised value **fails closed to `approve`** and emits a `configuration_invalid` event |
 | `MCP_SHIELD_KEY`      | built-in dev key (banner-warns) | HMAC-SHA256 secret key                   |
 | `MCP_SHIELD_BASELINE` | `baseline_hashes.json`          | baseline store path                      |
 | `MONOLITH_DASHBOARD_URL` | *(unset)*                    | if set (e.g. `http://localhost:3000/api/ingest`), events are also POSTed here |

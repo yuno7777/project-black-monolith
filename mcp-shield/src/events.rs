@@ -262,6 +262,8 @@ pub(crate) fn build_shield_event<'a>(
 /// mismatch and the suspicious description that came with it are one finding
 /// seen twice, not two unrelated ones.
 pub fn emit_traced(event_type: &str, severity: Severity, details: Value, trace_id: Option<&str>) {
+    #[cfg(test)]
+    recorder::record(event_type, severity, details.clone());
     let event = build_shield_event(event_type, severity, details, trace_id);
     let json = match serde_json::to_string(&event) {
         Ok(j) => j,
@@ -283,6 +285,38 @@ pub fn emit_traced(event_type: &str, severity: Severity, details: Value, trace_i
         if let Err(e) = outbox.enqueue(&event.event_id, &json) {
             tracing::error!(error = %e, event_id = %event.event_id, "cannot spool security event for the dashboard");
         }
+    }
+}
+
+/// A record of one emitted event, for tests to read back.
+#[cfg(test)]
+pub(crate) type RecordedEvent = (String, Severity, Value);
+
+/// Test-only recorder of the events the module emitted.
+///
+/// The ledger's claim about what was enforced is the thing under test, so a
+/// test has to be able to read it. Thread-local, so tests running in
+/// parallel do not see each other's events.
+#[cfg(test)]
+pub(crate) mod recorder {
+    use super::{RecordedEvent, Severity, Value};
+    use std::cell::RefCell;
+
+    thread_local! {
+        static EVENTS: RefCell<Vec<RecordedEvent>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(crate) fn record(event_type: &str, severity: Severity, details: Value) {
+        EVENTS.with(|events| {
+            events
+                .borrow_mut()
+                .push((event_type.to_string(), severity, details))
+        });
+    }
+
+    /// Take everything recorded so far, leaving the recorder empty.
+    pub(crate) fn drain() -> Vec<RecordedEvent> {
+        EVENTS.with(|events| std::mem::take(&mut *events.borrow_mut()))
     }
 }
 

@@ -188,7 +188,47 @@ const returningColumns = `
   tenant_id
 `;
 
-async function insertWithClient(client: PoolClient, event: MonolithEvent) {
+/**
+ * Write the alert job for a critical event, without letting a failure there
+ * roll back the evidence it was raised for.
+ *
+ * The job and the detection used to share one transaction, so a transient
+ * `alert_outbox` error — a missing table after a partial migration, an RLS
+ * check mismatch, a payload-size failure — aborted the transaction and
+ * destroyed the detection instead of delaying the notification. The ingest
+ * route then answered 503, and the module retried an event that was
+ * perfectly valid until it dead-lettered it.
+ *
+ * A savepoint keeps the two together when both succeed — the job and the
+ * evidence still commit as one — and separates them when the job cannot be
+ * written. The alert is a reaction to the evidence, not a precondition for
+ * accepting it; the same reasoning the ingest route already applies to the
+ * circuit breaker.
+ */
+async function enqueueAlertJob(client: PoolClient, event: MonolithEvent): Promise<boolean> {
+  await client.query("savepoint monolith_alert_job");
+  try {
+    await client.query(
+      `insert into monolith.alert_outbox (event_id, tenant_id, payload)
+       values ($1::uuid, $2, $3::jsonb)
+       on conflict (event_id) do nothing`,
+      [event.event_id, event.tenant_id, JSON.stringify(event)],
+    );
+    await client.query("release savepoint monolith_alert_job");
+    return true;
+  } catch (error) {
+    try {
+      await client.query("rollback to savepoint monolith_alert_job");
+    } catch {
+      // The connection is unusable, so the caller will roll the whole
+      // transaction back anyway. There is nothing left to preserve.
+    }
+    console.error("alert job could not be written; the detection is preserved", error);
+    return false;
+  }
+}
+
+export async function insertEventWithClient(client: PoolClient, event: MonolithEvent) {
   const result = await client.query<EventRow>(
     `insert into monolith.security_events (
       event_id, schema_version, occurred_at_ms, module, event_type, severity, details,
@@ -209,12 +249,7 @@ async function insertWithClient(client: PoolClient, event: MonolithEvent) {
   if (!result.rows[0]) return { inserted: false, event };
   const persisted = fromRow(result.rows[0]);
   if (persisted.severity === "critical" && alertConfigStatus().enabled) {
-    await client.query(
-      `insert into monolith.alert_outbox (event_id, tenant_id, payload)
-       values ($1::uuid, $2, $3::jsonb)
-       on conflict (event_id) do nothing`,
-      [persisted.event_id, persisted.tenant_id, JSON.stringify(persisted)],
-    );
+    await enqueueAlertJob(client, persisted);
   }
   return { inserted: true, event: persisted };
 }
@@ -241,7 +276,7 @@ export async function persistEvents(events: MonolithEvent[]) {
   }
   return withTenantDb(tenantId, async (client) => {
     const results = [];
-    for (const event of events) results.push(await insertWithClient(client, event));
+    for (const event of events) results.push(await insertEventWithClient(client, event));
     return results;
   });
 }

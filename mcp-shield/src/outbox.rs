@@ -57,6 +57,10 @@ const RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
 const FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 const MIN_EVENT_TOKEN_LENGTH: usize = 16;
 const MAX_EVENT_TOKEN_LENGTH: usize = 512;
+/// The revocation poll cadence used when the operator did not choose one.
+const DEFAULT_POLL_INTERVAL_MS: u64 = 15_000;
+/// The shortest cadence the revocation poller will run at.
+const MIN_POLL_INTERVAL_MS: u64 = 1_000;
 
 /// HTTP statuses the ingest endpoint returns for input it will never accept:
 /// a bad credential (401/403), a malformed or oversized body (400/413), or an
@@ -790,12 +794,34 @@ fn revocation_poll_url(target: &reqwest::Url) -> Option<reqwest::Url> {
     Some(poll)
 }
 
-/// Revocation poll cadence; zero (or a bad value) disables polling.
+/// Revocation poll cadence.
+///
+/// Zero is the explicit off switch, and the only way to turn polling off. A
+/// value that cannot be read as a cadence of at least
+/// [`MIN_POLL_INTERVAL_MS`] falls back to the default rather than stopping
+/// the poller: the poll is the only way an idle module learns that its
+/// session was revoked, so a mistyped interval must not quietly switch that
+/// off. The fallback says so, loudly, and keeps the control on.
 fn poll_interval_ms() -> Option<u64> {
-    let raw = std::env::var("MONOLITH_SESSION_POLL_MS").unwrap_or_else(|_| "15000".to_string());
+    let Ok(raw) = std::env::var("MONOLITH_SESSION_POLL_MS") else {
+        return Some(DEFAULT_POLL_INTERVAL_MS);
+    };
     match raw.trim().parse::<u64>() {
-        Ok(value) if value >= 1_000 => Some(value),
-        _ => None,
+        Ok(0) => {
+            tracing::info!(
+                "MONOLITH_SESSION_POLL_MS=0: revoked-session polling is disabled for this module"
+            );
+            None
+        }
+        Ok(value) if value >= MIN_POLL_INTERVAL_MS => Some(value),
+        _ => {
+            tracing::warn!(
+                value = raw.trim(),
+                "unrecognized MONOLITH_SESSION_POLL_MS (expected 0, or a cadence of at least 1000 ms); \
+                 using the default cadence of 15000 ms"
+            );
+            Some(DEFAULT_POLL_INTERVAL_MS)
+        }
     }
 }
 
@@ -1288,15 +1314,27 @@ mod tests {
     }
 
     #[test]
-    fn revocation_poll_interval_is_bounded_and_zero_disables_it() {
+    fn revocation_poll_interval_falls_back_to_the_default_when_it_cannot_be_read() {
         std::env::set_var("MONOLITH_SESSION_POLL_MS", "30000");
         assert_eq!(poll_interval_ms(), Some(30_000));
         std::env::set_var("MONOLITH_SESSION_POLL_MS", "0");
-        assert_eq!(poll_interval_ms(), None);
+        assert_eq!(poll_interval_ms(), None, "zero is the explicit off switch");
         std::env::set_var("MONOLITH_SESSION_POLL_MS", "250");
-        assert_eq!(poll_interval_ms(), None, "sub-second polls are rejected");
+        assert_eq!(
+            poll_interval_ms(),
+            Some(15_000),
+            "a sub-second cadence falls back to the default instead of stopping the poll"
+        );
         std::env::set_var("MONOLITH_SESSION_POLL_MS", "not-a-number");
-        assert_eq!(poll_interval_ms(), None);
+        assert_eq!(poll_interval_ms(), Some(15_000));
+        std::env::set_var("MONOLITH_SESSION_POLL_MS", "15000ms");
+        assert_eq!(
+            poll_interval_ms(),
+            Some(15_000),
+            "a value with a unit suffix is not a cadence"
+        );
+        std::env::set_var("MONOLITH_SESSION_POLL_MS", "-1");
+        assert_eq!(poll_interval_ms(), Some(15_000));
         std::env::remove_var("MONOLITH_SESSION_POLL_MS");
         assert_eq!(poll_interval_ms(), Some(15_000), "default is 15s");
     }

@@ -85,7 +85,8 @@ Three things changed.
 
 ### 2. A notification failure rolls back the evidence it was raised for
 
-**Status:** verified. **Where:** `dashboard/lib/event-store.ts`. **Effort:** small.
+**Status:** verified, and fixed. **Where:** `dashboard/lib/event-store.ts`.
+**Effort:** small.
 
 `insertWithClient` inserts the security event and then, for a critical event
 with alerting enabled, inserts into `monolith.alert_outbox` **using the same
@@ -155,7 +156,7 @@ short token. The problem is credential conflation, not a missing check.
 
 ### 5. The tool layer's fail-open path discards enforcement it has already computed
 
-**Status:** reported. **Where:** `mcp-shield/src/proxy.rs`,
+**Status:** verified, and fixed. **Where:** `mcp-shield/src/proxy.rs`,
 `mcp-shield/src/fingerprint.rs`. **Effort:** small.
 
 `store.save_if_dirty()?` runs **after** the sanitizer has dropped a poisoned
@@ -180,7 +181,7 @@ records a detection that looks like it was enforced.
 
 ### 6. One malformed tool entry voids the whole `tools/list` defence for that server
 
-**Status:** reported. **Where:** `mcp-shield/src/proxy.rs`. **Effort:** small.
+**Status:** verified, and fixed. **Where:** `mcp-shield/src/proxy.rs`. **Effort:** small.
 
 `validate_tool_entries` rejects the **whole list** if any single advertised
 tool lacks a non-empty name or an object `inputSchema`. The rejection
@@ -195,6 +196,21 @@ enforce mode, with only a warning-level event. This is a
 single-malformed-entry attack on the defence itself: the fail-open rule
 applied to the enforcement path without telling the operator enforcement is
 off.
+
+**The fix.** The whole-list rejection is gone: every tool is inspected on its
+own, and a defect belongs to a tool rather than to the listing. A tool the
+shield cannot vouch for — not an object, no usable name, a name that is too
+long or claimed twice, a description that is not text — is **withheld** from
+the agent and never seeds a baseline, while the rest of the listing is still
+fingerprinted, scanned and served. A tool that only breaks the spec (a
+missing or non-object `inputSchema`) is **kept**: the shield does not read
+the input schema, so nothing stops it from doing its job, and the operator
+is told. Both are reported as `tool_malformed`, with `action:
+withheld_malformed` (warning) or `action: analysed` (info).
+
+The fix is proved by mutating it back to the old behaviour — one defective
+entry rejecting the whole listing — and watching all six new tests fail
+while every pre-existing test still passes.
 
 ### 7. The VectorAnchor MCP server still dies on a truncated error body
 
@@ -384,3 +400,42 @@ up.
   answer.** The literal redaction pass covered only the upstream error body;
   a 200 answer was protected by the pattern scanner alone, and no pattern can
   catch a hyphenated Anthropic key. Fixed in PR #60.
+- **A notification failure rolled back the evidence it was raised for** (§2
+  above). The security event and its alert job shared one transaction, so a
+  transient `alert_outbox` error rolled the detection back too, answered
+  `503`, and sent the module into a retry-and-dead-letter loop over an event
+  that was perfectly valid. Fixed in PR #63: the event commits, and the job
+  is written by a path that cannot roll it back.
+- **A mistyped control setting turned the control off.** Two settings failed
+  open on a typo, in the quiet direction.
+  `MCP_SHIELD_FIRST_CONTACT=aprove` was read as `trust` — the shield warned
+  on stderr and then blessed every unseen tool as the baseline, and the
+  operator's stderr is the agent host's MCP log, not the console they watch.
+  A malformed `MONOLITH_SESSION_POLL_MS` stopped the cross-layer revocation
+  poller outright, in both the Rust spool and the shared Python emitter,
+  with no log line at all — and the poll is the only way an idle module
+  learns that its session was revoked. Fixed in PR #62: an unrecognised
+  *explicit* value now resolves to the outcome that cannot lose a
+  detection and emits a `configuration_invalid` event, and an unreadable
+  cadence falls back to the default and says so. The *unset* defaults are
+  unchanged: only the default is in question, and a typo is not an answer to
+  that question.
+- **The tool layer's fail-open path discarded enforcement it had already
+  computed** (§5 above). A failed baseline write aborted the whole analysis
+  with a `?`, so the server's original bytes — the poisoned schema — were
+  forwarded while the ledger recorded the response as rewritten, and a
+  registration that could not be written stood as a trust decision. Fixed in
+  PR #64: the rewrite is built before the baseline is written, a failed
+  write is reported as `baseline_persist_failed` rather than
+  `analysis_error`, a registration that could not be written stops counting
+  as a trust decision, and an event's `action` says what the agent was
+  actually sent.
+- **One malformed tool entry turned off the defence for every tool beside
+  it** (§6 above). The `tools/list` validator rejected the whole listing on
+  the first broken entry, before a single tool had been fingerprinted or
+  scanned, and a rejected listing is forwarded verbatim — so a server
+  advertising one decoy tool permanently disarmed both rug-pull
+  fingerprinting and description sanitization for that server. Fixed in
+  PR #66: each tool is inspected on its own, a tool the shield cannot vouch
+  for is withheld, a tool that only breaks the spec is still fully checked
+  and served, and the rest of the listing keeps its protection.

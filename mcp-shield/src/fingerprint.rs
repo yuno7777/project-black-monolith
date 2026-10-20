@@ -154,6 +154,16 @@ pub struct BaselineStore {
     /// True when in-memory entries or pending records were modified since the
     /// last load or save.
     dirty: bool,
+    /// Tools registered in memory but not yet written to disk.
+    ///
+    /// A registration that could not be persisted is not a trust decision: it
+    /// is a guess the proxy was unable to record. Treating it as trusted
+    /// would let a schema nobody approved stand as the approved schema,
+    /// which is exactly what the first-contact gate exists to prevent — so
+    /// these names are excluded from [`BaselineStore::contains`] until a
+    /// save succeeds. They are still *compared* against, so a change to a
+    /// not-yet-persisted schema is still a change.
+    unpersisted: HashSet<String>,
     /// Last observed modification timestamp of the baseline file on disk.
     last_modified: Option<SystemTime>,
     /// SHA-256 digest of the last loaded/saved file contents on disk.
@@ -163,6 +173,12 @@ pub struct BaselineStore {
     reload_failure: Option<String>,
     /// Whether the current `reload_failure` has already been reported.
     reload_failure_reported: bool,
+    /// The most recent persistence failure, kept for the same reason: a
+    /// trust store that cannot be written stays broken until an operator
+    /// fixes it, and `tools/list` can be called repeatedly.
+    persist_failure: Option<String>,
+    /// Whether the current `persist_failure` has already been reported.
+    persist_failure_reported: bool,
     /// Path of the lock file that serializes read-modify-write cycles
     /// against the baseline, across processes.
     lock_path: PathBuf,
@@ -221,13 +237,17 @@ impl BaselineStore {
         Ok(BaselineLock { _file: file })
     }
 
-    /// Whether an operator-approved baseline already exists for this tool.
+    /// Whether a trusted baseline already exists for this tool.
     ///
     /// The proxy uses this before trust-on-first-use registration so enforce
     /// mode can refuse a suspicious first-contact description instead of
     /// blessing it as the baseline.
+    ///
+    /// A registration that has not been written to disk does not count: it is
+    /// a guess the proxy could not record, and a guess is not a trust
+    /// decision. See [`BaselineStore::unpersisted`].
     pub fn contains(&self, tool_name: &str) -> bool {
-        self.tools.contains_key(tool_name)
+        self.tools.contains_key(tool_name) && !self.unpersisted.contains(tool_name)
     }
 
     /// Whether the store has unsaved in-memory modifications.
@@ -276,9 +296,12 @@ impl BaselineStore {
                     pending: HashMap::new(),
                     revoked: HashSet::new(),
                     dirty: false,
+                    unpersisted: HashSet::new(),
                     last_modified: None,
                     reload_failure: None,
                     reload_failure_reported: false,
+                    persist_failure: None,
+                    persist_failure_reported: false,
                     disk_digest: None,
                 });
             }
@@ -359,9 +382,12 @@ impl BaselineStore {
             pending: file.pending,
             revoked: file.revoked,
             dirty: false,
+            unpersisted: HashSet::new(),
             last_modified,
             reload_failure: None,
             reload_failure_reported: false,
+            persist_failure: None,
+            persist_failure_reported: false,
             disk_digest: Some(disk_digest),
         })
     }
@@ -381,6 +407,7 @@ impl BaselineStore {
                     self.tools.clear();
                     self.pending.clear();
                     self.revoked.clear();
+                    self.unpersisted.clear();
                     self.last_modified = None;
                     self.disk_digest = None;
                     self.dirty = false;
@@ -424,6 +451,10 @@ impl BaselineStore {
         self.reload_failure = None;
         self.reload_failure_reported = false;
         if self.dirty {
+            // Which names the disk already holds. A name that is on disk has
+            // a durable entry, so it stops being "unpersisted" even if the
+            // merge kept the in-memory copy.
+            let on_disk: HashSet<String> = reloaded.tools.keys().cloned().collect();
             let mut merged_tools = reloaded.tools;
             let mut merged_pending = reloaded.pending;
             // A revocation is sticky: it survives a merge with an in-memory
@@ -442,10 +473,12 @@ impl BaselineStore {
             self.tools = merged_tools;
             self.pending = merged_pending;
             self.revoked = merged_revoked;
+            self.unpersisted.retain(|name| !on_disk.contains(name));
         } else {
             self.tools = reloaded.tools;
             self.pending = reloaded.pending;
             self.revoked = reloaded.revoked;
+            self.unpersisted.clear();
         }
         self.last_modified = reloaded.last_modified;
         self.disk_digest = reloaded.disk_digest;
@@ -551,6 +584,9 @@ impl BaselineStore {
         // it restores the schema the operator already trusted.
         self.pending.entry(name.to_string()).or_insert(entry);
         self.revoked.insert(name.to_string());
+        // A revoked tool is not trusted at all, whether or not the revocation
+        // reached the disk.
+        self.unpersisted.remove(name);
         self.dirty = true;
         true
     }
@@ -575,6 +611,11 @@ impl BaselineStore {
                         tool: tool.clone(),
                     },
                 );
+                // A trust-on-first-use registration is a guess until it is
+                // on disk. Until then it does not count as a trusted
+                // baseline, so a write failure cannot leave a schema nobody
+                // approved standing as the approved one.
+                self.unpersisted.insert(tool_name.to_string());
                 self.dirty = true;
                 Verdict::Registered
             }
@@ -599,7 +640,30 @@ impl BaselineStore {
     /// A direct truncate-and-write can leave a corrupt or empty trust store if
     /// the process or host stops mid-write. Build and fsync a sibling temporary
     /// file first, then atomically replace the destination.
+    ///
+    /// A failure here is recorded so the caller can report it once per
+    /// distinct cause, and it leaves the in-memory state alone: the store
+    /// keeps enforcing with what it already holds.
     pub fn save(&mut self) -> Result<()> {
+        let result = self.write_store();
+        match &result {
+            Ok(()) => {
+                self.persist_failure = None;
+                self.persist_failure_reported = false;
+            }
+            Err(error) => {
+                let message = error.to_string();
+                if self.persist_failure.as_deref() != Some(message.as_str()) {
+                    self.persist_failure = Some(message);
+                    self.persist_failure_reported = false;
+                }
+            }
+        }
+        result
+    }
+
+    /// Write the store to disk.
+    fn write_store(&mut self) -> Result<()> {
         let file = BaselineFile {
             tools: self.tools.clone(),
             pending: self.pending.clone(),
@@ -638,7 +702,25 @@ impl BaselineStore {
             .and_then(|meta| meta.modified().ok());
         self.disk_digest = Some(digest);
         self.dirty = false;
+        // Everything is on disk now, so every registration is durable and
+        // counts as a trust decision again.
+        self.unpersisted.clear();
         Ok(())
+    }
+
+    /// Take the last persistence failure, but only the first time it is seen.
+    ///
+    /// A trust store that cannot be written stays broken until an operator
+    /// fixes it, and `tools/list` can be called repeatedly. Reporting the
+    /// failure once per distinct cause keeps it visible without letting a
+    /// server flood the ledger with the same critical event.
+    pub fn take_persist_failure(&mut self) -> Option<String> {
+        if self.persist_failure_reported {
+            return None;
+        }
+        let message = self.persist_failure.clone()?;
+        self.persist_failure_reported = true;
+        Some(message)
     }
 }
 

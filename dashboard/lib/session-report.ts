@@ -30,7 +30,8 @@ export const MAX_SESSION_EVENTS = 1_000;
  *   blocked / blocked_first_contact   mcp-shield refused the tool call
  *   rewritten                         mcp-shield replaced a poisoned schema
  *   withheld / withheld_revoked /      mcp-shield and vector-anchor held
- *     withheld_pending_approval         something back
+ *     withheld_pending_approval /       something back
+ *     withheld_malformed
  *   filtered                          vector-anchor served the next clean hit
  *   quarantined                       vector-anchor quarantined a document
  *   terminated / refused              trace-audit cut the stream short
@@ -47,6 +48,7 @@ const BLOCKING_OUTCOMES = new Set([
   "withheld",
   "withheld_revoked",
   "withheld_pending_approval",
+  "withheld_malformed",
   "filtered",
   "quarantined",
   "terminated",

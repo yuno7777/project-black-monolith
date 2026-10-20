@@ -131,6 +131,10 @@ is a finding; agreement across layers is treated as an active compromise.
   response and poll `GET /api/sessions/revoked` every
   `MONOLITH_SESSION_POLL_MS` (default 15 s, `0` disables) so an idle session
   is still cut off. The poll uses the module's existing ingest credential.
+  `0` is the only way to turn the poll off: a cadence the module cannot read
+  — a sub-second value, a typo, a number with a unit suffix — falls back to
+  the default and says so, rather than leaving a revoked session running
+  with nothing to show for it.
 - **Fail closed.** A failed or malformed refresh leaves the previous set in
   place; only an authoritative snapshot can lift a revocation. Revocations do
   not expire on a timer.
