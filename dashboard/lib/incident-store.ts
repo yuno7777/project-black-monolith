@@ -638,17 +638,26 @@ export async function evaluateSessionCircuitBreaker(
       sessionModulesMap().set(key, set);
     }
     enforceMemorySessionBound();
+    // Group the tenant's events by session once. The candidate loop used to
+    // rescan every event of the tenant for every candidate, so the cost grew
+    // with the square of the batch size.
+    const eventsBySession = new Map<string, MonolithEvent[]>();
+    for (const event of getMemoryEventsForTenant(tenantId)) {
+      if (!event.agent_id || !event.session_id) continue;
+      const key = sessionKey(tenantId, event.agent_id, event.session_id);
+      const list = eventsBySession.get(key);
+      if (list) list.push(event);
+      else eventsBySession.set(key, [event]);
+    }
     for (const [key, { agentId, sessionId }] of candidates) {
       const modules = new Set<string>(sessionModulesMap().get(key) ?? []);
       // An analyst restore settles everything received before it. Without the
       // watermark, the next event for the session re-reads the old evidence
       // and re-revokes immediately, making restore unusable.
       const restoredAt = sessionRestoredAtMap().get(key) ?? 0;
-      for (const e of getMemoryEventsForTenant(tenantId)) {
+      for (const e of eventsBySession.get(key) ?? []) {
         if (
-          e.agent_id === agentId
-          && e.session_id === sessionId
-          && severities.has(String(e.severity) as Severity)
+          severities.has(String(e.severity) as Severity)
           && KNOWN_MODULES.has(e.module)
           // Refusals are consequences of a revocation, not fresh evidence:
           // counting them would let one revocation keep re-tripping itself.
@@ -675,50 +684,57 @@ export async function evaluateSessionCircuitBreaker(
   }
 
   const severityList = Array.from(severities);
+  const agentIds: string[] = [];
+  const sessionIds: string[] = [];
   for (const { agentId, sessionId } of candidates.values()) {
-    const layers = await withTenantDb(tenantId, async (db) => {
-      const res = await db.query<{ module: string }>(
-        `select distinct module
-           from monolith.security_events
-          where tenant_id = $1
-            and agent_id = $2
-            and session_id = $3
-            and severity = any($4::text[])
+    agentIds.push(agentId);
+    sessionIds.push(sessionId);
+  }
+  if (agentIds.length) {
+    // One query for the whole batch. The layer lookup used to run a separate
+    // transaction per candidate, so an ingest of 100 events cost 100
+    // round-trips before it could decide anything.
+    const rows = await withTenantDb(tenantId, async (db) => {
+      const res = await db.query<{ agent_id: string; session_id: string; modules: string[] }>(
+        `select e.agent_id, e.session_id, array_agg(distinct e.module) as modules
+           from monolith.security_events e
+           join unnest($2::text[], $3::text[]) as candidate(agent_id, session_id)
+             on candidate.agent_id = e.agent_id
+            and candidate.session_id = e.session_id
+          where e.tenant_id = $1
+            and e.severity = any($4::text[])
             -- A refusal caused by the revocation is not new evidence for it.
-            and event_type <> 'session_quarantined'
-            and received_at > coalesce(
-              (select restored_at from monolith.revoked_sessions
-                where tenant_id = $1 and agent_id = $2 and session_id = $3),
+            and e.event_type <> 'session_quarantined'
+            and e.received_at > coalesce(
+              (select r.restored_at from monolith.revoked_sessions r
+                where r.tenant_id = $1
+                  and r.agent_id = e.agent_id
+                  and r.session_id = e.session_id),
               '-infinity'::timestamptz
-            )`,
-        [tenantId, agentId, sessionId, severityList],
+            )
+          group by e.agent_id, e.session_id`,
+        [tenantId, agentIds, sessionIds, severityList],
       );
-      return res.rows.map((r) => r.module).sort();
+      return res.rows;
     });
-    if (layers.length >= minLayers) {
-      await revokeSession(
-        tenantId,
-        agentId,
-        sessionId,
-        `Cross-layer circuit breaker tripped across ${layers.join(", ")}`,
-        "auto-circuit-breaker",
-        layers,
-      );
+    for (const row of rows) {
+      const layers = [...(row.modules ?? [])].sort();
+      if (layers.length >= minLayers) {
+        await revokeSession(
+          tenantId,
+          row.agent_id,
+          row.session_id,
+          `Cross-layer circuit breaker tripped across ${layers.join(", ")}`,
+          "auto-circuit-breaker",
+          layers,
+        );
+      }
     }
   }
 
   const revoked = await listRevokedSessions(tenantId);
   return Array.from(new Set(revoked.map((r) => r.session_id)));
 }
-
-/**
- * The sessions this call newly revoked.
- *
- * The ingest response carries the tenant's whole revocation set, because the
- * emitters treat it as a snapshot they replace their local mirror with, not
- * as a delta they merge. Returning only what this batch changed would
- * silently narrow what an emitter believes is quarantined.
- */
 
 /**
  * What else happened in this event's agent session.
