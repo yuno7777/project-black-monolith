@@ -224,6 +224,115 @@ def test_the_relay_redacts_a_credential_the_model_emitted():
     assert text.endswith("and that is all")
 
 
+def test_the_relay_audits_the_passage_a_citation_quotes():
+    """A citation carries model-authored text, and it reaches the client.
+
+    The audited delta kinds are the ones whose payload is a string field. A
+    citation's payload is a nested object — the quoted passage sits inside
+    a `citation` object, beside the document title and the offsets — so it
+    was relayed verbatim: the one place in the answer path where text the
+    model produced was never scanned.
+    """
+    frames = _frames(
+        (
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            },
+        ),
+        (
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "citations_delta",
+                    "citation": {
+                        "type": "char_location",
+                        "document_title": "notes.md",
+                        "document_index": 0,
+                        "start_char_index": 10,
+                        "end_char_index": 60,
+                        "cited_text": f"the key is {FICTIONAL_AWS_KEY} and that is all",
+                    },
+                },
+            },
+        ),
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        ("message_stop", {"type": "message_stop"}),
+    )
+    emitted: list[tuple] = []
+
+    async def run():
+        cfg = _cfg(_tmp_path())
+        counts = build_distribution(NORMAL_TOKENS * 5)
+        auditor = StreamAuditor(
+            cfg,
+            counts,
+            lambda event_type, severity, details, ctx=None, **kwargs: emitted.append(
+                (event_type, severity, details)
+            ),
+        )
+        relay = AnthropicRelay(auditor, None, divergence_enabled=False)
+        return [event async for event in relay.run(frames)]
+
+    events = asyncio.run(run())
+    citations = [
+        event["data"]["delta"]["citation"]
+        for event in events
+        if event["kind"] == "passthrough"
+        and event["data"].get("type") == "content_block_delta"
+    ]
+    assert len(citations) == 1
+    assert FICTIONAL_AWS_KEY not in citations[0]["cited_text"]
+    assert "[REDACTED:aws_access_key_id]" in citations[0]["cited_text"]
+    # The rest of the citation is untouched: the client still knows what was
+    # cited and where.
+    assert citations[0]["document_title"] == "notes.md"
+    assert citations[0]["start_char_index"] == 10
+    assert citations[0]["end_char_index"] == 60
+    # And the redaction is in the ledger, like every other one.
+    assert "pii_redacted" in [event_type for event_type, _severity, _details in emitted]
+    redaction = next(
+        details for event_type, _severity, details in emitted if event_type == "pii_redacted"
+    )
+    assert redaction["label"] == "aws_access_key_id"
+
+
+def test_a_citation_with_nothing_to_audit_is_relayed_unchanged():
+    """A citation is not a credential, and must not be mangled into one."""
+    frames = _frames(
+        (
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "citations_delta",
+                    "citation": {
+                        "type": "char_location",
+                        "document_title": "notes.md",
+                        "cited_text": "an ordinary quoted passage",
+                    },
+                },
+            },
+        ),
+        ("message_stop", {"type": "message_stop"}),
+    )
+
+    events = asyncio.run(_run_relay(frames))
+    citations = [
+        event["data"]["delta"]["citation"]
+        for event in events
+        if event["kind"] == "passthrough"
+        and event["data"].get("type") == "content_block_delta"
+    ]
+    assert len(citations) == 1
+    assert citations[0]["cited_text"] == "an ordinary quoted passage"
+
+
 def test_the_relay_keeps_two_blocks_in_order():
     frames = _frames(
         (
@@ -980,7 +1089,13 @@ def test_an_auditor_failure_drains_the_queue_before_the_refusal():
         """An auditor whose read of the upstream fails part-way through."""
 
         async def audit_tokens(
-            self, source, ctx, divergence_enabled=False, emit_sync=False, literals=()
+            self,
+            source,
+            ctx,
+            divergence_enabled=False,
+            emit_sync=False,
+            literals=(),
+            reported_secrets=None,
         ):
             async for _ in source:
                 pass

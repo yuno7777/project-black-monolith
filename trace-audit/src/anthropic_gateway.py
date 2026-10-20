@@ -30,7 +30,15 @@ import httpx
 
 from .config import Config
 from .events import EventContext
-from .stream_proxy import FLUSH, POLICY_VERSION, SAFE_REFUSAL, StreamAuditor
+from .pii_scanner import scan
+from .redaction import redact
+from .stream_proxy import (
+    FLUSH,
+    POLICY_VERSION,
+    SAFE_REFUSAL,
+    StreamAuditor,
+    secret_fingerprint,
+)
 
 # A single SSE line larger than this is a malformed (or hostile) upstream.
 MAX_SSE_LINE_BYTES = 256 * 1024
@@ -61,6 +69,12 @@ DELTA_PAYLOAD_FIELD = {
     "input_json_delta": "partial_json",
     "thinking_delta": "thinking",
 }
+
+# A citation delta carries the passage the model quoted, inside a nested
+# object rather than in a string field, so it cannot be audited by the same
+# rule as the delta kinds above. It is still model-authored text and it
+# still reaches the client, so it is audited on its own.
+CITATION_DELTA_KIND = "citations_delta"
 
 # The reason the auditor gives when it cut a stream short because the
 # reasoning diverged. Any other reason is a transport failure, and the two
@@ -182,6 +196,10 @@ class AnthropicRelay:
         # stops at the first hyphen, so an Anthropic key would pass through
         # it untouched.
         self._literals = tuple(literals)
+        # One-way fingerprints of the credentials already reported in this
+        # answer. Shared with the auditor, so a credential that appears both
+        # in the prose and in a quoted passage is reported once.
+        self._reported_secrets: set[bytes] = set()
         # push index -> the content block that push belonged to
         self._block_of_push: list[int] = []
         # push index -> the delta kind that push arrived as
@@ -246,6 +264,8 @@ class AnthropicRelay:
                         self._pushes += 1
                         yield text
                     continue
+                if isinstance(delta, dict) and delta.get("type") == CITATION_DELTA_KIND:
+                    self._audit_citation(data)
             elif kind == "content_block_stop":
                 index = data.get("index")
                 if isinstance(index, int) and index in self._open_blocks:
@@ -265,6 +285,54 @@ class AnthropicRelay:
         while self._queue and self._queue[0].pushes_before <= through:
             ready.append(self._queue.pop(0))
         return ready
+
+    def _audit_citation(self, data: dict[str, Any]) -> None:
+        """Redact the passage a citation quotes, in place.
+
+        A citation delta is not one of the audited delta kinds because its
+        payload is not a string field: the quoted passage sits inside a
+        nested ``citation`` object, alongside the document title and the
+        character offsets. It is still text the model put in the answer,
+        and it still reaches the client, so leaving it alone would have been
+        the one place in the answer path where model-authored text was not
+        scanned.
+
+        The delta is rewritten rather than dropped, so the citation keeps
+        its shape: the client reads the same citation with the credential
+        replaced by a placeholder.
+        """
+        delta = data.get("delta")
+        citation = delta.get("citation") if isinstance(delta, dict) else None
+        if not isinstance(citation, dict):
+            return
+        cited = citation.get("cited_text")
+        if not isinstance(cited, str) or not cited:
+            return
+        matches = scan(cited, self._literals)
+        if not matches:
+            return
+        citation["cited_text"] = redact(cited, matches)
+        for match in matches:
+            fingerprint = secret_fingerprint(match.value)
+            if fingerprint in self._reported_secrets:
+                continue
+            self._reported_secrets.add(fingerprint)
+            self._redactions.append(match.label)
+            self.auditor.emit(
+                "pii_redacted",
+                "warning",
+                {
+                    "label": match.label,
+                    "redacted_as": f"[REDACTED:{match.label}]",
+                    "position_tokens": self._pushes,
+                    "delta_kind": CITATION_DELTA_KIND,
+                },
+                self.ctx,
+                resource_type="reasoning_trace",
+                resource_id=self.ctx.trace_id if self.ctx else None,
+                outcome="redacted",
+                policy_version=POLICY_VERSION,
+            )
 
     def _note_client_block(self, data: dict[str, Any]) -> None:
         """Remember a content block the client has been told about."""
@@ -292,6 +360,7 @@ class AnthropicRelay:
             divergence_enabled=self.divergence_enabled,
             emit_sync=True,
             literals=self._literals,
+            reported_secrets=self._reported_secrets,
         )
         async for evt in audit:
             kind = evt.get("type")
