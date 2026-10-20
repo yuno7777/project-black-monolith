@@ -24,13 +24,15 @@ export async function GET(req: Request, context: { params: Promise<{ sessionId: 
   }
 
   try {
-    const incidents = await listSessionIncidents(identity.tenant_id, sessionId);
+    const page = await listSessionIncidents(identity.tenant_id, sessionId);
     return Response.json({
       session_id: sessionId,
       tenant_id: identity.tenant_id,
       generated_at_ms: Date.now(),
-      summary: summarizeSession(incidents),
-      events: incidents,
+      summary: summarizeSession(page.incidents, page.total),
+      total_events: page.total,
+      truncated: page.total > page.incidents.length,
+      events: page.incidents,
     });
   } catch (error) {
     console.error("failed to read a session report", error);

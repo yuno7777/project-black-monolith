@@ -2040,6 +2040,12 @@ test("the session report gathers one agent run's events across all three layers"
 
   const summary = body.summary;
   assert.equal(summary.total, 5);
+  // A session that fits on one page is not a truncated report, and the
+  // response says which it is.
+  assert.equal(summary.truncated, false);
+  assert.equal(summary.counted, 5);
+  assert.equal(body.truncated, false);
+  assert.equal(body.total_events, 5);
   // Critical: schema_mismatch, corpus_poison_quarantine, session_quarantined.
   assert.equal(summary.by_severity.critical, 3);
   assert.equal(summary.by_severity.warning, 1);
@@ -2094,6 +2100,38 @@ test("the session report gathers one agent run's events across all three layers"
   );
   assert.equal(anonymous.status, 401);
 
+  // A module's ingest credential is not an operator credential. The report
+  // is operator-scoped, and a module that could read every session's
+  // ledger would be a much wider hole than one that can write its own
+  // events.
+  const moduleCredential = await sessionReportGet(
+    new Request("http://localhost/api/sessions/sess-report-1", {
+      headers: { authorization: "Bearer mcp-shield-report-token-01" },
+    }),
+    { params: Promise.resolve({ sessionId: "sess-report-1" }) },
+  );
+  assert.equal(moduleCredential.status, 401);
+
+  // A session id shaped like SQL is refused before it reaches the query.
+  // The identifier is a query parameter, so this is defence in depth rather
+  // than the thing standing between an operator and an injection — but a
+  // report endpoint that echoes whatever it was given is a bad habit, and
+  // the shapes here are the ones that would end up in a log line.
+  for (const shaped of [
+    "sess'; DROP TABLE monolith.security_events; --",
+    "sess';DROP_TABLE_monolith--",
+    "sess'OR'1'='1",
+    "../../etc/passwd",
+  ]) {
+    const injection = await sessionReportGet(
+      new Request("http://localhost/api/sessions/sess-report-1", {
+        headers: { authorization: "Bearer watcher-report-token-00001" },
+      }),
+      { params: Promise.resolve({ sessionId: shaped }) },
+    );
+    assert.equal(injection.status, 422, `session id ${shaped} was not refused`);
+  }
+
   // A session id that is not a session id.
   const malformed = await sessionReportGet(
     new Request("http://localhost/api/sessions/not a session", {
@@ -2105,5 +2143,58 @@ test("the session report gathers one agent run's events across all three layers"
 
   clearMemoryEvents();
   clearMemoryRevocations();
+});
+
+test("a session report that cannot hold every event says so", async () => {
+  const { clearMemoryEvents } = await import("../lib/event-store");
+  const { listSessionIncidents, summarizeSession } = await import("../lib/session-report");
+  const { POST: ingestPost } = await import("../app/api/ingest/route");
+
+  delete process.env.DATABASE_URL;
+  clearMemoryEvents();
+
+  process.env.EVENT_INGEST_TOKENS_JSON = JSON.stringify({
+    "tenant-truncated": { "mcp-shield": "mcp-shield-truncated-token-01" },
+  });
+
+  for (let index = 0; index < 5; index += 1) {
+    const response = await ingestPost(
+      new Request("http://localhost/api/ingest", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer mcp-shield-truncated-token-01",
+        },
+        body: JSON.stringify({
+          module: "mcp-shield",
+          tenant_id: "tenant-truncated",
+          agent_id: "agent-report",
+          session_id: "sess-truncated",
+          event_type: "schema_mismatch",
+          severity: "critical",
+          outcome: "rewritten",
+          details: { index },
+        }),
+      }),
+    );
+    assert.equal(response.status, 201);
+  }
+
+  // A page that could not hold the whole session.
+  const page = await listSessionIncidents("tenant-truncated", "sess-truncated", 2);
+  assert.equal(page.incidents.length, 2);
+  // The session really has five events, and the page says so rather than
+  // reading as a complete report of a two-event run.
+  assert.equal(page.total, 5);
+
+  const summary = summarizeSession(page.incidents, page.total);
+  assert.equal(summary.truncated, true);
+  assert.equal(summary.total, 5);
+  // The counts cover the page, not the session, and the summary says which
+  // is which: a reader that wants the ratio of detections to events needs
+  // the counted scope, not the session's true size.
+  assert.equal(summary.counted, 2);
+
+  clearMemoryEvents();
 });
 

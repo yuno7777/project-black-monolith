@@ -82,7 +82,25 @@ const NON_DETECTION_EVENTS = new Set([
 const SEVERITY_RANK: Record<Severity, number> = { critical: 0, warning: 1, info: 2 };
 
 export interface SessionSummary {
+  /**
+   * How many events the session has.
+   *
+   * Equal to the number of events counted unless the report was truncated,
+   * in which case it is the session's true size and every other count here
+   * is a lower bound.
+   */
   total: number;
+  /**
+   * How many events the counts below were computed from.
+   *
+   * Equal to `total` unless the report was truncated, in which case the
+   * counts cover this many events and `total` is the session's true size.
+   * A reader that wants the ratio of detections to events needs this
+   * number, not `total`.
+   */
+  counted: number;
+  /** True when the cap dropped events, so the counts are a lower bound. */
+  truncated: boolean;
   detections: number;
   blocks: number;
   quarantines: number;
@@ -90,6 +108,14 @@ export interface SessionSummary {
   by_severity: Record<string, number>;
   by_module: Record<string, number>;
   by_event_type: Record<string, number>;
+}
+
+/** One page of a session's events, and how many the session really has. */
+export interface SessionIncidentPage {
+  /** The events, worst first, up to the cap. */
+  incidents: Incident[];
+  /** Every event the session produced, including the ones not returned. */
+  total: number;
 }
 
 /** Worst-first, then newest-first — the order an operator reads a queue in. */
@@ -107,25 +133,27 @@ function orderIncidents(incidents: Incident[]): Incident[] {
  * Every event one agent session produced.
  *
  * A session is bounded by the run that created it, so there is no cursor
- * here: the whole session fits in one page, and a report that silently
- * dropped its oldest events would understate exactly the run an operator
- * wants to look at.
+ * here: the whole session fits in one page. The cap is a safety net for
+ * the session that does not, and a report that silently dropped its oldest
+ * events would understate exactly the run an operator wants to look at —
+ * so the page carries the session's true size alongside the events, and the
+ * caller says so when the two differ.
  */
 export async function listSessionIncidents(
   tenantId: string,
   sessionId: string,
   limit: number = MAX_SESSION_EVENTS,
-): Promise<Incident[]> {
+): Promise<SessionIncidentPage> {
   const safeLimit = Math.max(1, Math.min(Math.trunc(limit), MAX_SESSION_EVENTS));
 
   if (!process.env.DATABASE_URL) {
-    const incidents: Incident[] = getMemoryEventsForTenant(tenantId)
+    const matching: Incident[] = getMemoryEventsForTenant(tenantId)
       .filter((event) => event.session_id === sessionId)
       .map((event) => ({
         ...event,
         received_ms: event.received_ms ?? event.timestamp_ms,
       }));
-    return orderIncidents(incidents).slice(0, safeLimit);
+    return { incidents: orderIncidents(matching).slice(0, safeLimit), total: matching.length };
   }
 
   return withTenantDb(tenantId, async (db) => {
@@ -150,6 +178,7 @@ export async function listSessionIncidents(
       resolution: string | null;
       updated_ms: string | null;
       updated_by: string | null;
+      total_count: string;
     }>(
       `select
          e.event_id, e.schema_version, e.occurred_at_ms,
@@ -158,7 +187,8 @@ export async function listSessionIncidents(
          e.correlation_id, e.session_id, e.trace_id, e.agent_id, e.outcome,
          t.status, t.assignee, t.note, t.resolution,
          (extract(epoch from t.updated_at) * 1000)::bigint as updated_ms,
-         t.updated_by
+         t.updated_by,
+         (count(*) over ())::bigint as total_count
        from monolith.security_events e
        left join monolith.incident_triage t using (event_id)
        where e.tenant_id = $1 and e.session_id = $2
@@ -169,7 +199,7 @@ export async function listSessionIncidents(
        limit $3`,
       [tenantId, sessionId, safeLimit],
     );
-    return result.rows.map((row) => ({
+    const incidents: Incident[] = result.rows.map((row) => ({
       event_id: row.event_id,
       schema_version: row.schema_version === 2 ? 2 : 1,
       timestamp_ms: Number(row.occurred_at_ms),
@@ -195,6 +225,10 @@ export async function listSessionIncidents(
           }
         : undefined,
     }));
+    // count(*) over () counts the whole session, not the page: it is
+    // evaluated before the limit is applied.
+    const total = result.rows.length > 0 ? Number(result.rows[0].total_count) : 0;
+    return { incidents, total };
   });
 }
 
@@ -206,7 +240,7 @@ export async function listSessionIncidents(
  * The gap between the two is the interesting number: a defense that detects
  * a lot and blocks nothing is a defense the agent walks straight through.
  */
-export function summarizeSession(incidents: Incident[]): SessionSummary {
+export function summarizeSession(incidents: Incident[], sessionTotal?: number): SessionSummary {
   const bySeverity: Record<string, number> = { critical: 0, warning: 0, info: 0 };
   const byModule: Record<string, number> = {};
   const byEventType: Record<string, number> = {};
@@ -239,8 +273,14 @@ export function summarizeSession(incidents: Incident[]): SessionSummary {
     }
   }
 
+  // When the page did not hold the whole session, the counts above are a
+  // lower bound and the summary says so rather than reading as complete.
+  const total =
+    sessionTotal !== undefined && sessionTotal > incidents.length ? sessionTotal : incidents.length;
   return {
-    total: incidents.length,
+    total,
+    counted: incidents.length,
+    truncated: total > incidents.length,
     detections,
     blocks,
     quarantines,
