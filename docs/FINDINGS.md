@@ -155,7 +155,7 @@ records a detection that looks like it was enforced.
 
 ### 6. One malformed tool entry voids the whole `tools/list` defence for that server
 
-**Status:** reported. **Where:** `mcp-shield/src/proxy.rs`. **Effort:** small.
+**Status:** verified, and fixed. **Where:** `mcp-shield/src/proxy.rs`. **Effort:** small.
 
 `validate_tool_entries` rejects the **whole list** if any single advertised
 tool lacks a non-empty name or an object `inputSchema`. The rejection
@@ -170,6 +170,21 @@ enforce mode, with only a warning-level event. This is a
 single-malformed-entry attack on the defence itself: the fail-open rule
 applied to the enforcement path without telling the operator enforcement is
 off.
+
+**The fix.** The whole-list rejection is gone: every tool is inspected on its
+own, and a defect belongs to a tool rather than to the listing. A tool the
+shield cannot vouch for — not an object, no usable name, a name that is too
+long or claimed twice, a description that is not text — is **withheld** from
+the agent and never seeds a baseline, while the rest of the listing is still
+fingerprinted, scanned and served. A tool that only breaks the spec (a
+missing or non-object `inputSchema`) is **kept**: the shield does not read
+the input schema, so nothing stops it from doing its job, and the operator
+is told. Both are reported as `tool_malformed`, with `action:
+withheld_malformed` (warning) or `action: analysed` (info).
+
+The fix is proved by mutating it back to the old behaviour — one defective
+entry rejecting the whole listing — and watching all six new tests fail
+while every pre-existing test still passes.
 
 ### 7. The VectorAnchor MCP server still dies on a truncated error body
 
@@ -322,3 +337,12 @@ up.
   `analysis_error`, a registration that could not be written stops counting
   as a trust decision, and an event's `action` says what the agent was
   actually sent.
+- **One malformed tool entry turned off the defence for every tool beside
+  it** (§6 above). The `tools/list` validator rejected the whole listing on
+  the first broken entry, before a single tool had been fingerprinted or
+  scanned, and a rejected listing is forwarded verbatim — so a server
+  advertising one decoy tool permanently disarmed both rug-pull
+  fingerprinting and description sanitization for that server. Fixed in
+  PR #66: each tool is inspected on its own, a tool the shield cannot vouch
+  for is withheld, a tool that only breaks the spec is still fully checked
+  and served, and the rest of the listing keeps its protection.
