@@ -18,6 +18,9 @@ Modes (env ``FAKE_ANTHROPIC_MODE``):
   clean    an ordinary multi-block answer
   secret   an answer that leaks the example key mid-stream
   tool     an answer that calls a tool, so the block ordering can be checked
+  echo     an answer that repeats back the credential the request carried,
+           so a test can check what the gateway does with a key that comes
+           back inside a normal 200 answer
 
 Run it directly:
 
@@ -60,6 +63,14 @@ TOOL_CALL = {
     "input": {"path": "README.md"},
 }
 
+# The "echo" mode repeats a credential back inside an otherwise ordinary
+# answer. A provider that has the key can put it anywhere in the text, and
+# the answer it hands back is a 200, not an error.
+ECHO_TEMPLATE = (
+    "Sure, here is the credential you asked for: {key} "
+    "and that is the only one I have."
+)
+
 
 def _message_start(model: str) -> dict:
     return {
@@ -77,7 +88,7 @@ def _message_start(model: str) -> dict:
     }
 
 
-def _frames(mode: str, model: str) -> list[tuple[str, dict]]:
+def _frames(mode: str, model: str, echo_key: str = "") -> list[tuple[str, dict]]:
     """The event sequence the stub streams back, in order."""
     frames: list[tuple[str, dict]] = [("message_start", _message_start(model))]
 
@@ -156,6 +167,8 @@ def _frames(mode: str, model: str) -> list[tuple[str, dict]]:
         return frames
 
     text = LEAKY if mode == "secret" else ORDINARY
+    if mode == "echo":
+        text = ECHO_TEMPLATE.format(key=echo_key)
     frames.append(
         (
             "content_block_start",
@@ -201,6 +214,8 @@ class Handler(BaseHTTPRequestHandler):
     # The credential the last request carried, so a test can check that the
     # gateway forwarded the one it was given rather than none at all.
     last_api_key: str | None = None
+    # The credential the "echo" mode repeats back inside the answer.
+    echo_key: str = ""
 
     def log_message(self, fmt, *args):  # noqa: A003 - stdlib signature
         sys.stderr.write("[fake-anthropic] " + (fmt % args) + "\n")
@@ -243,7 +258,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("cache-control", "no-cache")
         self.send_header("connection", "close")
         self.end_headers()
-        for name, data in _frames(self.mode, model):
+        for name, data in _frames(self.mode, model, Handler.echo_key):
             frame = f"event: {name}\ndata: {json.dumps(data)}\n\n".encode("utf-8")
             self.wfile.write(frame)
             self.wfile.flush()
@@ -256,7 +271,7 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument(
         "--mode",
-        choices=sorted({"clean", "secret", "tool"}),
+        choices=sorted({"clean", "secret", "tool", "echo"}),
         default=os.environ.get("FAKE_ANTHROPIC_MODE", "clean"),
     )
     args = parser.parse_args()

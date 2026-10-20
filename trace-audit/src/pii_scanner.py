@@ -19,7 +19,16 @@ import binascii
 import re
 import unicodedata
 import urllib.parse
+from collections.abc import Sequence
 from dataclasses import dataclass
+
+# A literal credential shorter than this is a word, not a secret. Redacting it
+# out of ordinary text helps nobody and mangles the answer.
+MIN_LITERAL_SECRET_LENGTH = 8
+
+# The label a literal credential match carries. The only exact credentials
+# this process holds are Anthropic keys, so the existing label applies.
+LITERAL_CREDENTIAL_LABEL = "anthropic_api_key"
 
 # (label, compiled pattern). Order matters only for reporting.
 _PATTERNS: list[tuple[str, re.Pattern]] = [
@@ -95,8 +104,40 @@ _ENCODED_ATOMS = (
 )
 
 
-def scan(text: str) -> list[PiiMatch]:
-    """Scan plain text and bounded, single-layer encoded credential atoms."""
+def _literal_matches(
+    text: str,
+    literals: Sequence[str],
+    label: str = LITERAL_CREDENTIAL_LABEL,
+) -> list[PiiMatch]:
+    """Exact occurrences of credentials this process already holds.
+
+    The pattern list is written for the *shapes* of credentials. A key we
+    hold needs no shape: it is matched as itself, whatever it looks like.
+    The openai-style pattern stops at the first hyphen, so an Anthropic key
+    ("sk-ant-...") passes straight through it.
+    """
+    matches: list[PiiMatch] = []
+    seen: set[tuple[str, int, int]] = set()
+    for secret in literals:
+        if not secret or len(secret) < MIN_LITERAL_SECRET_LENGTH:
+            continue
+        start = text.find(secret)
+        while start != -1:
+            end = start + len(secret)
+            if (label, start, end) not in seen:
+                seen.add((label, start, end))
+                matches.append(PiiMatch(label=label, start=start, end=end, value=secret))
+            start = text.find(secret, end)
+    return matches
+
+
+def scan(text: str, literals: Sequence[str] = ()) -> list[PiiMatch]:
+    """Scan plain text and bounded, single-layer encoded credential atoms.
+
+    `literals` are exact credentials this process holds. They are matched as
+    themselves in addition to the shape-based patterns, because a pattern
+    cannot know what one particular key looks like.
+    """
     matches = _scan_plain(text)
     for encoding, pattern in _ENCODED_ATOMS:
         for atom in pattern.finditer(text):
@@ -126,4 +167,19 @@ def scan(text: str) -> list[PiiMatch]:
                         value=value,
                     )
                 )
+    literal_matches = _literal_matches(text, literals)
+    if literal_matches:
+        # A known credential is more specific than a shape. When a pattern
+        # match overlaps one, the literal is the one that is redacted, so the
+        # whole credential goes rather than the part the pattern happened to
+        # see.
+        matches = [
+            match
+            for match in matches
+            if not any(
+                literal.start < match.end and match.start < literal.end
+                for literal in literal_matches
+            )
+        ]
+        matches.extend(literal_matches)
     return matches

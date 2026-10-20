@@ -23,7 +23,7 @@ whole point — the defense has to be invisible to the agent it protects.
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 import httpx
@@ -172,10 +172,16 @@ class AnthropicRelay:
         ctx: EventContext | None,
         *,
         divergence_enabled: bool,
+        literals: Sequence[str] = (),
     ):
         self.auditor = auditor
         self.ctx = ctx
         self.divergence_enabled = divergence_enabled
+        # Credentials this request carried. They are redacted from the answer
+        # on the way out, whatever shape they have: the openai-style pattern
+        # stops at the first hyphen, so an Anthropic key would pass through
+        # it untouched.
+        self._literals = tuple(literals)
         # push index -> the content block that push belonged to
         self._block_of_push: list[int] = []
         # push index -> the delta kind that push arrived as
@@ -285,6 +291,7 @@ class AnthropicRelay:
             self.ctx,
             divergence_enabled=self.divergence_enabled,
             emit_sync=True,
+            literals=self._literals,
         )
         async for evt in audit:
             kind = evt.get("type")

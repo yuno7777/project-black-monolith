@@ -46,7 +46,7 @@ from .events import (
     now_ms,
     tenant_scope,
 )
-from .pii_scanner import scan
+from .pii_scanner import LITERAL_CREDENTIAL_LABEL, scan
 from .redaction import redact
 from .stream_proxy import POLICY_VERSION, SAFE_REFUSAL, StreamAuditor
 
@@ -143,12 +143,6 @@ MAX_PROMPT_BYTES = 64 * 1024
 MAX_BASELINE_TOKEN_BYTES = 512
 MAX_BASELINE_TOKEN_COUNT = 2_147_483_647
 MAX_BASELINE_TOTAL = 100_000_000_000_000
-
-# The shortest credential the literal redaction pass will substitute. Below
-# this a "credential" is a word, and pulling a word out of an upstream error
-# message would mangle it without protecting anything.
-MIN_REDACTED_SECRET_LENGTH = 8
-
 
 class GenerateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -900,34 +894,23 @@ def _redact_upstream_error(
     the client verbatim. A provider that echoes a key back in its error
     message would hand that key to the agent.
 
-    Two passes, because they catch different things. The scanner finds the
-    *shapes* it was written for. The literal pass finds the exact credential
-    this gateway holds — the operator's fallback key — whatever shape it
-    happens to have: Anthropic keys are hyphenated ("sk-ant-..."), and the
-    openai-style pattern stops at the first hyphen, so a pattern-only pass
-    would let the operator's own key straight through to the client that
-    never had it.
+    The scanner finds the *shapes* it was written for, and the exact
+    credentials this gateway holds — the operator's fallback key and the
+    client's own — whatever shape they happen to have: Anthropic keys are
+    hyphenated ("sk-ant-..."), and the openai-style pattern stops at the
+    first hyphen, so a pattern-only pass would let the operator's own key
+    straight through to the client that never had it.
     """
     text = error_body.decode("utf-8", errors="replace")
-    matches = scan(text)
-    # The pattern redaction runs first: it replaces spans by offset, and
-    # substituting a literal afterwards would move those offsets out from
-    # under it.
-    redacted = redact(text, matches)
-    literal_hits = 0
-    for secret in secrets:
-        # A short "credential" is a word, and redacting a word out of an
-        # error message helps nobody.
-        if not secret or len(secret) < MIN_REDACTED_SECRET_LENGTH:
-            continue
-        if secret in redacted:
-            redacted = redacted.replace(secret, "[REDACTED:anthropic_api_key]")
-            literal_hits += 1
-    if not matches and not literal_hits:
+    matches = scan(text, secrets)
+    if not matches:
         return error_body
+    redacted = redact(text, matches)
+    literal_matches = [match for match in matches if match.label == LITERAL_CREDENTIAL_LABEL]
+    pattern_matches = [match for match in matches if match.label != LITERAL_CREDENTIAL_LABEL]
     emit = getattr(app.state, "emit", None)
     if emit is not None:
-        for match in matches:
+        for match in pattern_matches:
             emit(
                 "pii_redacted",
                 "warning",
@@ -943,13 +926,13 @@ def _redact_upstream_error(
                 outcome="redacted",
                 policy_version=POLICY_VERSION,
             )
-        if literal_hits:
+        if literal_matches:
             emit(
                 "pii_redacted",
                 "warning",
                 {
-                    "label": "anthropic_api_key",
-                    "redacted_as": "[REDACTED:anthropic_api_key]",
+                    "label": LITERAL_CREDENTIAL_LABEL,
+                    "redacted_as": f"[REDACTED:{LITERAL_CREDENTIAL_LABEL}]",
                     "position_tokens": 0,
                     "source": "upstream_error_body",
                 },
@@ -1038,6 +1021,12 @@ async def messages(request: Request):
     # gateway's address. Reject it here rather than let it leave.
     client_key = request.headers.get("x-api-key")
     client_auth = request.headers.get("authorization")
+    # The credentials this request carried. They are redacted from whatever
+    # the upstream sends back, on the error path and on the answer path
+    # alike: an upstream that echoes a key can put it in either.
+    request_credentials = tuple(
+        secret for secret in (client_key, client_auth) if secret
+    )
     if not client_key and not client_auth and not cfg.anthropic_api_key:
         raise HTTPException(
             status_code=401,
@@ -1122,13 +1111,25 @@ async def messages(request: Request):
                 # operator's fallback key is the dangerous one: the client
                 # never had it, and an upstream that echoes it would hand it
                 # to a party that never owned it.
-                secrets=(cfg.anthropic_api_key or "", client_key or "", client_auth or ""),
+                secrets=(
+                    cfg.anthropic_api_key or "",
+                    *request_credentials,
+                ),
             ),
             status_code=response.status_code,
             media_type="application/json",
         )
 
-    relay = AnthropicRelay(auditor, ctx, divergence_enabled=divergence_enabled)
+    relay = AnthropicRelay(
+        auditor,
+        ctx,
+        divergence_enabled=divergence_enabled,
+        # The credentials this request carried. A client that gets its own
+        # key back is no worse off, but the operator's fallback key must
+        # never reach a party that never had it — and the operator's key is
+        # added to the literals by the auditor on every path.
+        literals=request_credentials,
+    )
 
     if wants_json:
         async def collect():

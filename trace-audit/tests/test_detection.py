@@ -72,3 +72,41 @@ def test_card_detection_requires_a_valid_luhn_checksum():
     assert [match.label for match in matches] == ["credit_card"]
     assert scan("ordinary reference 1234 5678 9012 3456") == []
     assert scan("placeholder 0000-0000-0000-0000") == []
+
+
+def test_a_literal_credential_is_matched_whatever_its_shape():
+    """A credential we hold exactly needs no pattern to be recognised.
+
+    The openai-style pattern stops at the first hyphen, so an Anthropic key
+    passes straight through it. The literal match finds it because it is the
+    exact string, not a shape.
+    """
+    key = "sk-ant-api03-operator-fallback-key-0123456789"
+    text = f"the key is {key} and that is all"
+
+    assert not scan(text), "no pattern should match a hyphenated Anthropic key"
+
+    matches = scan(text, [key])
+    assert len(matches) == 1
+    assert matches[0].label == "anthropic_api_key"
+    assert matches[0].value == key
+    assert text[matches[0].start : matches[0].end] == key
+
+
+def test_a_literal_credential_too_short_to_be_one_is_ignored():
+    # A short "credential" is a word, and redacting a word out of ordinary
+    # text mangles it without protecting anything.
+    assert scan("the word hunter2 appears here", ["hunter2"]) == []
+
+
+def test_a_literal_credential_overrides_a_pattern_that_overlaps_it():
+    """The known credential is the more specific match.
+
+    The pattern covers the start of the key, the literal covers all of it.
+    Redacting the literal means the whole credential goes, not the part the
+    pattern happened to see.
+    """
+    key = "sk-ant-api03-operator-fallback-key-0123456789"
+    matches = scan(f"value {key} end", [key])
+    assert [match.label for match in matches] == ["anthropic_api_key"]
+    assert matches[0].value == key

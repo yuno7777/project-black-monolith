@@ -25,7 +25,7 @@ import asyncio
 import hashlib
 import json
 import random
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 
 import httpx
@@ -163,13 +163,22 @@ class _BufferDrain:
 class PiiStreamBuffer:
     """Bounded look-behind that redacts matches spanning token boundaries."""
 
-    def __init__(self, window_tokens: int = PII_TOKEN_WINDOW, max_chars: int = PII_CHAR_WINDOW):
+    def __init__(
+        self,
+        window_tokens: int = PII_TOKEN_WINDOW,
+        max_chars: int = PII_CHAR_WINDOW,
+        literals: Sequence[str] = (),
+    ):
         if window_tokens < 2:
             raise ValueError("PII token window must be at least 2")
         if max_chars < 64:
             raise ValueError("max_chars must be at least 64")
         self.window_tokens = window_tokens
         self.max_chars = max_chars
+        # Credentials this process holds, matched as themselves. A literal
+        # split across fragments is caught by the same look-behind that
+        # catches a pattern split across fragments.
+        self._literals = tuple(literals)
         self._suppress_run = False
         self._pending: list[_BufferedToken] = []
         self._next_index = 0
@@ -297,7 +306,7 @@ class PiiStreamBuffer:
     def _matches_ending_in_latest(self) -> list[PiiMatch]:
         # Scan once over characters, not once per tokenizer fragment. Explicit
         # credential prefixes are recognized even adjacent to ordinary text.
-        return scan("".join(item.token for item in self._pending))
+        return scan("".join(item.token for item in self._pending), self._literals)
 
     def _redact_matches(
         self, matches: list[PiiMatch]
@@ -666,6 +675,7 @@ class StreamAuditor:
         *,
         divergence_enabled: bool = True,
         emit_sync: bool = False,
+        literals: Sequence[str] = (),
     ) -> AsyncIterator[dict]:
         """Audit a token stream somebody else produced.
 
@@ -676,6 +686,11 @@ class StreamAuditor:
         the KL numbers would be meaningless, and terminating on them would
         refuse ordinary traffic. PII redaction is model-independent and always
         runs.
+
+        `literals` are exact credentials to redact in addition to the
+        shape-based patterns. The operator's own fallback key is added to
+        them on every path: an answer can echo it as easily as an error body
+        can, and the client that receives it never had it.
         """
         start = now_ms()
         monitor = DivergenceMonitor(
@@ -687,7 +702,17 @@ class StreamAuditor:
         )
         reported_secrets: set[bytes] = set()
         peak_kl = 0.0
-        pii_buffer = PiiStreamBuffer()
+        credential_literals = tuple(
+            dict.fromkeys(
+                secret
+                for secret in (
+                    *literals,
+                    getattr(self.cfg, "anthropic_api_key", None) or "",
+                )
+                if secret
+            )
+        )
+        pii_buffer = PiiStreamBuffer(literals=credential_literals)
 
         async def _redactions(matches) -> AsyncIterator[dict]:
             for m in matches:

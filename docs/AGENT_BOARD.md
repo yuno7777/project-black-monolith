@@ -98,15 +98,27 @@ queue.
 
 ## Standing work
 
+A wider survey of the repository landed on 2026-10-21: eleven defects, ten
+test gaps, five documentation drifts, and five things checked and confirmed
+sound. It is in [`FINDINGS.md`](FINDINGS.md), ranked, with each item marked
+**verified** (read and confirmed at the cited lines) or **reported** (a
+reader's lead, not yet checked). The items below are the board's own list.
+
 | # | Item | Where | Priority |
 | --- | --- | --- | --- |
-| 1 | Module dead-letter replay is global while the database half of the same function is tenant-scoped, so a tenant admin replays other tenants' dead letters. | `dashboard/lib/operations-store.ts` | medium |
-| 2 | The ingest response carries the tenant's whole revocation set on every request, so the payload grows with the total number of quarantines. The fix needs the dashboard *and* `python-common` to agree on snapshot-versus-delta. | `dashboard/app/api/ingest/route.ts`, `python-common/monolith_events/events.py` | low — contract change |
-| 3 | The AWS secret access key has no detector. Deliberately: 40 characters of base64 has a false-positive rate that would hard-block ordinary calls. Needs a shape-aware detector, not a regex. | `mcp-shield/src/sanitizer.rs` | low |
+| 1 | The reasoning layer's KL divergence is off in every shipped configuration: nothing ever writes the baseline's `model` key, so the gate can never open. | `trace-audit/src/main.py` | **high** — see `FINDINGS.md` §1 |
+| 2 | A notification failure rolls back the evidence it was raised for: the alert-job row shares the security event's transaction. | `dashboard/lib/event-store.ts` | **high** — see `FINDINGS.md` §2 |
+| 3 | Every revocation snapshot is truncated at 64 KiB, so past ~1,700 live revocations the modules keep a stale set forever and the breaker fails open. | `dashboard/app/api/ingest/route.ts`, `python-common`, `mcp-shield` | **high** — see `FINDINGS.md` §3 |
+| 4 | The MCP-Shield status listener falls back to the module's ingest token as its admin credential. | `mcp-shield/src/main.rs` | medium — see `FINDINGS.md` §4 |
+| 5 | The ingest response carries the tenant's whole revocation set on every request, so the payload grows with the total number of quarantines. The fix needs the dashboard *and* `python-common` to agree on snapshot-versus-delta. | `dashboard/app/api/ingest/route.ts`, `python-common/monolith_events/events.py` | low — contract change |
+| 6 | The AWS secret access key has no detector. Deliberately: 40 characters of base64 has a false-positive rate that would hard-block ordinary calls. Needs a shape-aware detector, not a regex. | `mcp-shield/src/sanitizer.rs` | low |
 
-Done: the breaker's per-candidate query is now one query for the whole
-batch, the baseline is locked across its read-modify-write cycle, and the
-open questions were refreshed on 2026-10-20.
+Done: the module dead-letter replay is now scoped to one tenant across the
+dashboard, both module endpoints, the shared Python outbox and the Rust spool
+(PR #59), and the operator's credential can no longer reach the client
+through a normal answer (PR #60). The breaker's per-candidate query is now
+one query for the whole batch, the baseline is locked across its
+read-modify-write cycle, and the open questions were refreshed on 2026-10-20.
 
 The integrator also closed the credential-test-vector finding that GitHub's
 secret scanner raised on `mcp-shield/src/sanitizer.rs`: the JWT and the bearer
