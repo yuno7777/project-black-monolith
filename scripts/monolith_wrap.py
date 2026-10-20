@@ -673,6 +673,55 @@ def build_shield_env(
     return env
 
 
+# The credentials the operator's shell may hold, and that the agent must not
+# inherit.
+#
+# The agent is the thing this whole system defends against, and it starts
+# processes of its own: the MCP servers it runs, the tools it calls, the
+# scripts it writes. An exported credential reaches every one of them. The
+# operator's ledger credential would let the agent read and write the
+# incident record, and the shield's HMAC key would let it re-sign a poisoned
+# schema baseline, so the next agent to connect would trust it.
+#
+# Nothing is lost by taking these away: the launcher passes what the
+# shielded servers need explicitly, in the MCP configuration it writes.
+AGENT_HIDDEN_ENV = (
+    "MONOLITH_OPERATOR_TOKEN",
+    "MONOLITH_ADMIN_TOKEN",
+    "MONOLITH_EVENT_TOKEN",
+    "MCP_SHIELD_KEY",
+    "MCP_SHIELD_SECRET_BOUNDARY_CONFIG",
+    "MONOLITH_DASHBOARD_URL",
+    "MONOLITH_DASHBOARD_API_URL",
+    "MONOLITH_EVENT_OUTBOX_PATH",
+)
+
+# Prefixes for which every variable is a credential. The per-module ingest
+# tokens are named after the module they belong to
+# (``MONOLITH_EVENT_TOKEN_MCP_SHIELD``), so a list of exact names would
+# leave the other modules' tokens in place.
+AGENT_HIDDEN_ENV_PREFIXES = (
+    "MONOLITH_EVENT_TOKEN_",
+    "PBM_SECRET_",
+)
+
+
+def build_child_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment the agent runs with.
+
+    Everything the operator's shell exported, minus the credentials the
+    Monolith stack holds. The agent's own credential — the Anthropic API key
+    — is untouched: it is the agent's to spend, and the point of the
+    gateway is that the agent can still reach the provider.
+    """
+    env = dict(os.environ if base_env is None else base_env)
+    for name in list(env):
+        upper = name.upper()
+        if upper in AGENT_HIDDEN_ENV or upper.startswith(AGENT_HIDDEN_ENV_PREFIXES):
+            del env[name]
+    return env
+
+
 def build_mcp_config(
     servers: dict[str, dict],
     *,
@@ -962,9 +1011,21 @@ def main(argv: list[str] | None = None) -> int:
     config_path = workdir / "mcp-config.json"
     config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
+    # The agent inherits the operator's environment, minus the credentials
+    # the Monolith stack holds. The agent is the thing this system defends
+    # against, and it starts processes of its own, so an exported credential
+    # would reach every one of them.
+    child_env = build_child_env()
+    hidden = sorted(set(os.environ) - set(child_env))
+
     print(f"  tool layer {len(config['mcpServers'])} MCP server(s) through MCP-Shield")
     print(f"  memory     VectorAnchor at {vector_anchor_url}")
     print(f"  reasoning  TraceAudit at {trace_audit_url}")
+    if hidden:
+        print(
+            f"  agent      {len(hidden)} operator credential(s) kept out of the "
+            "agent's environment"
+        )
 
     if args.plan:
         print(f"\n  The MCP configuration would be written to {config_path}:\n")
@@ -979,7 +1040,6 @@ def main(argv: list[str] | None = None) -> int:
     if agent_args and agent_args[0] == "--":
         agent_args = agent_args[1:]
 
-    child_env = dict(os.environ)
     child_env["ANTHROPIC_BASE_URL"] = ""  # replaced below, once the port is known
 
     with _Injector(trace_audit_url, upstream_url, correlation) as injector:

@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from monolith_wrap import (
     _Injector,
     _InjectorHandler,
+    build_child_env,
     build_mcp_config,
     build_shield_env,
     credential_transport_is_trusted,
@@ -434,6 +435,58 @@ class PlanRedactionTests(unittest.TestCase):
             config["mcpServers"]["files"]["args"][8],
             "hunter2",
         )
+
+
+class ChildEnvTests(unittest.TestCase):
+    def test_the_operator_credentials_do_not_reach_the_agent(self):
+        """The agent is the thing this system defends against.
+
+        It starts processes of its own — the MCP servers it runs, the tools
+        it calls, the scripts it writes — and every one of them inherits the
+        agent's environment. An exported operator credential would
+        therefore reach all of them, and the operator's ledger credential
+        would let the agent write the incident record that describes it.
+        """
+        base = {
+            "PATH": "/usr/bin",
+            "HOME": "/home/operator",
+            "ANTHROPIC_API_KEY": "the-anthropic-key-the-operator-configured",
+            "MONOLITH_OPERATOR_TOKEN": "operator-token-0001",
+            "MONOLITH_EVENT_TOKEN": "ingest-token-0002",
+            "MONOLITH_EVENT_TOKEN_MCP_SHIELD": "module-token-0003",
+            "MONOLITH_ADMIN_TOKEN": "admin-token-0004",
+            "MCP_SHIELD_KEY": "hmac-key-0005",
+            "PBM_SECRET_PROVIDER_TOKEN": "provider-token-0006",
+            "A_TOKEN_FOR_SOMETHING_ELSE": "not-ours-to-take",
+        }
+        child = build_child_env(base)
+
+        for name in (
+            "MONOLITH_OPERATOR_TOKEN",
+            "MONOLITH_EVENT_TOKEN",
+            "MONOLITH_EVENT_TOKEN_MCP_SHIELD",
+            "MONOLITH_ADMIN_TOKEN",
+            "MCP_SHIELD_KEY",
+            "PBM_SECRET_PROVIDER_TOKEN",
+        ):
+            self.assertNotIn(name, child, f"{name} must not reach the agent")
+
+        # The agent's own credential is the agent's to spend, and the point
+        # of the gateway is that the agent can still reach the provider.
+        self.assertEqual(
+            child["ANTHROPIC_API_KEY"],
+            "the-anthropic-key-the-operator-configured",
+        )
+        # And the environment it needs to run at all.
+        self.assertEqual(child["PATH"], "/usr/bin")
+        self.assertEqual(child["HOME"], "/home/operator")
+        # A credential that belongs to something else is not ours to take.
+        self.assertEqual(child["A_TOKEN_FOR_SOMETHING_ELSE"], "not-ours-to-take")
+
+    def test_a_lower_case_credential_is_hidden_too(self):
+        """Environment variable names are case-insensitive on Windows."""
+        child = build_child_env({"monolith_operator_token": "operator-token-0007"})
+        self.assertNotIn("monolith_operator_token", child)
 
 
 class SessionIdTests(unittest.TestCase):
