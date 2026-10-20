@@ -211,7 +211,9 @@ pub struct Outbox {
     path: PathBuf,
     lock_path: PathBuf,
     dead_path: PathBuf,
-    target: reqwest::Url,
+    /// Where the events go. `None` means there is nowhere to go: an outbox
+    /// opened by path alone spools and reports, and does not deliver.
+    target: Option<reqwest::Url>,
     client: reqwest::Client,
     token: String,
     /// Serializes every read-modify-write of the spool file. Held only across
@@ -222,6 +224,12 @@ pub struct Outbox {
 impl Outbox {
     /// Construct an `Outbox` backed by `path` for local file operations
     /// (`stats`, `replay_dead_letters`, and unit testing).
+    ///
+    /// There is no delivery endpoint and no credential here on purpose. The
+    /// endpoint used to be a guess — the dashboard's SSE address — with an
+    /// empty credential, which named a route that cannot accept an event
+    /// and could not authenticate one. A guessed address is worse than no
+    /// address: posting to it turns every event into a dead letter.
     pub fn for_path(path: impl Into<PathBuf>) -> io::Result<Self> {
         let path = path.into();
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -232,12 +240,11 @@ impl Outbox {
             .timeout(RESPONSE_TIMEOUT)
             .build()
             .map_err(io::Error::other)?;
-        let target = reqwest::Url::parse("http://127.0.0.1:3000/api/events").expect("static url");
         Ok(Self {
             dead_path: path.with_extension("dead"),
             lock_path: path.with_extension("lock"),
             path,
-            target,
+            target: None,
             client,
             token: String::new(),
             file_lock: Mutex::new(()),
@@ -293,7 +300,7 @@ impl Outbox {
             dead_path: path.with_extension("dead"),
             lock_path: path.with_extension("lock"),
             path,
-            target,
+            target: Some(target),
             client,
             token,
             file_lock: Mutex::new(()),
@@ -422,9 +429,12 @@ impl Outbox {
     }
 
     async fn post(&self, body: &str) -> Result<(u16, String), String> {
+        let Some(target) = self.target.as_ref() else {
+            return Err("no dashboard endpoint is configured for this outbox".to_string());
+        };
         let response = self
             .client
-            .post(self.target.clone())
+            .post(target.clone())
             .bearer_auth(&self.token)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body.to_owned())
@@ -451,6 +461,15 @@ impl Outbox {
     /// exit, where a last attempt now beats a scheduled attempt that will
     /// never happen.
     pub(crate) async fn drain(&self, budget: Duration, force: bool) {
+        if self.target.is_none() {
+            // An outbox opened by path alone has nowhere to deliver: it
+            // spools and it reports, and it does not deliver. Attempting a
+            // delivery anyway would turn every event into a dead letter,
+            // which reads like a rejected event rather than like an
+            // endpoint that was never configured.
+            tracing::debug!("no dashboard endpoint is configured; the spool is not draining");
+            return;
+        }
         let started = Instant::now();
         let pending = match self.load_pending() {
             Ok(p) => p,
@@ -833,7 +852,7 @@ fn poll_interval_ms() -> Option<u64> {
 /// adopts the whole snapshot, so a restore (empty set) also propagates.
 pub fn spawn_revocation_poller() -> Option<tokio::task::JoinHandle<()>> {
     let outbox = outbox()?;
-    let url = revocation_poll_url(&outbox.target)?;
+    let url = revocation_poll_url(outbox.target.as_ref()?)?;
     let interval_ms = poll_interval_ms()?;
     let tenant = std::env::var("MONOLITH_TENANT_ID").unwrap_or_else(|_| "default".to_string());
     let tenant = tenant.trim().to_string();
@@ -1726,5 +1745,79 @@ mod tests {
         let mut resp = String::new();
         stream.read_to_string(&mut resp).unwrap();
         assert!(resp.starts_with("HTTP/1.1 401 Unauthorized"), "{resp}");
+    }
+
+    /// A one-shot HTTP server that answers every request with 200.
+    ///
+    /// The handle is dropped on purpose: the server runs until the test
+    /// binary exits.
+    fn spawn_ok_server() -> reqwest::Url {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut buffer = [0u8; 1024];
+                let _ = stream.read(&mut buffer);
+                let response =
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        reqwest::Url::parse(&format!("http://127.0.0.1:{port}/api/ingest")).unwrap()
+    }
+
+    /// An outbox opened by path alone has nowhere to deliver.
+    ///
+    /// It used to name a guessed endpoint — the dashboard's SSE address,
+    /// which cannot accept an event and could not authenticate one — with an
+    /// empty credential. A guessed address is worse than no address: every
+    /// event posted to it is rejected, and a rejection reads like a
+    /// rejected event rather than like an endpoint that was never set up.
+    #[tokio::test]
+    async fn a_path_only_outbox_has_nowhere_to_deliver() {
+        let dir = temp_dir("no-delivery-target");
+        let outbox = Outbox::for_path(dir.join("outbox.jsonl")).unwrap();
+
+        assert!(
+            outbox.target.is_none(),
+            "an outbox opened by path alone must not name a delivery endpoint"
+        );
+
+        outbox
+            .enqueue("event-1", r#"{"event_id":"event-1"}"#)
+            .unwrap();
+        outbox.drain(Duration::from_secs(5), true).await;
+
+        // The event is still waiting, and no delivery was attempted: there
+        // is no endpoint, so there is nothing to fail and nothing to
+        // dead-letter.
+        let records = read_records(outbox.spool_path()).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].attempts, 0);
+        assert!(
+            records[0].last_error.is_none(),
+            "no delivery was attempted, so there is no error to report: {:?}",
+            records[0].last_error
+        );
+    }
+
+    /// An outbox with an endpoint still delivers to it.
+    #[tokio::test]
+    async fn a_configured_outbox_still_delivers() {
+        let dir = temp_dir("with-delivery-target");
+        let mut outbox = Outbox::for_path(dir.join("outbox.jsonl")).unwrap();
+        outbox.target = Some(spawn_ok_server());
+        outbox.token = "test-token-value".to_string();
+
+        outbox
+            .enqueue("event-1", r#"{"event_id":"event-1"}"#)
+            .unwrap();
+        outbox.drain(Duration::from_secs(5), true).await;
+
+        assert!(
+            read_records(outbox.spool_path()).unwrap().is_empty(),
+            "a delivered event leaves the spool"
+        );
     }
 }
