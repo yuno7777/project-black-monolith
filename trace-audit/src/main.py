@@ -1012,6 +1012,17 @@ async def messages(request: Request):
                     f"{cfg.anthropic_max_tokens}"
                 ),
             )
+        ceiling_applied = False
+    else:
+        # A request that omits the token count is not exempt from the
+        # ceiling. The upstream's own default would apply, and it may be
+        # well above the limit the operator set: the ceiling was checked
+        # against a field the client left out, so it was never checked at
+        # all. A ceiling is a ceiling, so the request is capped rather than
+        # passed on unchanged — which also makes the request valid, since
+        # the Messages API requires the field.
+        body["max_tokens"] = cfg.anthropic_max_tokens
+        ceiling_applied = True
 
     # The gateway holds no credential of its own unless the operator
     # configured one as a fallback. A request that carries neither a key nor
@@ -1041,6 +1052,11 @@ async def messages(request: Request):
     # upstream would send one — which the auditor cannot read, because it
     # inspects the answer as it arrives. So the upstream is always asked to
     # stream, and the document is assembled here when the client wanted one.
+    #
+    # Three mutations are made to the body, and only three: the upstream is
+    # always asked to stream, the operator's pinned model replaces the one
+    # the client named, and the operator's token ceiling caps a request that
+    # named no token count. Everything else is the client's own bytes.
     wants_json = body.get("stream") is not True
     if wants_json:
         # The audit needs the stream: the answer is inspected as it arrives,
@@ -1050,7 +1066,7 @@ async def messages(request: Request):
     if cfg.anthropic_model and cfg.anthropic_model != model:
         # The operator pinned a model. Say so by asking for that one.
         body["model"] = cfg.anthropic_model
-    if wants_json or (cfg.anthropic_model and cfg.anthropic_model != model):
+    if wants_json or (cfg.anthropic_model and cfg.anthropic_model != model) or ceiling_applied:
         raw = json.dumps(body, separators=(",", ":")).encode("utf-8")
 
     if _session_is_revoked(ctx):

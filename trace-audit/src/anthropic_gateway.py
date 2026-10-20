@@ -587,7 +587,10 @@ def build_upstream_request(
 
     The body is forwarded byte-for-byte: the gateway is a security control,
     not a translator, and re-serializing the payload would quietly change
-    what the model is asked to do.
+    what the model is asked to do. The three mutations the gateway is
+    allowed to make — always stream, the operator's pinned model, and the
+    operator's token ceiling — are made by the caller, so the bytes that
+    arrive here already carry them.
     """
     base = cfg.anthropic_base_url.rstrip("/")
     # The operator may configure the API root ("https://api.anthropic.com"),

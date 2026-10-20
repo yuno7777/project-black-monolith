@@ -214,6 +214,9 @@ class Handler(BaseHTTPRequestHandler):
     # The credential the last request carried, so a test can check that the
     # gateway forwarded the one it was given rather than none at all.
     last_api_key: str | None = None
+    # The body the last request carried, so a test can check what the
+    # gateway asked the model for.
+    last_body: dict = {}
     # The credential the "echo" mode repeats back inside the answer.
     echo_key: str = ""
 
@@ -231,6 +234,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(raw or b"{}")
         except json.JSONDecodeError:
             body = {}
+        Handler.last_body = body if isinstance(body, dict) else {}
         model = body.get("model") if isinstance(body, dict) else None
         model = model if isinstance(model, str) and model else "stub-model"
 

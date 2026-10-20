@@ -604,6 +604,93 @@ def test_a_request_over_the_operator_ceiling_is_refused(tmp_path):
     assert "ceiling" in response.json()["detail"]
 
 
+def test_a_request_with_no_token_count_is_capped_at_the_operator_ceiling(tmp_path):
+    """A ceiling that a client can switch off is not a ceiling.
+
+    The token count was validated only when the client named one, so a
+    request that omitted it was forwarded untouched and the upstream's own
+    default applied — which may be well above the limit the operator set.
+    The request is now capped at the ceiling instead.
+    """
+    with _Stub("clean") as stub:
+        _setup(
+            tmp_path,
+            anthropic_base_url=f"http://127.0.0.1:{stub.port}",
+            anthropic_max_tokens=512,
+        )
+        client = TestClient(app, raise_server_exceptions=True)
+        response = client.post(
+            "/v1/messages",
+            headers={"x-api-key": "client-key"},
+            json={
+                "model": "stub-model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    # The upstream was asked for the ceiling, not for its own default.
+    assert fake_anthropic_server.Handler.last_body.get("max_tokens") == 512
+
+
+def test_a_request_with_no_token_count_is_capped_on_the_document_path(tmp_path):
+    """The cap has to survive the path that re-serializes the body.
+
+    A client that asked for a document gets the body rebuilt, because the
+    upstream is always asked to stream. The rebuilt body is where a cap
+    applied to the original would be lost, so the cap is applied to the
+    rebuilt body.
+    """
+    with _Stub("clean") as stub:
+        _setup(
+            tmp_path,
+            anthropic_base_url=f"http://127.0.0.1:{stub.port}",
+            anthropic_max_tokens=512,
+        )
+        client = TestClient(app, raise_server_exceptions=True)
+        response = client.post(
+            "/v1/messages",
+            headers={"x-api-key": "client-key"},
+            json={
+                "model": "stub-model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    assert fake_anthropic_server.Handler.last_body.get("max_tokens") == 512
+
+
+def test_a_request_that_names_a_token_count_keeps_it(tmp_path):
+    """The cap only applies to a request that named no count.
+
+    A client that asked for less than the ceiling still gets what it
+    asked for.
+    """
+    with _Stub("clean") as stub:
+        _setup(
+            tmp_path,
+            anthropic_base_url=f"http://127.0.0.1:{stub.port}",
+            anthropic_max_tokens=512,
+        )
+        client = TestClient(app, raise_server_exceptions=True)
+        response = client.post(
+            "/v1/messages",
+            headers={"x-api-key": "client-key"},
+            json={
+                "model": "stub-model",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert fake_anthropic_server.Handler.last_body.get("max_tokens") == 64
+
+
 def test_a_non_streaming_request_gets_one_json_document(tmp_path):
     with _Stub("clean") as stub:
         _setup(tmp_path, anthropic_base_url=f"http://127.0.0.1:{stub.port}")
