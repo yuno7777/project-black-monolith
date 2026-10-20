@@ -242,6 +242,35 @@ spooled, so the event is lost entirely rather than being delivered late.
 When no dashboard URL is configured, the fallback target is the SSE endpoint
 with an empty credential, so every event dead-letters.
 
+### 12. A cold model reads as a dead backend
+
+**Status:** verified. **Where:** `trace-audit/src/stream_proxy.py`. **Effort:**
+small.
+
+`httpx.Timeout(read=30.0)` was doing two jobs. It bounded the gap between
+two chunks of a running stream, and it bounded the time the backend was
+given to answer at all. A model that is not resident has to be loaded from
+disk into memory and prefilled before it emits anything, and on a two-core
+runner that takes longer than 30 seconds — so the first read timed out and
+the request failed with `httpx.ReadTimeout` while the backend was in fact
+working normally.
+
+This is not hypothetical. The "Real model evidence" workflow triggers on
+`vector-anchor/src/**` and `trace-audit/src/**`, so it ran on the branch
+that touched `vector-anchor/src/mcp_server.py` and failed four times in a
+row with exactly this error, at `_ollama_stream`, while the same commit on
+`main` passed. The diff could not have caused it, which is what made it
+worth chasing instead of re-running.
+
+The two waits are now budgeted separately: a generous budget for the first
+byte, which also covers the wait for the response headers, and the
+existing tight budget for every byte after it, so a stream that stalls
+part-way through is still caught quickly. httpx's own read timeout is a
+single figure and cannot tell the two apart, so the per-chunk deadline is
+enforced by the stream itself.
+
+**What would settle it.** Nothing to decide — fixed in PR #70.
+
 ---
 
 ## Test gaps
@@ -346,3 +375,10 @@ up.
   PR #66: each tool is inspected on its own, a tool the shield cannot vouch
   for is withheld, a tool that only breaks the spec is still fully checked
   and served, and the rest of the listing keeps its protection.
+- **A cold model read as a dead backend** (§12 above). One 30-second read
+  timeout bounded both the gap between two stream chunks and the time the
+  backend was given to answer at all, so a model that was still being
+  loaded from disk into memory failed the request while working normally.
+  Fixed in PR #70: the first byte gets its own generous budget, every byte
+  after it keeps the tight one, and the stalled-stream case is still caught
+  in 30 seconds.

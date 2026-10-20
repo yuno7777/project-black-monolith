@@ -38,11 +38,32 @@ Read it before starting work. Write to it while you work.
 | security | `feature/video-explainer` | the AEOS Guard explainer, rescued off a branch that was about to be deleted | pushed, 1 commit |
 | security | `fix/mcp-shield/baseline-persist-failure` | the tool layer's fail-open path discarded enforcement it had already computed (`FINDINGS.md` §5) | merged into `main` as PR #64 (`1b6e8ed`); the fix is proved by mutating it back to the old behaviour and watching the new test fail. The branch was rebased onto `main` after #60 and #62 merged, so its history was rewritten and it was force-pushed |
 | security | `fix/mcp-shield/malformed-tool-entry` | one malformed tool entry voided the whole `tools/list` defence for that server (`FINDINGS.md` §6) | PR #66 open; the fix is proved by mutating it back to the old behaviour — one defective entry rejecting the whole listing — and watching all six new tests fail. Branched off `main` at `1b6e8ed`; no history rewrite, so nothing was force-pushed |
+| security | `fix/trace-audit/cold-model-timeout` | one read timeout did two jobs, so a cold model was read as a dead backend (`FINDINGS.md` §12) | PR #70 open; the fix is proved by mutating it back and watching the new tests fail. The tests drive a real local HTTP server, because the deadlines under test are enforced by the HTTP stack and a mock transport enforces nothing |
 | integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI green on `b19513b` |
 | integrator | Dependabot | #24 merged (codeql-action); #15, #16 closed as superseded; #26 superseded by a direct hmac 0.13 migration | the queue is empty: **zero open PRs** |
 
 The project is moving to user-facing features. The work below is the
 security and operations tail; the board is here so it is not lost.
+
+### The "Real model evidence" check can fail for reasons unrelated to the diff
+
+The check triggers on `vector-anchor/src/**` and `trace-audit/src/**`, so it
+runs on any branch that touches either module — and on a two-core runner it
+drives a real model, which is slow.
+
+PR #67 changed `vector-anchor/src/mcp_server.py` and nothing in the
+reasoning layer. Its "Real model evidence" check still failed four times in
+a row, with `httpx.ReadTimeout` raised inside
+`trace-audit/src/stream_proxy.py:_ollama_stream`, while the same commit on
+`main` passed. The diff could not have caused it. The cause was a
+30-second read timeout that a cold model load exceeds; PR #70 splits that
+budget in two, so a slow first byte and a stalled stream are no longer the
+same failure.
+
+**Read the traceback before re-running.** A `ReadTimeout` in
+`_ollama_stream` is the cold-start problem, not a verdict on the change
+under test. A timeout anywhere else — in a test, in a fixture, in a
+module's own code — is the branch's.
 
 ### Requirement floors now match their locks (resolved)
 
@@ -92,9 +113,11 @@ to `main` by ref. Use a dedicated worktree for every branch.
 | `dashboard/lib/login-rate-limit.ts`, `dashboard/scripts/dispatch-alerts.mjs` | security | rate limiting and alert delivery |
 | `supabase/migrations/**` | security | retention scoping migration |
 | `contracts/openapi.yaml` | security | corrected the revocation snapshot wording |
+| `trace-audit/src/stream_proxy.py` | security | the backend client's deadlines — the first-byte budget and the per-chunk deadline. Only the timeout handling changed; the rest of the layer is not claimed |
 | `main` | integrator | Merges and verification only; branch work happens in a worktree. |
 
-Free to claim: `vector-anchor/**`, `trace-audit/**`, `dashboard/app/api/operations/**`,
+Free to claim: `vector-anchor/**`, `trace-audit/**` (apart from the backend
+client's deadlines, above), `dashboard/app/api/operations/**`,
 `dashboard/app/api/benchmarks/**`, `docs/OPEN_QUESTIONS.md`, the Dependabot
 queue.
 
