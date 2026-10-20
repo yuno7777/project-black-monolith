@@ -314,6 +314,21 @@ jobs:
         run: bash scripts/verify_benchmarks.sh
       - name: Run the full three-attack demo
         run: ./run_full_demo.sh
+      - name: Install the reasoning layer's locked dependencies
+        # The gateway demo starts a TraceAudit on the HOST, pointed at a local
+        # stub of the Messages API, so the whole chain can be exercised with no
+        # API key and no credits. The containerised TraceAudit cannot serve
+        # that: the demo has to intercept the model's stream.
+        run: python -m pip install --require-hashes -r trace-audit/requirements.lock
+      - name: Verify the agent gateway (host-side launcher)
+        # The launcher starts the MCP servers itself, so it needs the shield
+        # binary on the host. The image already carries a release build of
+        # exactly that binary, so copy it out instead of compiling a second
+        # one: the artifact under test is then the one the stack is running.
+        run: |
+          docker compose cp mcp-shield:/usr/local/bin/mcp-shield ./mcp-shield-host
+          chmod +x ./mcp-shield-host
+          MONOLITH_MCP_SHIELD_BIN="$PWD/mcp-shield-host" python scripts/run_gateway_demo.py
       - name: Dump container logs on failure
         if: failure()
         shell: bash
