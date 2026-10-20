@@ -52,3 +52,18 @@ class AgentControlTests(unittest.TestCase):
         self.assertTrue(result["outcome"]["task_success"])
         self.assertEqual(len(result["steps"]), 3)
         self.assertNotIn(CANARY, json.dumps(result))
+
+    def test_wilson_interval_and_repeated_rate_are_explicit(self):
+        from protected_agent_cases import rate, wilson
+
+        self.assertEqual(wilson(0, 0), {"low": None, "high": None})
+        interval = wilson(5, 10)
+        self.assertLess(interval["low"], 0.5)
+        self.assertGreater(interval["high"], 0.5)
+        rows = [
+            {"attack": True, "leaked": True},
+            {"attack": True, "leaked": False},
+            {"attack": False, "leaked": True},
+        ]
+        result = rate(rows, "leaked", attack_only=True)
+        self.assertEqual((result["successes"], result["trials"], result["rate"]), (1, 2, 0.5))
