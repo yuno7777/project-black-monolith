@@ -34,6 +34,7 @@ runs on the machine that has the agent, not only inside the container.
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import shutil
@@ -43,7 +44,9 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -68,6 +71,20 @@ HOP_BY_HOP = {
     "content-length",
     "accept-encoding",
 }
+
+# The namespace the launcher owns. Nothing a client sends in it survives:
+# the session, agent and tenant on the wire are the ones the launcher
+# minted, never the ones a client asked for.
+CORRELATION_PREFIX = "x-monolith-"
+
+# The largest request the injector will forward. The Messages API caps its
+# own request bodies, so anything larger is not a request worth relaying —
+# and reading it into memory first would let one client ask for as much as
+# it liked.
+MAX_FORWARD_BYTES = 32 * 1024 * 1024
+
+# How long the injector waits for the body a client announced.
+REQUEST_READ_TIMEOUT_SECONDS = 30.0
 
 
 # --- small helpers ---------------------------------------------------------
@@ -115,9 +132,180 @@ def resolve_setting(name: str, dotenv: dict[str, str], default: str | None = Non
     return default
 
 
-def http_get_json(url: str, timeout: float = 5.0, headers: dict[str, str] | None = None):
+def mint_session_id() -> str:
+    """A session id that nothing else on the machine can guess.
+
+    The session id is the key every layer correlates on, so it is also the
+    key something would need in order to file events into this run's ledger.
+    A clock and a pid are guessable by anything else running on the host, so
+    the id carries 122 bits of randomness instead: a caller that cannot
+    guess it cannot pretend to be this run.
+    """
+    return f"monolith-{uuid.uuid4()}"
+
+
+def _is_loopback_host(host: str) -> bool:
+    host = host.strip().strip("[]").lower()
+    if host in ("localhost", "::1"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def credential_transport_is_trusted(url: str, allow_insecure: bool) -> bool:
+    """Whether a credential may be sent to this address over this scheme.
+
+    The modules apply the same rule to their own delivery — HTTPS
+    everywhere, plain HTTP only to loopback, and only when the operator
+    says the network is trusted — and the launcher holds the operator
+    token, so it answers the same way. The default is to refuse: a
+    credential sent in cleartext to a remote host is a credential on the
+    wire, and no configuration mistake should turn that on by accident.
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme == "https":
+        return True
+    if parsed.scheme != "http":
+        return False
+    if _is_loopback_host(parsed.hostname or ""):
+        return True
+    return allow_insecure
+
+
+# The launcher's own settings that carry no secret, so the plan can show
+# them. Everything else in an environment block is redacted: the plan is
+# printed for a human to read, and a human pastes it into an issue.
+PLAN_VISIBLE_ENV = {
+    "MONOLITH_DASHBOARD_URL",
+    "MONOLITH_EVENT_OUTBOX_PATH",
+    "MCP_SHIELD_BASELINE",
+    "MCP_SHIELD_MODE",
+    "MONOLITH_TENANT_ID",
+    "MONOLITH_AGENT_ID",
+    "MONOLITH_SESSION_ID",
+    "MONOLITH_VECTOR_ANCHOR_URL",
+}
+
+
+# Argument flags whose value is a secret. A secret on the command line is
+# still a secret, and the plan is printed for a human to read.
+SECRET_ARG_FLAGS = ("key", "token", "secret", "password", "passwd", "credential", "auth")
+
+
+def _is_secret_arg_flag(flag: str) -> bool:
+    lowered = flag.lower()
+    return any(marker in lowered for marker in SECRET_ARG_FLAGS)
+
+
+def redact_config_secrets(config: dict) -> dict:
+    """A copy of the configuration with every secret in it redacted.
+
+    The file written to disk keeps the real values — the shield needs the
+    ingest token and the fingerprinting key — but the printed plan does not.
+    The plan carries the dashboard's ingest token, MCP-Shield's HMAC key
+    and every secret in the user's own MCP server environments, and it is
+    printed for a human to read.
+
+    Both places a secret can sit are covered: the ``env`` block, and the
+    argument list. A server started as ``--token ghp_...`` leaks exactly as
+    much as one started with ``GITHUB_TOKEN=ghp_...`` in its environment.
+    """
+    redacted = json.loads(json.dumps(config))
+    for spec in (redacted.get("mcpServers") or {}).values():
+        if not isinstance(spec, dict):
+            continue
+        env = spec.get("env")
+        if isinstance(env, dict):
+            for name in list(env):
+                if name in PLAN_VISIBLE_ENV:
+                    continue
+                value = env[name]
+                if isinstance(value, str):
+                    env[name] = f"<redacted: {len(value)} characters>" if value else "<empty>"
+                else:
+                    env[name] = "<redacted>"
+        args = spec.get("args")
+        if isinstance(args, list):
+            redact = False
+            for position, arg in enumerate(args):
+                if not isinstance(arg, str):
+                    continue
+                if redact:
+                    args[position] = "<redacted>"
+                    redact = False
+                    continue
+                if arg.startswith("-") and "=" in arg:
+                    flag, _, value = arg.partition("=")
+                    if _is_secret_arg_flag(flag) and value:
+                        args[position] = f"{flag}=<redacted: {len(value)} characters>"
+                    continue
+                if arg.startswith("-") and _is_secret_arg_flag(arg):
+                    redact = True
+    return redacted
+
+
+def wait_for_spool_drain(spool_path: Path, budget: float = 8.0) -> bool:
+    """Wait for MCP-Shield to deliver what it spooled.
+
+    The shield delivers asynchronously and makes one final forced pass as it
+    exits, which takes a moment after the agent that started it is gone.
+    Removing its spool before that pass finishes would discard detections
+    that were never delivered, and the session report would understate the
+    run by exactly the findings that mattered.
+    """
+    deadline = time.monotonic() + budget
+    while time.monotonic() < deadline:
+        try:
+            if not spool_path.exists() or spool_path.stat().st_size == 0:
+                return True
+        except OSError:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse to follow a redirect.
+
+    urllib's default handler re-issues the request to whatever the
+    ``Location`` header names and copies every header except
+    content-length and content-type onto it — the client's ``x-api-key``
+    among them. A redirect must never decide where a credential goes.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _opener(use_proxy: bool = True) -> urllib.request.OpenerDirector:
+    """The opener every outbound request goes through.
+
+    It never follows a redirect, and it can be told to ignore the
+    ambient proxy.
+    """
+    handlers: list[urllib.request.BaseHandler] = [_NoRedirect]
+    if not use_proxy:
+        handlers.append(urllib.request.ProxyHandler({}))
+    return urllib.request.build_opener(*handlers)
+
+
+def http_get_json(
+    url: str,
+    timeout: float = 5.0,
+    headers: dict[str, str] | None = None,
+    use_proxy: bool = True,
+):
+    """Fetch a JSON document.
+
+    ``use_proxy=False`` ignores the ambient ``http_proxy``/``https_proxy``
+    environment. urllib honours them by default, so a request that looks
+    like it is going to a loopback address can be handed to a proxy on the
+    way — and a credential in that request would go with it.
+    """
     request = urllib.request.Request(url, headers=headers or {})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with _opener(use_proxy).open(request, timeout=timeout) as response:
         body = response.read()
     return json.loads(body)
 
@@ -151,38 +339,101 @@ class _InjectorHandler(BaseHTTPRequestHandler):
     upstream_url: str = DEFAULT_UPSTREAM_URL
     correlation: dict[str, str] = {}
     read_timeout: float = 600.0
+    # The bounds on what a client can ask this proxy to hold in memory.
+    max_forward_bytes: int = MAX_FORWARD_BYTES
+    request_read_timeout: float = REQUEST_READ_TIMEOUT_SECONDS
 
     def log_message(self, fmt, *args):  # noqa: A003 - stdlib signature
         sys.stderr.write("[injector] " + (fmt % args) + "\n")
 
-    def _forward_headers(self) -> dict[str, str]:
+    def _forward_headers(self, *, stamped: bool) -> dict[str, str]:
+        """The headers to forward, with the correlation namespace owned here.
+
+        Every client-supplied ``X-Monolith-*`` header is dropped, in whatever
+        casing it arrived. HTTP header names are case-insensitive, so a
+        client that sent the same name twice under two spellings would
+        otherwise get one of its own values onto the wire — and which one
+        survived would depend on the order they arrived in, not on anything
+        the launcher decided.
+        """
         headers = {
             key: value
             for key, value in self.headers.items()
             if key.lower() not in HOP_BY_HOP
+            and not key.lower().startswith(CORRELATION_PREFIX)
         }
         headers["accept-encoding"] = "identity"
-        headers.update(self.correlation)
+        if stamped:
+            headers.update(self.correlation)
         return headers
 
+    def _normalized_path(self) -> str:
+        """The request target resolved the way a server would resolve it.
+
+        The raw target is not the path: a fragment is not part of the
+        request, a front end collapses dot segments, and a doubled slash
+        is one path. Comparing the raw target to "/v1/messages" lets a
+        target that only *reaches* that endpoint by another spelling skip
+        the auditor entirely — and the auditor is the whole reasoning
+        layer.
+        """
+        path = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
+        segments: list[str] = []
+        for segment in path.split("/"):
+            if segment in ("", "."):
+                continue
+            if segment == "..":
+                if segments:
+                    segments.pop()
+                continue
+            segments.append(segment)
+        return "/" + "/".join(segments)
+
+    def _is_messages_path(self) -> bool:
+        return self._normalized_path() == "/v1/messages"
+
     def _target(self) -> str:
-        path = self.path.split("?", 1)[0].rstrip("/")
-        if path == "/v1/messages":
+        if self._is_messages_path():
             return self.trace_audit_url.rstrip("/") + "/v1/messages"
         return self.upstream_url.rstrip("/") + self.path
 
     def _proxy(self, method: str) -> None:
-        length = int(self.headers.get("content-length") or 0)
-        body = self.rfile.read(length) if length else b""
+        try:
+            length = int(self.headers.get("content-length") or 0)
+        except ValueError:
+            self._refuse(400, "the content-length header is not a number")
+            return
+        if length > self.max_forward_bytes:
+            self._refuse(413, "the request body is too large")
+            return
+        try:
+            # The client's body is bounded in time as well as in size: a
+            # client that announces a length and then stops would otherwise
+            # pin this handler thread for as long as it cared to.
+            self.connection.settimeout(self.request_read_timeout)
+            body = self.rfile.read(length) if length else b""
+        except TimeoutError:
+            self._refuse(408, "the request body did not arrive in time")
+            return
+        except OSError as error:
+            self._refuse(400, f"the request body could not be read: {error}")
+            return
+        finally:
+            # The answer is a long-lived stream, so the socket goes back to
+            # waiting as long as it takes.
+            self.connection.settimeout(None)
         target = self._target()
         request = urllib.request.Request(
             target,
             data=body if body else None,
-            headers=self._forward_headers(),
+            # The session id is stamped on the request that goes to the
+            # auditor, and nowhere else: it is how a run is attributed, and
+            # it is not the model provider's business.
+            headers=self._forward_headers(stamped=self._is_messages_path()),
             method=method,
         )
         try:
-            response = urllib.request.urlopen(request, timeout=self.read_timeout)
+            response = _opener().open(request, timeout=self.read_timeout)
         except urllib.error.HTTPError as error:
             payload = error.read()
             self.send_response(error.code)
@@ -228,6 +479,24 @@ class _InjectorHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
         self.wfile.write(b"\r\n")
         self.wfile.flush()
+
+    def _refuse(self, status: int, message: str) -> None:
+        """Answer without forwarding, and close: the body was not read, so
+        the connection cannot carry another request."""
+        payload = json.dumps(
+            {"type": "error", "error": {"type": "monolith_request_refused", "message": message}}
+        ).encode("utf-8")
+        self.close_connection = True
+        try:
+            self.send_response(status)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(payload)))
+            self.send_header("connection", "close")
+            self.end_headers()
+            self.wfile.write(payload)
+            self.wfile.flush()
+        except OSError:
+            pass
 
     def do_POST(self):  # noqa: N802 - stdlib signature
         self._proxy("POST")
@@ -317,6 +586,44 @@ def find_mcp_shield() -> Path | None:
     return Path(found) if found else None
 
 
+def build_shield_env(
+    *,
+    dashboard_url: str,
+    workdir: Path,
+    tenant_id: str,
+    agent_id: str,
+    session_id: str,
+    event_token: str | None = None,
+    shield_key: str | None = None,
+    allow_insecure_dashboard: bool = False,
+) -> dict[str, str]:
+    """The environment every shielded MCP server is started with.
+
+    The shield applies the same transport rule the launcher does: HTTPS
+    everywhere, plain HTTP only to loopback unless the operator says the
+    network is trusted. The operator's answer lives in the same .env file
+    the launcher reads, so the shield has to be told it — otherwise the
+    tool layer silently stops delivering while the launcher's own report
+    still works.
+    """
+    env = {
+        "MONOLITH_DASHBOARD_URL": dashboard_url.rstrip("/") + "/api/ingest",
+        "MONOLITH_EVENT_OUTBOX_PATH": str(workdir / "mcp-shield-outbox.jsonl"),
+        "MCP_SHIELD_BASELINE": str(workdir / "mcp-shield-baseline.json"),
+        "MCP_SHIELD_MODE": "enforce",
+        "MONOLITH_TENANT_ID": tenant_id,
+        "MONOLITH_AGENT_ID": agent_id,
+        "MONOLITH_SESSION_ID": session_id,
+    }
+    if event_token:
+        env["MONOLITH_EVENT_TOKEN"] = event_token
+    if shield_key:
+        env["MCP_SHIELD_KEY"] = shield_key
+    if allow_insecure_dashboard:
+        env["MONOLITH_ALLOW_INSECURE_DASHBOARD"] = "true"
+    return env
+
+
 def build_mcp_config(
     servers: dict[str, dict],
     *,
@@ -374,7 +681,12 @@ def build_mcp_config(
 # --- reporting -------------------------------------------------------------
 
 
-def print_session_report(dashboard_url: str, session_id: str, operator_token: str | None) -> None:
+def print_session_report(
+    dashboard_url: str,
+    session_id: str,
+    operator_token: str | None,
+    allow_insecure: bool = False,
+) -> None:
     if not operator_token:
         print(
             "\n  No operator token was available, so the session report was skipped.\n"
@@ -382,12 +694,27 @@ def print_session_report(dashboard_url: str, session_id: str, operator_token: st
             f"  Look it up at {dashboard_url} (the console asks for a sign-in)."
         )
         return
+    if not credential_transport_is_trusted(dashboard_url, allow_insecure):
+        print(
+            "\n  The session report was skipped: it would send the operator token to\n"
+            f"  {dashboard_url} over plain HTTP. Use HTTPS, a loopback address, or set\n"
+            "  MONOLITH_ALLOW_INSECURE_DASHBOARD=true if that network is trusted.\n"
+            f"  Session id: {session_id}"
+        )
+        return
     url = dashboard_url.rstrip("/") + f"/api/sessions/{session_id}"
+    # A plain-HTTP dashboard means the operator token travels in cleartext,
+    # and urllib would hand the request to an ambient http_proxy on the way
+    # out — to a host that is not the loopback address the guard just
+    # approved. An HTTPS request is tunnelled through the proxy instead,
+    # which cannot read the token, so the proxy is left alone there.
+    plain_http = urllib.parse.urlparse(url).scheme == "http"
     try:
         report = http_get_json(
             url,
             timeout=15.0,
             headers={"authorization": f"Bearer {operator_token}"},
+            use_proxy=not plain_http,
         )
     except urllib.error.HTTPError as error:
         print(f"\n  The session report could not be read: HTTP {error.code}.")
@@ -402,7 +729,14 @@ def print_session_report(dashboard_url: str, session_id: str, operator_token: st
     print("\n  Session report")
     print("  --------------")
     print(f"  session    {session_id}")
-    print(f"  events     {summary.get('total', 0)}")
+    total = summary.get("total", 0)
+    counted = summary.get("counted", total)
+    print(f"  events     {total}")
+    if summary.get("truncated"):
+        # The session is larger than one page, and the counts below cover
+        # the page, not the session. Saying so beats a ratio that reads as
+        # if it covered everything.
+        print(f"             (the counts below cover the first {counted} of them)")
     print(
         "  severity  "
         f"critical {by_severity.get('critical', 0)}"
@@ -484,6 +818,11 @@ def main(argv: list[str] | None = None) -> int:
     operator_token = resolve_setting("MONOLITH_OPERATOR_TOKEN", dotenv)
     event_token = resolve_setting("MONOLITH_EVENT_TOKEN_MCP_SHIELD", dotenv)
     shield_key = resolve_setting("MCP_SHIELD_KEY", dotenv)
+    # One answer to "is the network trusted?", read once and used by both
+    # the launcher's own report and the tool layer's delivery.
+    allow_insecure_dashboard = (
+        resolve_setting("MONOLITH_ALLOW_INSECURE_DASHBOARD", dotenv) == "true"
+    )
 
     # The upstream the agent was already pointed at. The injector sends
     # everything that is not /v1/messages straight there.
@@ -491,7 +830,12 @@ def main(argv: list[str] | None = None) -> int:
     if upstream_url.rstrip("/").endswith("/v1"):
         upstream_url = upstream_url.rstrip("/")[: -len("/v1")]
 
-    session_id = args.session_id or f"monolith-{int(time.time() * 1000)}-{os.getpid():x}"
+    # The session id is the key every layer correlates on, so it is also the
+    # key somebody would need in order to file events into this run's ledger.
+    # A timestamp and a pid are guessable by anything else on the machine, so
+    # the id carries 122 bits of randomness instead: a caller that cannot
+    # guess it cannot pretend to be this run.
+    session_id = args.session_id or mint_session_id()
     correlation = {
         "X-Monolith-Session-Id": session_id,
         "X-Monolith-Agent-Id": agent_id,
@@ -547,19 +891,16 @@ def main(argv: list[str] | None = None) -> int:
                     servers[name] = spec
 
     workdir = Path(tempfile.mkdtemp(prefix="monolith-wrap-"))
-    shield_env = {
-        "MONOLITH_DASHBOARD_URL": dashboard_url.rstrip("/") + "/api/ingest",
-        "MONOLITH_EVENT_OUTBOX_PATH": str(workdir / "mcp-shield-outbox.jsonl"),
-        "MCP_SHIELD_BASELINE": str(workdir / "mcp-shield-baseline.json"),
-        "MCP_SHIELD_MODE": "enforce",
-        "MONOLITH_TENANT_ID": tenant_id,
-        "MONOLITH_AGENT_ID": agent_id,
-        "MONOLITH_SESSION_ID": session_id,
-    }
-    if event_token:
-        shield_env["MONOLITH_EVENT_TOKEN"] = event_token
-    if shield_key:
-        shield_env["MCP_SHIELD_KEY"] = shield_key
+    shield_env = build_shield_env(
+        dashboard_url=dashboard_url,
+        workdir=workdir,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        event_token=event_token,
+        shield_key=shield_key,
+        allow_insecure_dashboard=allow_insecure_dashboard,
+    )
 
     config = build_mcp_config(
         servers,
@@ -577,7 +918,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.plan:
         print(f"\n  The MCP configuration would be written to {config_path}:\n")
-        print(json.dumps(config, indent=2))
+        print(json.dumps(redact_config_secrets(config), indent=2))
+        print("\n  (environment values are redacted; the file on disk carries the real ones)")
         shutil.rmtree(workdir, ignore_errors=True)
         return 0
 
@@ -607,10 +949,27 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             exit_code = 130
 
-    shutil.rmtree(workdir, ignore_errors=True)
+    # The tool layer's shield drains its spool as it exits, which happens
+    # after the agent is gone. Give it that moment before the spool goes
+    # away with the work directory.
+    spool_path = workdir / "mcp-shield-outbox.jsonl"
+    if wait_for_spool_drain(spool_path):
+        shutil.rmtree(workdir, ignore_errors=True)
+    else:
+        print(
+            f"\n  The tool layer still had undelivered events in {spool_path}.\n"
+            "  The directory was left in place: nothing was discarded. To deliver\n"
+            "  them, point MCP-Shield at that path (MONOLITH_EVENT_OUTBOX_PATH) and\n"
+            "  start it once: it drains the backlog on startup."
+        )
 
     if not args.no_report:
-        print_session_report(dashboard_url, session_id, operator_token)
+        print_session_report(
+            dashboard_url,
+            session_id,
+            operator_token,
+            allow_insecure=allow_insecure_dashboard,
+        )
     return exit_code
 
 
