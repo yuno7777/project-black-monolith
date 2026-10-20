@@ -31,6 +31,8 @@ SESSION_HEADER = "x-monolith-session-id"
 TRACE_HEADER = "x-monolith-trace-id"
 CORRELATION_HEADER = "x-monolith-correlation-id"
 PERMANENT_HTTP_STATUSES = {400, 401, 403, 413, 422}
+DEFAULT_POLL_INTERVAL_MS = 15_000
+MIN_POLL_INTERVAL_MS = 1_000
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -45,13 +47,37 @@ def now_ms() -> int:
 
 
 def _poll_interval_ms() -> int:
-    """Revocation poll cadence; 0 (or a bad value) disables polling."""
-    raw = os.environ.get("MONOLITH_SESSION_POLL_MS", "15000")
+    """Revocation poll cadence in milliseconds; 0 disables polling.
+
+    Zero is the explicit off switch, and the only way to turn polling off. A
+    value that cannot be read as a cadence of at least
+    ``MIN_POLL_INTERVAL_MS`` falls back to the default rather than stopping
+    the poller: the poll is the only way an idle module learns that its
+    session was revoked, so a mistyped interval must not quietly switch that
+    off. The fallback says so, loudly, and keeps the control on.
+    """
+    raw = os.environ.get("MONOLITH_SESSION_POLL_MS", str(DEFAULT_POLL_INTERVAL_MS)).strip()
     try:
         value = int(raw)
     except ValueError:
+        value = None
+    if value == 0:
+        print(
+            "MONOLITH_SESSION_POLL_MS=0: revoked-session polling is disabled for this module",
+            file=sys.stderr,
+            flush=True,
+        )
         return 0
-    return value if value > 0 else 0
+    if value is None or value < MIN_POLL_INTERVAL_MS:
+        print(
+            f"unrecognized MONOLITH_SESSION_POLL_MS {raw!r} "
+            f"(expected 0, or a cadence of at least {MIN_POLL_INTERVAL_MS} ms); "
+            f"using the default cadence of {DEFAULT_POLL_INTERVAL_MS} ms",
+            file=sys.stderr,
+            flush=True,
+        )
+        return DEFAULT_POLL_INTERVAL_MS
+    return value
 
 
 def _clean_id(value: Any) -> str | None:
@@ -651,23 +677,22 @@ class EventEmitter:
             else None
         )
         self.revocation_poller: RevokedSessionPoller | None = None
-        if (
-            self.outbox
-            and dashboard_url
-            and event_token
-            and _poll_interval_ms()
-            and (
-                (poll_url := os.environ.get("MONOLITH_SESSION_POLL_URL"))
-                or (poll_url := revocation_poll_url(dashboard_url))
+        if self.outbox and dashboard_url and event_token:
+            # Read the cadence once. It is a decision, and a decision read
+            # twice is read twice with two chances to differ.
+            poll_interval = _poll_interval_ms()
+            poll_url = (
+                os.environ.get("MONOLITH_SESSION_POLL_URL")
+                or revocation_poll_url(dashboard_url)
             )
-        ):
+            if poll_interval and poll_url:
                 try:
                     self.revocation_poller = RevokedSessionPoller(
                         poll_url,
                         event_token,
                         tenant_id=self.default_tenant,
                         module=module,
-                        interval_ms=_poll_interval_ms(),
+                        interval_ms=poll_interval,
                         allow_insecure_http=allow_insecure_http,
                     )
                     self.revocation_poller.start()
