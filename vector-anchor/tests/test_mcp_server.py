@@ -14,6 +14,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -72,9 +73,11 @@ class _Client:
     def __init__(self, url: str, env_overrides: dict | None = None):
         env = dict(os.environ)
         env["MONOLITH_VECTOR_ANCHOR_URL"] = url
-        env.setdefault("MONOLITH_TENANT_ID", "tenant-under-test")
-        env.setdefault("MONOLITH_AGENT_ID", "agent-under-test")
-        env.setdefault("MONOLITH_SESSION_ID", "session-under-test")
+        # Pinned, not defaulted: an ambient value from the host shell would
+        # otherwise win and the test would assert on somebody else's session.
+        env["MONOLITH_TENANT_ID"] = "tenant-under-test"
+        env["MONOLITH_AGENT_ID"] = "agent-under-test"
+        env["MONOLITH_SESSION_ID"] = "session-under-test"
         env.update(env_overrides or {})
         self.process = subprocess.Popen(
             [sys.executable, str(SERVER_PATH)],
@@ -153,10 +156,12 @@ def test_the_handshake_advertises_one_retrieve_tool(client):
     assert result["serverInfo"]["name"] == "vector-anchor"
     assert "tools" in result["capabilities"]
 
-    # A protocol version the server does not know falls back to its own
-    # rather than failing the handshake.
+    # A protocol version the server does not know falls back to the latest
+    # version it supports rather than failing the handshake: a client that
+    # has dropped the oldest version but would happily have used the
+    # newest still connects.
     fallback = client.call("initialize", {"protocolVersion": "1999-01-01"}, request_id=2)
-    assert fallback["result"]["protocolVersion"] == "2024-11-05"
+    assert fallback["result"]["protocolVersion"] == "2025-06-18"
 
     listed = client.call("tools/list", {}, request_id=3)
     tools = listed["result"]["tools"]
@@ -171,6 +176,27 @@ def test_a_notification_gets_no_reply(client):
     response = client.call("ping", {}, request_id=7)
     assert response["id"] == 7
     assert response["result"] == {}
+
+
+def test_no_method_answers_a_notification(client):
+    """A JSON-RPC notification carries no id, and the server must not reply
+    to one: an unsolicited frame on the wire is a response to a request
+    that was never made."""
+    for method, params in (
+        ("initialize", {"protocolVersion": "2025-06-18"}),
+        ("ping", {}),
+        ("tools/list", {}),
+        ("tools/call", {"name": "retrieve", "arguments": {"query": "x"}}),
+    ):
+        client.send(method, params, request_id=None)
+
+    # The next request is answered, and it is the only thing on the wire:
+    # a server that replied to a notification would have put an
+    # unsolicited frame ahead of it.
+    response = client.call("ping", {}, request_id=11)
+    assert response["id"] == 11
+    time.sleep(0.2)
+    assert client.messages.qsize() == 0
 
 
 def test_a_call_is_forwarded_to_the_service_with_the_session_stamped_on_it(client, fake_service):

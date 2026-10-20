@@ -45,6 +45,12 @@ SERVER_NAME = "vector-anchor"
 SERVER_VERSION = "0.1.0"
 PROTOCOL_VERSION = "2024-11-05"
 SUPPORTED_PROTOCOL_VERSIONS = {"2024-11-05", "2025-03-26", "2025-06-18"}
+# The version the handshake falls back to when the client asks for one this
+# server does not know. MCP says the server should answer with a version it
+# supports, and should prefer the latest: a client that has dropped the
+# oldest version but would happily have used the newest cannot connect to a
+# server that answers with the oldest.
+LATEST_PROTOCOL_VERSION = "2025-06-18"
 
 MAX_QUERY_LENGTH = 16_384
 MAX_K = 20
@@ -154,6 +160,15 @@ def _call_service(payload: dict) -> dict:
             f"VectorAnchor is unreachable at {_service_url()}: {error.reason}. "
             "Is the service running?"
         ) from error
+    except OSError as error:
+        # A read timeout or a connection reset is not a URLError: urllib
+        # raises the builtin OSError, and an exception the caller does not
+        # catch would take the whole server down mid-session, taking the
+        # agent's retrieve tool with it.
+        raise RuntimeError(
+            f"VectorAnchor did not answer at {_service_url()}: {error}. "
+            "Is the service running?"
+        ) from error
     try:
         decoded = json.loads(body)
     except json.JSONDecodeError as error:
@@ -254,11 +269,13 @@ def main() -> int:
             params = {}
 
         if method == "initialize":
+            if request_id is None:
+                continue
             requested = params.get("protocolVersion")
             version = (
                 requested
                 if isinstance(requested, str) and requested in SUPPORTED_PROTOCOL_VERSIONS
-                else PROTOCOL_VERSION
+                else LATEST_PROTOCOL_VERSION
             )
             _result(
                 request_id,
@@ -272,8 +289,12 @@ def main() -> int:
             # A notification: no id, no response.
             continue
         elif method == "ping":
+            if request_id is None:
+                continue
             _result(request_id, {})
         elif method == "tools/list":
+            if request_id is None:
+                continue
             _result(request_id, {"tools": [TOOL_SCHEMA]})
         elif method == "tools/call":
             if request_id is None:
