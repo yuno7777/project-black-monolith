@@ -259,7 +259,7 @@ regression would be invisible.
 | 6 | TraceAudit's prompt projection drops every non-text content block, and is never tested against one. | `trace-audit/src/anthropic_gateway.py` | medium |
 | 7 | The divergence detector's real-model behaviour is asserted by no committed result. | `trace-audit/fixtures/` | medium |
 | 8 | The production Postgres branch of the session list is never executed by any test. | `dashboard/app/api/sessions/route.ts` | medium |
-| 9 | The benchmark ledger's write and read paths are untested, route included. | `dashboard/lib/benchmark-store.ts` | small |
+| 9 | ~~The benchmark ledger's write and read paths are untested, route included.~~ **closed** | `dashboard/lib/benchmark-store.ts` | small |
 | 10 | The two functions the memory-layer detector's hot path depends on are untested; the one that is tested is not on the hot path. | `vector-anchor/src/frequency_tracker.py` | small |
 
 (The cited path for gap 2 was wrong: there is no `dashboard/app/api/triage/`. The
@@ -315,6 +315,48 @@ Both files are proved by mutation: reversing the ordering, dropping the keyset
 predicate, dropping the extra row, unscoping the counts and narrowing the
 search each break exactly the test that claims to hold the guarantee, and each
 was reverted.
+
+### The benchmark ledger (gap 9)
+
+`dashboard/test/benchmark-ledger.test.ts` — twenty-six tests over the write
+path, the read path and the route.
+
+The benchmark ledger is the one place in this repository where numbers are
+written by a human's CI job and then read back as evidence. The modules
+detect; the dashboard counts what the operators decided. The ledger sits
+between them, and it is the only one of the three whose numbers nobody in
+the stack can take for itself — so the only defence against a wrong number
+being recorded is that the ledger refuses to believe the client.
+
+- **The metrics are computed from the confusion matrix, never copied.** A run
+  that claims a perfect detection rate over a matrix that says otherwise
+  stores the matrix's answer. The corpus is counted from the matrix too: a
+  run that reported its own corpus counts could claim a thousand samples
+  over a matrix of ten.
+- **The tenant comes from the credential.** A body that names a tenant is
+  ignored, because a run filed under somebody else's tenant is a run the
+  wrong operator can read.
+- **A run is one to fifty detector reports,** of a known module, a known
+  paradigm, a named detector no longer than sixty-four characters, and no
+  detector twice. The confusion matrix is made of non-negative 32-bit
+  integers, the latency percentiles ascend, the benchmark version is in
+  range, the notes and the commit are bounded, and a threshold set that is
+  not a map of values is dropped rather than stored.
+- **A run is written one row per detector in one transaction,** carrying the
+  recomputed rate.
+- **The read path is scoped to the tenant.** The latest run is the most
+  recent one for this tenant, its detector rows are read by run id *and*
+  tenant, no run at all is null rather than an empty run, and the history is
+  one bucket per detector with a bounded limit.
+- **The route serves the run, the history and the observed accuracy
+  together,** because the page's whole argument is the comparison between
+  the lab numbers and the observed ones.
+
+Nine mutations prove it: believing the client's rate, taking the corpus or
+the tenant from the body, allowing a detector twice, dropping the percentile
+check, reading the run's detectors without the tenant, unscoping the
+history, dropping the version bound and storing a threshold set that is not
+a map each break exactly the test that claims to hold that guarantee.
 
 ---
 
@@ -388,6 +430,16 @@ up.
   in any of it would have been invisible. Fixed in PR #68: thirty-one tests
   over the write path and the read path, each proved by mutating the
   behaviour back and watching the test that claims to hold it fail.
+- **The benchmark ledger had no tests at all** (test gap 9). It is the one
+  place in the repository where numbers are written by a human's CI job and
+  then read back as evidence, so it is the one store whose contents nobody
+  in the stack can take for itself. A run that claimed a perfect detection
+  rate over a confusion matrix that said otherwise would have been stored
+  and displayed as a perfect detection rate, and nothing in the dashboard
+  could have told the operator the number was the client's claim rather
+  than a measurement. Fixed in PR #69: twenty-six tests over the write
+  path, the read path and the route, each proved by mutating the behaviour
+  back and watching the test that claims to hold it fail.
 - **The tool layer's fail-open path discarded enforcement it had already
   computed** (§5 above). A failed baseline write aborted the whole analysis
   with a `?`, so the server's original bytes — the poisoned schema — were

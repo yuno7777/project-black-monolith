@@ -40,6 +40,7 @@ Read it before starting work. Write to it while you work.
 | security | `fix/mcp-shield/malformed-tool-entry` | one malformed tool entry voided the whole `tools/list` defence for that server (`FINDINGS.md` §6) | PR #66 open; the fix is proved by mutating it back to the old behaviour — one defective entry rejecting the whole listing — and watching all six new tests fail. Branched off `main` at `1b6e8ed`; no history rewrite, so nothing was force-pushed |
 | security | `fix/vector-anchor/truncated-error-body` | the memory layer's MCP server died mid-session when the service answered with a body that stopped short (`FINDINGS.md` §7) | PR #67 open; the fix is proved by mutating it back and watching the new test fail. **This finding is also implemented in `fix/silent-defense-failures` (`a3acb59`) — see the overlap note below** |
 | security | `fix/dashboard/incident-triage-tests` | the incident queue's write path and read path had no tests at all (`FINDINGS.md` test gaps 2 and 3) | PR #68 open; 31 tests, each proved by mutating the behaviour back and watching the test that claims to hold it fail. Worktree `C:/Users/Abhi/Desktop/monolith-wt/incident-triage`, branched off `origin/main` (`f42721d`) |
+| security | `fix/dashboard/benchmark-ledger-tests` | the benchmark ledger's write and read paths had no tests at all (`FINDINGS.md` test gap 9) | PR #69 open; 26 tests, each proved by mutating the behaviour back and watching the test that claims to hold it fail. **Stacked on PR #68** — merge #68 first. Worktree `C:/Users/Abhi/Desktop/monolith-wt/benchmark-ledger` |
 | security + silent-defenses | `fix/vector-anchor/truncated-error-body` and `fix/silent-defense-failures` | two agents implemented the same finding; the overlap and its resolution are recorded below | resolved: the published work stands, the unpublished work is dropped. Nothing is force-pushed |
 | integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI green on `b19513b` |
 | integrator | Dependabot | #24 merged (codeql-action); #15, #16 closed as superseded; #26 superseded by a direct hmac 0.13 migration | the queue is empty: **zero open PRs** |
@@ -129,6 +130,7 @@ to `main` by ref. Use a dedicated worktree for every branch.
 | `supabase/migrations/**` | security | retention scoping migration |
 | `contracts/openapi.yaml` | security | corrected the revocation snapshot wording |
 | `dashboard/test/incident-triage.test.ts`, `dashboard/test/incident-queue.test.ts` | security | the incident queue's write and read paths. Reads `dashboard/lib/incident-store.ts` and `dashboard/app/api/incidents/route.ts` but does not modify either, so it does not collide with `silent-defenses`' revocation-snapshot work |
+| `dashboard/test/benchmark-ledger.test.ts` | security | the benchmark ledger's write and read paths. Reads `dashboard/lib/benchmark-store.ts` and `dashboard/app/api/benchmarks/route.ts` but does not modify either |
 | `main` | integrator | Merges and verification only; branch work happens in a worktree. |
 
 Free to claim: `vector-anchor/**`, `trace-audit/**`, `dashboard/app/api/operations/**`,
