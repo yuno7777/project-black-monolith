@@ -3166,6 +3166,9 @@ mod tests {
 
     #[test]
     fn revoked_session_blocks_tool_calls_in_enforce_mode_and_forwards_in_monitor_mode() {
+        let _guard = crate::outbox::MIRROR_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let session_id = "feedface-0000-4000-8000-000000000001";
         std::env::set_var("MONOLITH_SESSION_ID", session_id);
         let snapshot = json!({ "revoked_sessions": [session_id] }).to_string();

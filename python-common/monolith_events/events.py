@@ -33,6 +33,10 @@ CORRELATION_HEADER = "x-monolith-correlation-id"
 PERMANENT_HTTP_STATUSES = {400, 401, 403, 413, 422}
 DEFAULT_POLL_INTERVAL_MS = 15_000
 MIN_POLL_INTERVAL_MS = 1_000
+# How many pages of the revocation snapshot a module will follow. The bound
+# is there so a broken or hostile dashboard cannot make the poller fetch
+# forever; a snapshot larger than this is refused rather than half-mirrored.
+MAX_REVOCATION_PAGES = 64
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -321,11 +325,21 @@ def is_session_revoked(session_id: Any) -> bool:
     return _REVOKED_SESSIONS.is_revoked(session_id)
 
 
+def _session_ids(raw: Any) -> list[str] | None:
+    """The session ids of a snapshot, cleaned; None when there is no list."""
+    if not isinstance(raw, (list, tuple)):
+        return None
+    return [value for value in (_clean_id(item) for item in raw) if value]
+
+
 def update_revoked_sessions_from_ingest(body: bytes | str | Mapping[str, Any]) -> int:
     """Adopt the `revoked_sessions` snapshot of an ingest response.
 
     Only a payload that actually carries the field updates the registry; an
     unparseable or empty body must not be read as "nothing is revoked".
+    A snapshot the dashboard marks as incomplete is refused for the same
+    reason: a partial set is not a set, and installing one would quietly
+    forget every revocation that is not in it.
     Returns the number of revoked sessions now known, or -1 when the payload
     carried no usable snapshot.
     """
@@ -342,6 +356,8 @@ def update_revoked_sessions_from_ingest(body: bytes | str | Mapping[str, Any]) -
     else:
         payload = body
     if not isinstance(payload, Mapping):
+        return -1
+    if payload.get("revoked_sessions_complete") is False:
         return -1
     raw = payload.get("revoked_sessions")
     if not isinstance(raw, (list, tuple)):
@@ -360,7 +376,16 @@ def revocation_poll_url(dashboard_url: str) -> str | None:
 
 
 class RevokedSessionPoller:
-    """Periodically refresh the revoked-session set when no events flow."""
+    """Periodically refresh the revoked-session set when no events flow.
+
+    The snapshot is paged. A module reads a response body under a hard byte
+    cap, and a snapshot larger than that cap cannot be parsed at all: the
+    module keeps the set it already had, and that set is stale. Past a
+    certain number of live revocations every snapshot is too large, so the
+    staleness never ends and the circuit breaker fails open for exactly the
+    sessions it was meant to quarantine. The poller therefore follows the
+    pages and installs the set only once it has all of it.
+    """
 
     def __init__(
         self,
@@ -406,27 +431,104 @@ class RevokedSessionPoller:
             self.refresh_once()
             self._stop.wait(self._interval_s)
 
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._token}",
+            TENANT_HEADER: self._tenant,
+            "x-monolith-module": self._module,
+        }
+
+    def _fetch(self, url: str) -> Mapping[str, Any]:
+        request = urllib.request.Request(
+            url,
+            headers=self._headers(),
+            method="GET",
+        )
+        opener = urllib.request.build_opener(_NoRedirect)
+        with opener.open(request, timeout=2) as response:
+            body = response.read(64 * 1024)
+        payload = json.loads(body)
+        if not isinstance(payload, Mapping):
+            raise ValueError("the snapshot was not an object")
+        return payload
+
+    def _page_url(self, cursor: str) -> str:
+        """The URL of the page that starts after `cursor`."""
+        parts = urllib.parse.urlsplit(self._url)
+        query = [
+            (name, value)
+            for name, value in urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+            if name != "cursor"
+        ]
+        query.append(("cursor", cursor))
+        return urllib.parse.urlunsplit(
+            (parts.scheme, parts.netloc, parts.path, urllib.parse.urlencode(query), parts.fragment)
+        )
+
+    def _collect(self, payload: Mapping[str, Any]) -> list[str] | None:
+        """The whole set of revoked sessions, or None when it is not whole.
+
+        The dashboard sends the whole set inline when it fits in one
+        response, and pages it when it does not. A set that is neither
+        complete nor pageable is not a set: the previous one stands.
+        """
+        inline = _session_ids(payload.get("revoked_sessions"))
+        if inline is not None and payload.get("revoked_sessions_complete") is not False:
+            return inline
+
+        collected: list[str] = []
+        seen: set[str] = set()
+        for value in inline or []:
+            if value in seen:
+                continue
+            seen.add(value)
+            collected.append(value)
+        cursor = payload.get("next_cursor")
+        if not isinstance(cursor, str) or not cursor:
+            return None
+        for _ in range(MAX_REVOCATION_PAGES):
+            page = self._fetch(self._page_url(cursor))
+            page_ids = _session_ids(page.get("revoked_sessions"))
+            if page_ids is None:
+                # A page that is not a snapshot: the set cannot be read to
+                # the end, so the previous one stands.
+                return None
+            for value in page_ids:
+                if value in seen:
+                    continue
+                seen.add(value)
+                collected.append(value)
+            if page.get("revoked_sessions_complete") is True:
+                return collected
+            cursor = page.get("next_cursor")
+            if not isinstance(cursor, str) or not cursor:
+                return collected
+        # The snapshot is larger than this module is willing to mirror. The
+        # previous set stands: a partial set would forget revocations, and
+        # forgetting one is how a quarantined session gets back in.
+        print(
+            "the revoked-session snapshot is larger than this module will mirror; "
+            "the previous set stands",
+            file=sys.stderr,
+            flush=True,
+        )
+        return None
+
     def refresh_once(self) -> int:
         try:
-            request = urllib.request.Request(
-                self._url,
-                headers={
-                    "Authorization": f"Bearer {self._token}",
-                    TENANT_HEADER: self._tenant,
-                    "x-monolith-module": self._module,
-                },
-                method="GET",
-            )
-            opener = urllib.request.build_opener(_NoRedirect)
-            with opener.open(request, timeout=2) as response:
-                body = response.read(64 * 1024)
-            self.last_error = None
-            return update_revoked_sessions_from_ingest(body)
+            payload = self._fetch(self._url)
+            collected = self._collect(payload)
         except urllib.error.HTTPError as error:
             self.last_error = f"http {error.code}"
+            return -1
         except Exception as error:  # a poll failure must never kill the thread
             self.last_error = type(error).__name__
-        return -1
+            return -1
+        if collected is None:
+            self.last_error = "the snapshot was incomplete"
+            return -1
+        self.last_error = None
+        return _REVOKED_SESSIONS.replace(collected)
 
     def close(self, timeout: float = 5.0) -> None:
         self._stop.set()

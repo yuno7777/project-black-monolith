@@ -89,7 +89,7 @@ SNAPSHOT=$(curl -sf -H "Authorization: Bearer $MONOLITH_EVENT_TOKEN_VECTOR_ANCHO
   -H "x-monolith-tenant-id: $TENANT" -H "x-monolith-module: vector-anchor" \
   "$BASE/api/sessions/revoked")
 check "the snapshot carries the session" "True" \
-  "$(echo "$SNAPSHOT" | python -c "import sys,json;print('$SESSION' in json.load(sys.stdin)['revoked_sessions'])")"
+  "$(echo "$SNAPSHOT" | python -c "import sys,json;print('$SESSION' in (json.load(sys.stdin).get('revoked_sessions') or []))")"
 check "the snapshot requires a module credential" "401" \
   "$(curl -s -o /dev/null -w '%{http_code}' -H "x-monolith-tenant-id: $TENANT" \
      -H "x-monolith-module: vector-anchor" "$BASE/api/sessions/revoked")"
@@ -182,7 +182,7 @@ check "the snapshot no longer lists the session" "False" \
   "$(curl -sf -H "Authorization: Bearer $MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR" \
      -H "x-monolith-tenant-id: $TENANT" -H "x-monolith-module: vector-anchor" \
      "$BASE/api/sessions/revoked" \
-     | python -c "import sys,json;print('$SESSION' in json.load(sys.stdin)['revoked_sessions'])")"
+     | python -c "import sys,json;print('$SESSION' in (json.load(sys.stdin).get('revoked_sessions') or []))")"
 
 echo
 echo "=============================================="

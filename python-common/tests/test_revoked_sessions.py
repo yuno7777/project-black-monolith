@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import threading
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from monolith_events.events import (
@@ -183,3 +184,136 @@ def test_poller_refreshes_from_the_dashboard_endpoint():
         server.shutdown()
         thread.join(timeout=5)
         revoked_session_registry().replace([])
+
+
+class _PagedRevocationHandler(BaseHTTPRequestHandler):
+    """A dashboard whose revocation snapshot does not fit in one response.
+
+    A module reads a response body under a hard byte cap, and a snapshot
+    larger than that cap cannot be parsed at all: the module keeps the set it
+    already had, and that set is stale. Past a certain number of live
+    revocations every snapshot is too large, so the staleness never ends and
+    the circuit breaker fails open for exactly the sessions it was meant to
+    quarantine.
+    """
+
+    pages: dict = {}
+    seen_targets: list = []
+
+    def do_GET(self):  # noqa: N802 — BaseHTTPRequestHandler API
+        type(self).seen_targets.append(self.path)
+        parts = urllib.parse.urlsplit(self.path)
+        cursor = urllib.parse.parse_qs(parts.query).get("cursor", [""])[0]
+        body = json.dumps(type(self).pages.get(cursor, {"error": "no such page"})).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args):  # silence test output
+        pass
+
+
+def _start_paged_server():
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _PagedRevocationHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+
+def test_poller_follows_the_pages_of_a_snapshot_too_large_to_send_at_once():
+    _PagedRevocationHandler.pages = {
+        "": {
+            "revoked_sessions": ["page-1-session"],
+            "revoked_sessions_complete": False,
+            "next_cursor": "cursor-1",
+        },
+        "cursor-1": {
+            "revoked_sessions": ["page-2-session"],
+            "revoked_sessions_complete": False,
+            "next_cursor": "cursor-2",
+        },
+        "cursor-2": {
+            "revoked_sessions": ["page-3-session"],
+            "revoked_sessions_complete": False,
+            "next_cursor": None,
+        },
+    }
+    _PagedRevocationHandler.seen_targets = []
+    server, thread = _start_paged_server()
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}/api/sessions/revoked"
+        poller = RevokedSessionPoller(
+            url,
+            "test-token-value",
+            tenant_id="tenant-poll",
+            module="vector-anchor",
+            interval_ms=60_000,
+        )
+        assert poller.refresh_once() == 3, "every page of the snapshot must be read"
+        assert is_session_revoked("page-1-session")
+        assert is_session_revoked("page-2-session")
+        assert is_session_revoked("page-3-session")
+        assert _PagedRevocationHandler.seen_targets == [
+            "/api/sessions/revoked",
+            "/api/sessions/revoked?cursor=cursor-1",
+            "/api/sessions/revoked?cursor=cursor-2",
+        ]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        revoked_session_registry().replace([])
+
+
+def test_a_snapshot_that_cannot_be_read_to_the_end_installs_nothing():
+    """A half-read snapshot would forget every revocation that is not on it."""
+    _PagedRevocationHandler.pages = {
+        "": {
+            "revoked_sessions": ["page-1-session"],
+            "revoked_sessions_complete": False,
+            "next_cursor": "cursor-1",
+        },
+        # The page after the first one is missing, so the snapshot cannot be
+        # read to the end.
+    }
+    _PagedRevocationHandler.seen_targets = []
+    server, thread = _start_paged_server()
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}/api/sessions/revoked"
+        poller = RevokedSessionPoller(
+            url,
+            "test-token-value",
+            tenant_id="tenant-poll",
+            module="vector-anchor",
+            interval_ms=60_000,
+        )
+        assert poller.refresh_once() == -1
+        assert not is_session_revoked("page-1-session"), (
+            "a partial set must not be installed"
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        revoked_session_registry().replace([])
+
+
+def test_an_incomplete_ingest_snapshot_is_refused():
+    """An ingest response that says its set is not whole is not a set."""
+    body = json.dumps(
+        {
+            "revoked_sessions": ["half-a-set"],
+            "revoked_sessions_complete": False,
+            "revoked_sessions_total": 2,
+        }
+    ).encode()
+    assert update_revoked_sessions_from_ingest(body) == -1
+    assert not is_session_revoked("half-a-set")
+
+    # A complete one is still adopted.
+    body = json.dumps(
+        {"revoked_sessions": ["whole-set"], "revoked_sessions_complete": True}
+    ).encode()
+    assert update_revoked_sessions_from_ingest(body) == 1
+    assert is_session_revoked("whole-set")
+    revoked_session_registry().replace([])

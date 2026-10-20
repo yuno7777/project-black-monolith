@@ -82,16 +82,29 @@ fn valid_event_token(token: &str) -> bool {
 /// snapshot. The real response (ids plus a session list) is a few kilobytes.
 const MAX_INGEST_RESPONSE_BYTES: usize = 64 * 1024;
 
+/// How many pages of the revocation snapshot this module will follow.
+///
+/// The bound is there so a broken or hostile dashboard cannot make the
+/// poller fetch forever. A snapshot larger than this is refused rather than
+/// half-mirrored: forgetting a revocation lets a quarantined session back in.
+const MAX_REVOCATION_PAGES: usize = 64;
+
 /// Sessions the dashboard's cross-layer circuit breaker revoked.
 ///
 /// The dashboard is the authority and does not expire revocations, so neither
-/// does this mirror: `observe_revoked_sessions` replaces the whole set with
-/// each authoritative snapshot, and a missing or unparseable snapshot leaves
-/// the previous set in place. Fail closed, not open.
+/// does this mirror: the snapshot replaces the whole set, and a missing or
+/// unparseable snapshot leaves the previous set in place. Fail closed, not
+/// open.
 fn revoked_session_store() -> &'static RwLock<HashSet<String>> {
     static REVOKED_SESSIONS: OnceLock<RwLock<HashSet<String>>> = OnceLock::new();
     REVOKED_SESSIONS.get_or_init(|| RwLock::new(HashSet::new()))
 }
+
+/// The mirror is process-wide, so the tests that read or write it take this
+/// lock. Without it two tests interleave and one of them reads the other's
+/// snapshot.
+#[cfg(test)]
+pub(crate) static MIRROR_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Whether `session_id` is currently revoked; an empty id is never revoked.
 pub(crate) fn is_session_revoked(session_id: &str) -> bool {
@@ -119,27 +132,92 @@ async fn read_bounded_response(mut response: reqwest::Response) -> String {
     String::from_utf8_lossy(&body).into_owned()
 }
 
-/// Adopt the `revoked_sessions` snapshot of an ingest response.
-///
-/// Returns `Some(count)` when the body carried a usable snapshot (possibly
-/// empty, which correctly lifts local revocations), and `None` when it did
-/// not — in which case the previous snapshot stands.
-pub(crate) fn observe_revoked_sessions(body: &str) -> Option<usize> {
-    let value: Value = serde_json::from_str(body).ok()?;
-    let ids = value.get("revoked_sessions")?.as_array()?;
-    let cleaned: HashSet<String> = ids
+/// What a response says about the revoked-session set.
+enum RevocationSnapshot {
+    /// The whole set, inline. It replaces the mirror.
+    Complete(Vec<String>),
+    /// One page of a larger set, and the cursor of the page after it.
+    Page {
+        ids: Vec<String>,
+        next_cursor: Option<String>,
+    },
+    /// The response is not a snapshot at all.
+    Absent,
+}
+
+/// Clean the session ids of a snapshot.
+fn clean_revocation_ids(items: &[Value]) -> Vec<String> {
+    items
         .iter()
         .filter_map(Value::as_str)
         .map(str::trim)
-        .filter(|id| !id.is_empty() && id.len() <= 128 && id.chars().all(|c| !c.is_control()))
+        .filter(|id| {
+            !id.is_empty() && id.len() <= 128 && !id.chars().any(|character| character.is_control())
+        })
         .map(str::to_string)
-        .collect();
+        .collect()
+}
+
+/// Read what a response says about the revoked-session set.
+///
+/// The snapshot is paged. A module reads a response body under a hard byte
+/// cap, and a snapshot larger than that cap cannot be parsed at all: the
+/// module keeps the set it already had, and that set is stale. Past a certain
+/// number of live revocations every snapshot is too large, so the staleness
+/// never ends and the circuit breaker fails open for exactly the sessions it
+/// was meant to quarantine. The dashboard therefore sends the whole set when
+/// it fits and pages it when it does not.
+fn parse_revocation_snapshot(body: &str) -> RevocationSnapshot {
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return RevocationSnapshot::Absent;
+    };
+    let Some(raw) = value.get("revoked_sessions") else {
+        return RevocationSnapshot::Absent;
+    };
+    let ids = match raw.as_array() {
+        Some(items) => clean_revocation_ids(items),
+        // A response that says the set does not fit carries no ids at all.
+        None => Vec::new(),
+    };
+    let complete = value
+        .get("revoked_sessions_complete")
+        .and_then(Value::as_bool)
+        != Some(false);
+    if complete {
+        return RevocationSnapshot::Complete(ids);
+    }
+    let next_cursor = value
+        .get("next_cursor")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|cursor| !cursor.is_empty())
+        .map(str::to_string);
+    RevocationSnapshot::Page { ids, next_cursor }
+}
+
+/// Install a complete revocation snapshot, replacing the mirror.
+fn apply_revocation_snapshot(ids: Vec<String>) -> usize {
+    let cleaned: HashSet<String> = ids.into_iter().collect();
     let count = cleaned.len();
     let mut store = revoked_session_store()
         .write()
         .unwrap_or_else(|e| e.into_inner());
     *store = cleaned;
-    Some(count)
+    count
+}
+
+/// Adopt the `revoked_sessions` snapshot of an ingest response.
+///
+/// Returns `Some(count)` when the body carried a usable snapshot (possibly
+/// empty, which correctly lifts local revocations), and `None` when it did
+/// not: in which case the previous snapshot stands. A response that says its
+/// set is not complete is not a snapshot: installing a partial set would
+/// forget every revocation that is not in it.
+pub(crate) fn observe_revoked_sessions(body: &str) -> Option<usize> {
+    match parse_revocation_snapshot(body) {
+        RevocationSnapshot::Complete(ids) => Some(apply_revocation_snapshot(ids)),
+        RevocationSnapshot::Page { .. } | RevocationSnapshot::Absent => None,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -844,6 +922,152 @@ fn poll_interval_ms() -> Option<u64> {
     }
 }
 
+/// The URL of the page that starts after `cursor`.
+///
+/// The cursor is base64url, and it is checked against the alphabet it is
+/// supposed to use: a cursor is a position in the tenant's revocation list,
+/// and a position that carries anything else is not one.
+fn revocation_page_url(base: &reqwest::Url, cursor: &str) -> Option<reqwest::Url> {
+    if cursor.is_empty()
+        || cursor.len() > 512
+        || !cursor
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return None;
+    }
+    let mut page = base.clone();
+    page.set_query(Some(&format!("cursor={cursor}")));
+    Some(page)
+}
+
+/// Fetch one page of the revocation snapshot.
+async fn fetch_revocation_page(
+    client: &reqwest::Client,
+    base: &reqwest::Url,
+    token: &str,
+    tenant: &str,
+    cursor: &str,
+) -> Option<RevocationSnapshot> {
+    let url = revocation_page_url(base, cursor)?;
+    let response = client
+        .get(url)
+        .bearer_auth(token)
+        .header("x-monolith-tenant-id", tenant)
+        .header("x-monolith-module", crate::events::MODULE)
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let body = read_bounded_response(response).await;
+    match parse_revocation_snapshot(&body) {
+        RevocationSnapshot::Absent => None,
+        snapshot => Some(snapshot),
+    }
+}
+
+/// Read the whole revoked-session snapshot, following the pages of it.
+///
+/// Returns the ids of the whole set, or `None` when the snapshot could not
+/// be read to the end. A partial set is never returned: it would forget
+/// every revocation that is not on the pages read so far, and a forgotten
+/// revocation is a quarantined session that gets to keep working.
+async fn read_revocation_snapshot(
+    client: &reqwest::Client,
+    url: &reqwest::Url,
+    token: &str,
+    tenant: &str,
+) -> Option<Vec<String>> {
+    let response = client
+        .get(url.clone())
+        .bearer_auth(token)
+        .header("x-monolith-tenant-id", tenant)
+        .header("x-monolith-module", crate::events::MODULE)
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        tracing::debug!(
+            status = response.status().as_u16(),
+            "revocation snapshot poll rejected"
+        );
+        return None;
+    }
+    let body = read_bounded_response(response).await;
+    let (mut ids, first_cursor) = match parse_revocation_snapshot(&body) {
+        RevocationSnapshot::Complete(ids) => return Some(ids),
+        RevocationSnapshot::Page { ids, next_cursor } => (ids, next_cursor),
+        RevocationSnapshot::Absent => {
+            tracing::debug!("the revocation snapshot poll carried no snapshot");
+            return None;
+        }
+    };
+    let Some(mut cursor) = first_cursor else {
+        tracing::warn!(
+            "the revocation snapshot carried no inline set and no way to page it; \
+             the previous set stands"
+        );
+        return None;
+    };
+    for _ in 0..MAX_REVOCATION_PAGES {
+        let Some(page) = fetch_revocation_page(client, url, token, tenant, &cursor).await else {
+            tracing::warn!(
+                "a page of the revocation snapshot could not be read; the previous set stands"
+            );
+            return None;
+        };
+        match page {
+            RevocationSnapshot::Complete(page_ids) => {
+                ids.extend(page_ids);
+                return Some(ids);
+            }
+            RevocationSnapshot::Page {
+                ids: page_ids,
+                next_cursor,
+            } => {
+                ids.extend(page_ids);
+                match next_cursor {
+                    Some(next) => cursor = next,
+                    None => return Some(ids),
+                }
+            }
+            RevocationSnapshot::Absent => {
+                tracing::warn!(
+                    "a page of the revocation snapshot was not a snapshot; the previous set stands"
+                );
+                return None;
+            }
+        }
+    }
+    tracing::warn!(
+        pages = MAX_REVOCATION_PAGES,
+        "the revoked-session snapshot is larger than this module will mirror; \
+         the previous set stands"
+    );
+    None
+}
+
+/// Refresh the revoked-session mirror from the whole snapshot.
+///
+/// The mirror is replaced only once every page has been read.
+async fn refresh_revoked_sessions(
+    client: &reqwest::Client,
+    url: &reqwest::Url,
+    token: &str,
+    tenant: &str,
+) {
+    let Some(ids) = read_revocation_snapshot(client, url, token, tenant).await else {
+        return;
+    };
+    let count = apply_revocation_snapshot(ids);
+    tracing::debug!(
+        revoked_sessions = count,
+        "refreshed revoked-session snapshot"
+    );
+}
+
 /// Background revocation poller.
 ///
 /// A revoked session must be cut off even when this short-lived proxy emits no
@@ -878,29 +1102,7 @@ pub fn spawn_revocation_poller() -> Option<tokio::task::JoinHandle<()>> {
     };
     Some(tokio::spawn(async move {
         loop {
-            match client
-                .get(url.clone())
-                .bearer_auth(&token)
-                .header("x-monolith-tenant-id", &tenant)
-                .header("x-monolith-module", crate::events::MODULE)
-                .send()
-                .await
-            {
-                Ok(response) if response.status().is_success() => {
-                    let body = read_bounded_response(response).await;
-                    if let Some(count) = observe_revoked_sessions(&body) {
-                        tracing::debug!(
-                            revoked_sessions = count,
-                            "refreshed revoked-session snapshot"
-                        );
-                    }
-                }
-                Ok(response) => tracing::debug!(
-                    status = response.status().as_u16(),
-                    "revocation snapshot poll rejected"
-                ),
-                Err(error) => tracing::debug!(%error, "revocation snapshot poll failed"),
-            }
+            refresh_revoked_sessions(&client, &url, &token, &tenant).await;
             tokio::time::sleep(Duration::from_millis(interval_ms)).await;
         }
     }))
@@ -1360,6 +1562,7 @@ mod tests {
 
     #[test]
     fn revoked_session_snapshot_replaces_wholesale_and_missing_snapshots_do_not_clear() {
+        let _guard = MIRROR_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let session = "cafebabe-0000-4000-8000-000000000002";
         let snapshot = json!({ "revoked_sessions": [session] }).to_string();
         assert_eq!(observe_revoked_sessions(&snapshot), Some(1));
@@ -1819,5 +2022,171 @@ mod tests {
             read_records(outbox.spool_path()).unwrap().is_empty(),
             "a delivered event leaves the spool"
         );
+    }
+
+    /// A local server that answers the given request targets with the given
+    /// bodies, so the paging of the snapshot can be exercised without a
+    /// network.
+    fn spawn_snapshot_server(pages: Vec<(String, String)>) -> reqwest::Url {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let read = match stream.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(read) => read,
+                        Err(_) => break,
+                    };
+                    request.extend_from_slice(&chunk[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&request).to_string();
+                let target = request.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let body = pages
+                    .iter()
+                    .find(|(path, _)| *path == target)
+                    .map(|(_, body)| body.clone())
+                    .unwrap_or_else(|| r#"{"error":"no such page"}"#.to_string());
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        reqwest::Url::parse(&format!("http://127.0.0.1:{port}/api/sessions/revoked")).unwrap()
+    }
+
+    /// A snapshot that does not fit in one response is paged, and every page
+    /// has to be read before the set is adopted.
+    ///
+    /// The module reads a response body under a hard byte cap. A snapshot
+    /// past that cap could not be parsed at all, so the module kept the set
+    /// it already had — a set that was stale, and stale for good, because
+    /// every later snapshot was too large as well. A revoked session then
+    /// kept working.
+    #[tokio::test]
+    async fn a_paged_revocation_snapshot_is_read_to_the_end() {
+        let pages = vec![
+            (
+                "/api/sessions/revoked".to_string(),
+                json!({
+                    "revoked_sessions": ["session-a"],
+                    "revoked_sessions_complete": false,
+                    "next_cursor": "cursor-1",
+                })
+                .to_string(),
+            ),
+            (
+                "/api/sessions/revoked?cursor=cursor-1".to_string(),
+                json!({
+                    "revoked_sessions": ["session-b"],
+                    "revoked_sessions_complete": false,
+                    "next_cursor": "cursor-2",
+                })
+                .to_string(),
+            ),
+            (
+                "/api/sessions/revoked?cursor=cursor-2".to_string(),
+                json!({
+                    "revoked_sessions": ["session-c"],
+                    "revoked_sessions_complete": true,
+                })
+                .to_string(),
+            ),
+        ];
+        let url = spawn_snapshot_server(pages);
+        let client = reqwest::Client::new();
+
+        let ids = read_revocation_snapshot(&client, &url, "token", "tenant")
+            .await
+            .expect("the whole snapshot must be readable");
+
+        assert!(
+            ids.contains(&"session-a".to_string()),
+            "the first page must be read"
+        );
+        assert!(
+            ids.contains(&"session-b".to_string()),
+            "the second page must be read"
+        );
+        assert!(
+            ids.contains(&"session-c".to_string()),
+            "the last page must be read"
+        );
+    }
+
+    /// A page that cannot be followed is not a snapshot.
+    ///
+    /// The set that was already known stands: a half-read snapshot would
+    /// forget every revocation that is not on the pages read so far, and a
+    /// forgotten revocation is a quarantined session that gets to keep
+    /// working.
+    #[tokio::test]
+    async fn a_snapshot_that_cannot_be_read_to_the_end_yields_nothing() {
+        let pages = vec![(
+            "/api/sessions/revoked".to_string(),
+            json!({
+                "revoked_sessions": ["session-a"],
+                "revoked_sessions_complete": false,
+                "next_cursor": "cursor-1",
+            })
+            .to_string(),
+        )];
+        let url = spawn_snapshot_server(pages);
+        let client = reqwest::Client::new();
+
+        assert!(
+            read_revocation_snapshot(&client, &url, "token", "tenant")
+                .await
+                .is_none(),
+            "a snapshot whose pages cannot be read must not be returned"
+        );
+    }
+
+    /// A page of a larger set is not the set.
+    ///
+    /// Installing it would forget every revocation that is not on the page,
+    /// and a forgotten revocation is a quarantined session that gets to keep
+    /// working. The set that was already known stands until the whole
+    /// snapshot has been read.
+    #[test]
+    fn an_incomplete_revocation_snapshot_is_not_installed() {
+        let _guard = MIRROR_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let session = "cafebabe-0000-4000-8000-000000000003";
+        apply_revocation_snapshot(vec![session.to_string()]);
+
+        let page = json!({
+            "revoked_sessions": ["someone-else"],
+            "revoked_sessions_complete": false,
+            "next_cursor": "cursor-1",
+        })
+        .to_string();
+        assert_eq!(observe_revoked_sessions(&page), None);
+        assert!(
+            is_session_revoked(session),
+            "the known set must stand until the whole snapshot has been read"
+        );
+    }
+
+    /// A cursor is a position in the tenant's revocation list, and it goes
+    /// into a URL, so only the alphabet it is supposed to use is accepted.
+    #[test]
+    fn a_revocation_page_cursor_must_be_base64url() {
+        let base = reqwest::Url::parse("https://dashboard.example/api/sessions/revoked").unwrap();
+        assert!(revocation_page_url(&base, "eyJhIjoxfQ").is_some());
+        for bad in ["", "a b", "a/b", "a?b", "a#b", "a&b=c", "a%2fb"] {
+            assert!(
+                revocation_page_url(&base, bad).is_none(),
+                "{bad} must not be turned into a page URL"
+            );
+        }
     }
 }

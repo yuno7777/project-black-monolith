@@ -456,6 +456,194 @@ function toSessionRevocation(row: RevokedSessionRow): SessionRevocation {
   };
 }
 
+/**
+ * Upper bound on the bytes one revocation snapshot may carry in a response.
+ *
+ * The modules read a response body under a hard byte cap, and a snapshot
+ * larger than that cap cannot be parsed at all: the module keeps the set it
+ * already had, and the set it already had is stale. Past a certain number of
+ * live revocations that staleness never ends, because every later snapshot is
+ * too large as well — so the circuit breaker fails open, permanently, for the
+ * very sessions it was meant to quarantine. The snapshot is therefore paged,
+ * and one page is always small enough to read.
+ */
+export const MAX_REVOCATION_SNAPSHOT_BYTES = 16 * 1024;
+/** Upper bound on the ids one page of the snapshot may carry. */
+export const MAX_REVOCATION_PAGE_IDS = 500;
+
+/** Where a revocation page starts. */
+export interface RevocationCursor {
+  sessionId: string;
+  agentId: string;
+}
+
+export interface RevokedSessionPage {
+  /** The session ids on this page, in the page's order. */
+  session_ids: string[];
+  /** Where the next page starts; absent when this is the last page. */
+  next_cursor?: string;
+}
+
+export function encodeRevocationCursor(sessionId: string, agentId: string): string {
+  return Buffer.from(JSON.stringify({ s: sessionId, a: agentId }), "utf8").toString("base64url");
+}
+
+function cursorField(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  if (value.length > 128) return null;
+  if (/[\u0000-\u001f\u007f]/.test(value)) return null;
+  return value;
+}
+
+/**
+ * Read a cursor a client sent back.
+ *
+ * The cursor is client-supplied, so it is validated rather than trusted: it
+ * names a position in the tenant's revocation list, and a position that
+ * cannot be read is refused instead of being turned into a query that
+ * returns the whole list.
+ */
+export function decodeRevocationCursor(cursor: string): RevocationCursor {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  } catch {
+    throw new IncidentInputError("cursor is invalid or expired");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new IncidentInputError("cursor is invalid or expired");
+  }
+  const value = parsed as Record<string, unknown>;
+  const sessionId = cursorField(value.s);
+  const agentId = cursorField(value.a);
+  if (sessionId === null || agentId === null) {
+    throw new IncidentInputError("cursor is invalid or expired");
+  }
+  return { sessionId, agentId };
+}
+
+interface RevocationRow {
+  sessionId: string;
+  agentId: string;
+}
+
+/**
+ * The order the pages are cut in.
+ *
+ * The same comparison sorts the rows and skips the ones before the cursor,
+ * because two different comparisons would put the cursor in two different
+ * places and a page would repeat rows it had already sent.
+ */
+function compareRevocationRows(a: RevocationRow, b: RevocationRow): number {
+  if (a.sessionId < b.sessionId) return -1;
+  if (a.sessionId > b.sessionId) return 1;
+  if (a.agentId < b.agentId) return -1;
+  if (a.agentId > b.agentId) return 1;
+  return 0;
+}
+
+/**
+ * Cut a page out of the rows that follow a cursor.
+ *
+ * The page is bounded twice — by the number of ids and by the bytes they
+ * take — because a bound in only one of them is a bound that can be passed:
+ * a thousand ids of a hundred characters are a small number of ids and a
+ * large number of bytes.
+ */
+function buildRevocationPage(
+  rows: RevocationRow[],
+  limit: number,
+): RevokedSessionPage {
+  const sessionIds: string[] = [];
+  let bytes = 0;
+  let consumed = 0;
+  for (const row of rows) {
+    if (sessionIds.length >= limit) break;
+    const cost = row.sessionId.length + 3;
+    if (sessionIds.length > 0 && bytes + cost > MAX_REVOCATION_SNAPSHOT_BYTES) break;
+    bytes += cost;
+    sessionIds.push(row.sessionId);
+    consumed += 1;
+  }
+  const more = consumed < rows.length;
+  const last = consumed > 0 ? rows[consumed - 1] : null;
+  return {
+    session_ids: sessionIds,
+    next_cursor: more && last
+      ? encodeRevocationCursor(last.sessionId, last.agentId)
+      : undefined,
+  };
+}
+
+/**
+ * One page of the tenant's live revoked sessions.
+ *
+ * The page is a keyset, not an offset: the position of a page is a row, so a
+ * revocation that lands between two pages shifts nothing. Rows are ordered by
+ * `(session_id, agent_id)`, which is unique within a tenant, so every row is
+ * visited exactly once by a paging run.
+ */
+export async function listRevokedSessionPage(
+  tenantId: string,
+  cursor?: RevocationCursor,
+  limit: number = MAX_REVOCATION_PAGE_IDS,
+): Promise<RevokedSessionPage> {
+  const bounded = Math.max(1, Math.min(Math.trunc(limit) || 1, MAX_REVOCATION_PAGE_IDS));
+  if (!process.env.DATABASE_URL) {
+    const rows: RevocationRow[] = [];
+    for (const entry of revokedSessionMap().values()) {
+      if (entry.tenant_id !== tenantId) continue;
+      rows.push({ sessionId: entry.session_id, agentId: entry.agent_id });
+    }
+    rows.sort(compareRevocationRows);
+    const after = cursor
+      ? rows.filter(
+        (row) => compareRevocationRows(row, {
+          sessionId: cursor.sessionId,
+          agentId: cursor.agentId,
+        }) > 0,
+      )
+      : rows;
+    return buildRevocationPage(after.slice(0, bounded + 1), bounded);
+  }
+  return withTenantDb(tenantId, async (db) => {
+    const result = await db.query<{ session_id: string; agent_id: string }>(
+      `select session_id, agent_id
+         from monolith.revoked_sessions
+        where tenant_id = $1
+          and restored_at is null
+          and (session_id, agent_id) > ($2::text, $3::text)
+        order by session_id, agent_id
+        limit $4`,
+      [tenantId, cursor?.sessionId ?? "", cursor?.agentId ?? "", bounded + 1],
+    );
+    return buildRevocationPage(
+      result.rows.map((row) => ({ sessionId: row.session_id, agentId: row.agent_id })),
+      bounded,
+    );
+  });
+}
+
+/** How many distinct sessions the tenant has revoked. */
+export async function countRevokedSessions(tenantId: string): Promise<number> {
+  if (!process.env.DATABASE_URL) {
+    const ids = new Set<string>();
+    for (const entry of revokedSessionMap().values()) {
+      if (entry.tenant_id === tenantId) ids.add(entry.session_id);
+    }
+    return ids.size;
+  }
+  return withTenantDb(tenantId, async (db) => {
+    const result = await db.query<{ n: string }>(
+      `select count(distinct session_id)::bigint as n
+         from monolith.revoked_sessions
+        where tenant_id = $1 and restored_at is null`,
+      [tenantId],
+    );
+    return Number(result.rows[0]?.n ?? 0);
+  });
+}
+
 export async function listRevokedSessions(tenantId: string): Promise<SessionRevocation[]> {
   if (!process.env.DATABASE_URL) {
     const out: SessionRevocation[] = [];

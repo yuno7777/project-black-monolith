@@ -3,7 +3,7 @@
 
 import { getEventBroker } from "@/lib/event-ingest";
 import { normalizeEvent, persistEvents, checkDatabase } from "@/lib/event-store";
-import { evaluateSessionCircuitBreaker } from "@/lib/incident-store";
+import { evaluateSessionCircuitBreaker, MAX_REVOCATION_SNAPSHOT_BYTES } from "@/lib/incident-store";
 import { authenticateIngest } from "@/lib/ingest-auth";
 import { jsonBodyError, readJsonBody } from "@/lib/request-body";
 
@@ -66,11 +66,22 @@ export async function POST(req: Request) {
     } catch (breakerError) {
       console.error("session circuit breaker evaluation failed", breakerError);
     }
+    // The revocation snapshot travels in the ingest response, and a module
+    // reads a response body under a hard byte cap. A snapshot that does not
+    // fit cannot be parsed, so the module would keep the set it already had
+    // — a set that is stale, and stale forever once every later snapshot is
+    // too large as well. A snapshot that does not fit is therefore not sent
+    // here at all: the module keeps what it had, and the polled snapshot
+    // (which is paged) is what tells it the whole truth.
+    const snapshotFits = revokedSessions.reduce((total, id) => total + id.length + 3, 0)
+      <= MAX_REVOCATION_SNAPSHOT_BYTES;
     return Response.json({
       accepted: newlyAccepted.length,
       duplicates: persisted.filter((result) => !result.inserted).length,
       event_ids: persisted.map((result) => result.event.event_id),
-      revoked_sessions: revokedSessions,
+      ...(snapshotFits ? { revoked_sessions: revokedSessions } : {}),
+      revoked_sessions_complete: snapshotFits,
+      revoked_sessions_total: revokedSessions.length,
     }, { status: 201 });
   } catch (error) {
     console.error("failed to persist security events", error);

@@ -1641,6 +1641,131 @@ test("revocation snapshot endpoint serves module-scoped session ids over module 
   assert.deepEqual((await empty.json()).revoked_sessions, []);
 });
 
+test("a revocation snapshot too large to send at once is paged, and the pages carry every session", async () => {
+  const { clearMemoryRevocations, revokeSession } = await import("../lib/incident-store");
+  const { GET: revokedGet } = await import("../app/api/sessions/revoked/route");
+  const { POST: ingestPost } = await import("../app/api/ingest/route");
+
+  delete process.env.DATABASE_URL;
+  clearMemoryRevocations();
+  process.env.EVENT_INGEST_TOKENS_JSON = JSON.stringify({
+    "tenant-page": {
+      "mcp-shield": "mcp-shield-page-token-0001",
+      "vector-anchor": "vector-anchor-page-token-01",
+    },
+  });
+
+  // A module reads a response body under a hard byte cap, and a snapshot
+  // larger than that cap cannot be parsed at all: the module keeps the set it
+  // already had, and that set is stale. Past a certain number of live
+  // revocations every snapshot is too large, so the staleness never ends and
+  // the circuit breaker fails open for exactly the sessions it was meant to
+  // quarantine.
+  const sessions = Array.from(
+    { length: 200 },
+    (_, index) => `sess-${String(index).padStart(4, "0")}-${"x".repeat(118)}`,
+  );
+  for (const sessionId of sessions) {
+    await revokeSession(
+      "tenant-page",
+      "agent-page",
+      sessionId,
+      "auto trip",
+      "auto-circuit-breaker",
+      ["mcp-shield"],
+    );
+  }
+
+  const headers = {
+    authorization: "Bearer vector-anchor-page-token-01",
+    "x-monolith-tenant-id": "tenant-page",
+    "x-monolith-module": "vector-anchor",
+  };
+
+  // The whole set does not fit, so it is not sent inline.
+  const whole = await revokedGet(
+    new Request("http://localhost/api/sessions/revoked", { headers }),
+  );
+  assert.equal(whole.status, 200);
+  const wholeBody = await whole.json();
+  assert.equal(
+    wholeBody.revoked_sessions,
+    null,
+    "a set that does not fit must not be sent inline",
+  );
+  assert.equal(wholeBody.revoked_sessions_complete, false);
+  assert.equal(wholeBody.revoked_sessions_total, sessions.length);
+  assert.equal(typeof wholeBody.next_cursor, "string");
+
+  // A paged run visits every session exactly once.
+  const seen = new Set<string>();
+  let cursor: string | null = wholeBody.next_cursor;
+  let pages = 0;
+  while (cursor) {
+    const page = await revokedGet(
+      new Request(
+        `http://localhost/api/sessions/revoked?cursor=${encodeURIComponent(cursor)}`,
+        { headers },
+      ),
+    );
+    assert.equal(page.status, 200);
+    const pageBody = await page.json();
+    assert.equal(
+      pageBody.revoked_sessions_complete,
+      false,
+      "a page is never the whole set",
+    );
+    for (const sessionId of pageBody.revoked_sessions) {
+      assert.ok(!seen.has(sessionId), `${sessionId} was sent twice`);
+      seen.add(sessionId);
+    }
+    cursor = pageBody.next_cursor;
+    pages += 1;
+    assert.ok(pages < 100, "the paging must terminate");
+  }
+  assert.equal(seen.size, sessions.length);
+  for (const sessionId of sessions) {
+    assert.ok(seen.has(sessionId), `${sessionId} was never sent`);
+  }
+
+  // A cursor that cannot be read is refused, not turned into a query.
+  const badCursor = await revokedGet(
+    new Request("http://localhost/api/sessions/revoked?cursor=not-a-cursor", { headers }),
+  );
+  assert.equal(badCursor.status, 422);
+
+  // The ingest response does not carry a snapshot that does not fit either.
+  const ingest = await ingestPost(
+    new Request("http://localhost/api/ingest", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer mcp-shield-page-token-0001",
+      },
+      body: JSON.stringify({
+        event_id: "20000000-0000-4000-8000-000000000001",
+        module: "mcp-shield",
+        event_type: "tool_call_blocked",
+        severity: "critical",
+        tenant_id: "tenant-page",
+        agent_id: "agent-page",
+        session_id: "sess-ingest",
+      }),
+    }),
+  );
+  assert.equal(ingest.status, 201);
+  const ingestBody = await ingest.json();
+  assert.equal(
+    ingestBody.revoked_sessions,
+    undefined,
+    "an oversized snapshot must not be sent inline",
+  );
+  assert.equal(ingestBody.revoked_sessions_complete, false);
+  assert.equal(ingestBody.revoked_sessions_total, sessions.length);
+
+  clearMemoryRevocations();
+});
+
 test("forensic evidence export computes canonical SHA-256 and HMAC-SHA256 signatures", async () => {
   const { exportIncidentEvidence } = await import("../lib/incident-store");
   const { GET: exportGet } = await import("../app/api/incidents/[eventId]/export/route");
