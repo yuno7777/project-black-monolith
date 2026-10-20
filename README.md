@@ -16,62 +16,26 @@
 
 <br />
 
-[Why it exists](#why-it-exists) ·
-[Architecture](#architecture) ·
-[Capabilities](#capabilities) ·
-[Quick start](#quick-start) ·
-[Demo](#end-to-end-demo) ·
-[Evaluation](#measured-evaluation) ·
-[Security](#security-model) ·
-[Development](#development)
+[What this is](#what-this-is) · [Try it](#try-it) · [AI agent setup](#let-your-ai-agent-set-it-up-for-you) ·
+[What you saw](#what-you-saw) · [How it works](#how-it-works) · [How well it works](#how-well-it-works) ·
+[If it breaks](#if-it-breaks) · [What this is not](#what-this-is-not) · [Go deeper](#go-deeper)
 
 </div>
 
 ---
 
-## Why it exists
+## What this is
 
-An autonomous agent does not have a single attack surface.
+An autonomous agent has three ways in, and hardening one leaves the other two open.
 
-Its **tools** can change after approval. Its **retrieval memory** can be seeded
-with documents engineered to rank across unrelated queries. Its **reasoning
-stream** can drift off-distribution or expose secrets before the final answer is
-produced. Hardening only one layer leaves the others available to an attacker.
+- Its **tools** can change after approval.
+- Its **memory** can be seeded with pages built to match every question.
+- Its **reasoning** can drift off-distribution, or expose a secret mid-answer.
 
-Project Black Monolith places an independent control at each layer and joins
-their findings into one authenticated, tenant-aware evidence trail:
-
-<div align="center">
-
-**intercept → analyze → block / quarantine / redact → persist → investigate**
-
-</div>
-
-<table>
-  <tr>
-    <td width="25%" valign="top">
-      <strong>01 / Tool layer</strong><br /><br />
-      MCP-Shield fingerprints tool schemas, detects rug pulls and hidden
-      instructions, and can restore the trusted schema before the agent sees
-      the mutation.
-    </td>
-    <td width="25%" valign="top">
-      <strong>02 / Memory layer</strong><br /><br />
-      VectorAnchor detects documents that rank across mutually dissimilar
-      topics, quarantines them, and serves the next-best clean result.
-    </td>
-    <td width="25%" valign="top">
-      <strong>03 / Reasoning layer</strong><br /><br />
-      TraceAudit monitors streaming divergence, terminates unsafe traces, and
-      redacts credential or PII patterns before forwarding them.
-    </td>
-    <td width="25%" valign="top">
-      <strong>04 / Control plane</strong><br /><br />
-      The dashboard persists events, correlates sessions across layers, tracks
-      incident decisions, and stores reproducible detector scorecards.
-    </td>
-  </tr>
-</table>
+Black Monolith puts one independent control on each, plus a dashboard that keeps
+the record of what they found. The modules share no code. They agree only on one
+event format, so a single console can show one agent session being hit from
+three directions at once.
 
 > [!NOTE]
 > This is defensive research tooling. Every attack artifact in this repository
@@ -81,159 +45,38 @@ their findings into one authenticated, tenant-aware evidence trail:
 
 ---
 
-## Architecture
+## Try it
 
-```mermaid
-flowchart LR
-    A["Agent runtime"]
+You need Docker with Compose, Bash, and `curl`. Everything runs offline: no
+model download, no external vector database.
 
-    S["MCP-Shield<br/>Tool integrity"]
-    V["VectorAnchor<br/>Memory integrity"]
-    T["TraceAudit<br/>Reasoning integrity"]
-
-    O["Durable outboxes<br/>spool · retry · dead-letter"]
-    I["Authenticated ingest<br/>tenant + module scoped"]
-    P[("PostgreSQL<br/>event and audit ledgers")]
-    D["Unified dashboard<br/>live feed · investigations · benchmarks"]
-    H["Human operator"]
-
-    A -->|"MCP stdio or Streamable HTTP"| S
-    A -->|"retrieve"| V
-    A -->|"generate (SSE)"| T
-
-    S --> O
-    V --> O
-    T --> O
-    O --> I --> P --> D --> H
-```
-
-The three modules make their enforcement decisions independently. Their event
-delivery follows one shared contract:
-
-- the source assigns a UUID `event_id`;
-- the event is written to a durable local outbox before delivery;
-- a tenant/module bearer token authenticates `POST /api/ingest`;
-- Postgres persists the event before it is published over SSE;
-- redelivery is deduplicated by `event_id`;
-- operators investigate the immutable evidence without mutating it.
-
-<details>
-<summary><strong>Shared event envelope</strong></summary>
-
-```json
-{
-  "event_id": "33d47f4a-5718-4bd9-8206-d1fbff615362",
-  "schema_version": 2,
-  "timestamp_ms": 1785164209264,
-  "module": "mcp-shield",
-  "event_type": "schema_mismatch",
-  "severity": "critical",
-  "tenant_id": "default",
-  "agent_id": "agent-7",
-  "session_id": "session-42",
-  "trace_id": "trace-9",
-  "correlation_id": "workflow-3",
-  "details": {
-    "tool": "read_file",
-    "action": "rewritten"
-  }
-}
-```
-
-`tenant_id + agent_id + session_id` is the cross-layer correlation boundary.
-`trace_id` identifies an operation inside that session, while
-`correlation_id` can group a broader workflow.
-
-</details>
-
----
-
-## Capabilities
-
-| Surface | Attack class | Detection | Enforcement |
-| :--- | :--- | :--- | :--- |
-| **MCP-Shield** | Tool-schema rug pull and poisoned descriptions | HMAC-SHA256 fingerprinting plus instruction, shell, and invisible-Unicode checks | Monitor or replace a mutated schema with its trusted baseline |
-| **VectorAnchor** | Corpus poisoning and universal-bait documents | Cross-query frequency anomaly over mutually dissimilar topics | Quarantine the document and return a clean alternative |
-| **TraceAudit** | Reasoning divergence and trace-level secret leakage | Rolling KL divergence plus credential/PII pattern scanning | Terminate the stream or redact sensitive spans |
-| **Dashboard** | Lost evidence, forged attribution, cross-tenant access, unaccountable triage | Authenticated ingest, immutable ledgers, role checks, tenant predicates and RLS | Reject, deduplicate, isolate, audit, and correlate |
-
-### The control plane is more than a feed
-
-- **Live threat feed** — persisted history followed by real-time SSE updates.
-- **Investigation queue** — assign, acknowledge, resolve, reopen, filter, and
-  inspect the append-only audit trail.
-- **Cross-layer correlation** — groups only the complete
-  `(tenant_id, agent_id, session_id)` identity.
-- **Cross-layer circuit breaker** — revokes a session once two distinct
-  layers report critical detections, and every layer then refuses to serve it
-  until an analyst restores it.
-- **Benchmark ledger** — keeps detector scorecards separate from security
-  events and recomputes metrics from the confusion matrix server-side.
-- **Operations command center** — shows ledger latency, layer reachability,
-  delivery backlog/dead-letter counts, policy coverage, and evidence age.
-- **Evidence export** — downloads an immutable event, its incident state,
-  append-only audit trail, and correlated session as one versioned JSON bundle.
-- **Critical alerts** — transactionally queues signed webhook notifications,
-  retries transient failures, and exposes permanent dead letters in operations.
-- **Operator sessions** — exchanges a bootstrap token for a revocable,
-  expiring, `HttpOnly`, `SameSite=Strict` browser session.
-- **Production identity adapter** — validates asymmetric OIDC/Supabase JWTs,
-  explicit role and tenant claims, issuer/audience, and optional AAL2 MFA.
-- **Least-privilege database runtime** — the restricted login assumes a
-  `NOLOGIN`, `NOSUPERUSER`, `NOBYPASSRLS` application role; immutable evidence
-  has no `UPDATE` or `DELETE` grant.
-
-The circuit breaker is deliberately conservative by default: it trips only
-when **two distinct layers** report a **critical** event for the same
-`(tenant_id, agent_id, session_id)`. Warnings do not count unless
-`MONOLITH_CIRCUIT_BREAKER_MIN_SEVERITY=warning`; the layer threshold is
-`MONOLITH_CIRCUIT_BREAKER_MIN_LAYERS` (1–3). Revocation is enforced by each
-module itself — MCP-Shield returns a tool error, VectorAnchor serves no
-documents, and TraceAudit terminates with `session_revoked` — and is mirrored
-locally from ingest responses plus a 15-second poll, so a session with no
-traffic is still cut off. An analyst with the `analyst` role can restore a
-session from the investigation queue; a restore settles everything received
-before it, so the history that tripped the breaker cannot immediately re-trip
-it, while fresh detections still can. Revocations never expire on a timer.
-
-See the [dashboard guide](dashboard/README.md) and
-[identity and access model](docs/IDENTITY_AND_ACCESS.md) for the full
-authorization and database boundaries.
-
----
-
-## Quick start
-
-### Requirements
-
-- Docker with Compose
-- Bash
-- `curl`
-
-ChromaDB runs inside VectorAnchor and TraceAudit defaults to an offline mock
-backend. The full demo does not require Ollama or an external vector database.
+### 1. Make your local credentials
 
 ```bash
 git clone https://github.com/yuno7777/project-black-monolith.git
 cd project-black-monolith
-
-# Generates eight random local secrets in a gitignored .env file.
-bash scripts/generate_secrets.sh
-
-# Builds all five services and waits for real health checks.
-docker compose up -d --build --wait
-
-# Drives all three attack fixtures and verifies their shared session.
-bash run_full_demo.sh
+bash scripts/generate_secrets.sh      # or: python scripts/generate_secrets.py
 ```
 
-Open [http://localhost:3000](http://localhost:3000) and sign in with
-`MONOLITH_OPERATOR_TOKEN` from your local `.env`.
+→ you should see: `Wrote .env with 8 random secrets (values not printed).`
 
-The stack deliberately has no default credentials. Compose refuses to start
-when the database password, module tokens, operator token, or service
-administration token is absent. See [`.env.example`](.env.example) for the
-complete configuration contract.
+Nothing is preset. Compose refuses to start if a secret is missing, so a
+half-configured stack fails loudly instead of running wide open. The full
+contract is in [`.env.example`](.env.example). The generated `.env` is
+gitignored. (On Windows, `python` can be a Microsoft Store alias that exits with
+`Python was not found` — use the full path to your interpreter.)
+
+### 2. Start the stack
+
+```bash
+docker compose up -d --build --wait
+```
+
+→ you should see: `database`, `dashboard`, `vector-anchor`, `trace-audit` and
+`mcp-shield` reported as `healthy`, `alert-dispatcher` running, and the two
+one-shot setup jobs (`database-bootstrap`, `dashboard-migrator`) exited 0. The
+first run builds six images and pulls a Postgres image, so give it several
+minutes. Later runs take seconds.
 
 | Service | Port | Primary interface |
 | :--- | :---: | :--- |
@@ -241,307 +84,277 @@ complete configuration contract.
 | VectorAnchor | `127.0.0.1:8001` | `POST /retrieve` |
 | TraceAudit | `127.0.0.1:8002` | `POST /generate` |
 | MCP-Shield | stdio | MCP JSON-RPC proxy |
+| Alert dispatcher | internal | Signs and delivers revocation alerts to your webhook |
 | PostgreSQL | internal | Event, incident, session, and benchmark ledgers |
 
-### Docker-free setup: Windows, Linux, and macOS
+No Docker? `python scripts/run_local_demo.py` runs the same demo natively. It
+needs PostgreSQL 17, Python 3.12, Node 22 and Rust 1.86 on your PATH — see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-Install PostgreSQL 17 with `psql`, Python 3.12, Node.js 22/npm, and Rust 1.86+
-so their executables are on PATH. Start PostgreSQL before launching the demo.
-Bash, curl, Docker, and WSL are not required for this native workflow.
-Use a Python 3.12 virtual environment and activate it in your shell first.
-On a system where Python is named `python3`, substitute that for `python` below.
+### 3. Run the attacks
 
-```text
-python scripts/generate_secrets.py
-cd dashboard
-npm ci
-cd ..
-python -m pip install --require-hashes -r vector-anchor/requirements.lock -r trace-audit/requirements.lock
-python scripts/run_local_demo.py
+```bash
+bash run_full_demo.sh
 ```
 
-Set `DATABASE_ADMIN_URL` in `.env` to an existing PostgreSQL administrative
-connection. Generating `.env` does not change your installed PostgreSQL user's
-password. The runner creates/reconciles the restricted runtime login using
-`MONOLITH_DATABASE_RUNTIME_PASSWORD`, applies checksum-verified migrations,
-builds the dashboard, and runs all three synthetic attack fixtures.
-Set `DATABASE_URL` too if PostgreSQL is not at `127.0.0.1:5432/postgres`.
-The generated `MONOLITH_OPERATOR_TOKEN` in `.env` is your sign-in credential.
+→ you should see: three attack banners, then
 
-```text
-python scripts/run_local_demo.py --dash-port 3101
-python scripts/run_local_demo.py --no-hold
-python scripts/run_local_demo.py --skip-attacks
+```
+  [OK]   MCP-Shield flagged the rug pull
+  [OK]   VectorAnchor quarantined the bait doc
+  [OK]   TraceAudit terminated on divergence
+  [OK]   TraceAudit redacted the fake credential
+  [OK]   the breaker revoked the shared session
+  [OK]    all three layers reported under one session (3/3 modules)
+
+DEMO PASSED — all three layers detected, every detection reached the ledger,
+the cross-layer breaker revoked the compromised session, and all of it
+correlates to one agent session:
+  demo-<timestamp>-<id>
+See the unified live feed at  http://localhost:3000
 ```
 
-Default ports are 3000, 8001, and 8002. Use `--dash-port`, `--va-port`, and
-`--ta-port` to change them. Existing `DASH_PORT`, `VA_PORT`, `TA_PORT`, and
-`DEMO_HOLD=0` settings are also supported. Shell environment values override
-`.env`; its values are read literally, with no shell expansion or execution.
-
-Ctrl-C stops the process trees started by the runner. Occupied ports cause an
-error instead of terminating their owners. Logs and isolated detector state
-are retained in the printed temporary directory for diagnosis. Remove that
-directory manually after inspection. Database events persist in PostgreSQL.
-The Bash entry points remain available as wrappers for existing commands.
-
-Native CI covers all three operating systems; the complete Docker integration
-suite runs on Linux. A native full-stack run still requires local PostgreSQL
-and the installed dependencies. See [the code review](docs/CODEBASE_REVIEW.md)
-for remaining work and validation limits.
+Those `[OK]` lines are ledger queries, not log lines. A passing run proves the
+whole path: detector, disk outbox, authenticated ingest, database. A failing
+run prints `DEMO FAILED — N check(s) failed`.
 
 ---
 
-## End-to-end demo
+## Let your AI agent set it up for you
 
-`run_full_demo.sh` executes one correlated agent session across all three
-defense layers:
+Paste this into Claude Code, Cursor, Codex, or any agent with shell access. It
+already knows this repo, so it can read the errors instead of guessing.
 
-1. **Tool rug pull**<br />
-   MCP-Shield records a trusted `read_file` schema, receives a mutated version
-   with hidden instructions, emits the mismatch, and restores the baseline in
-   enforce mode.
+```text
+Set up Project Black Monolith locally and prove the demo passes.
 
-2. **Corpus poisoning**<br />
-   VectorAnchor seeds a clean corpus, injects a universal-bait document, drives
-   unrelated retrievals, and quarantines the document once its cross-topic
-   frequency crosses the threshold.
+Repository: https://github.com/yuno7777/project-black-monolith.git
 
-3. **Reasoning divergence and PII**<br />
-   TraceAudit terminates an off-distribution stream with a safe refusal, then
-   redacts a fake credential and email from a second trace.
+Do this, in order:
+1. Clone the repo and cd into it.
+2. Read README.md and CLAUDE.md before touching anything. CLAUDE.md documents
+   the architecture and several invariants that will bite you if you ignore them.
+3. Run `bash scripts/generate_secrets.sh` (or `python scripts/generate_secrets.py`).
+   It writes a gitignored .env with 8 random secrets and refuses to overwrite
+   an existing one — that is fine, continue.
+4. Run `docker compose up -d --build --wait`. It builds six images and pulls a
+   Postgres image; the first run takes several minutes.
+5. Run `bash run_full_demo.sh`. It fires three synthetic attacks at the stack.
+6. Report back:
+   - the demo output, including every [OK] line and the DEMO PASSED line
+   - the session id it printed
+   - the dashboard URL and the MONOLITH_OPERATOR_TOKEN value from .env
+   - anything that failed, with the full error text
 
-The final verification queries the authenticated ledger and confirms that all
-three modules reported under the same tenant, agent, and session identity.
-
----
-
-## Reliability and evidence
-
-Detection is useful only if the evidence survives collector downtime and human
-triage does not rewrite history.
-
-- **Durable delivery** — Rust uses a JSONL spool; the Python services use SQLite
-  outboxes. Retries use backoff and permanent authentication/validation failures
-  are dead-lettered.
-- **Persist before publish** — the dashboard commits an event before notifying
-  SSE subscribers.
-- **Multi-instance live delivery** — Postgres `LISTEN`/`NOTIFY` distributes a
-  committed event to every dashboard instance; reconnecting clients resume
-  from `Last-Event-ID` without duplicating evidence.
-- **Idempotent redelivery** — the source UUID is the ledger primary key.
-- **Immutable evidence** — operator decisions live in separate incident tables;
-  security events are never updated by triage.
-- **Append-only decisions** — incident audit entries are protected by grants and
-  a database trigger.
-- **Tenant isolation** — authenticated application predicates and transaction-
-  local Postgres RLS context enforce the same boundary independently.
-
-The integration suite exercises ingestion, outage recovery, incident integrity,
-cross-layer correlation, benchmark isolation, and the complete three-attack
-demo.
+Rules:
+- Never commit .env or any secret, and never write a secret value into a file.
+- If a step fails, read the error and the module's README before retrying.
+- Do not modify a detector to make the demo pass. The demo must pass as-is.
+- If Docker is unavailable, use `python scripts/run_local_demo.py` instead and
+  say so in your report.
+```
 
 ---
 
-## Measured evaluation
+## What you saw
 
-The repository scores each detector against a labelled, deterministic corpus
-and stores the result as a confusion matrix.
+Three attacks, one per layer, and the console that shows them. Each layer
+decides on its own evidence, without asking the other two.
 
-| Module · detector | Paradigm | Detection | Precision | FPR | F1 |
-| :--- | :--- | ---: | ---: | ---: | ---: |
-| VectorAnchor · frequency anomaly | threshold | **75%** | 100% | 0% | 0.857 |
-| TraceAudit · reasoning divergence | threshold | 100% | 100% | 0% | 1.000 |
-| TraceAudit · PII scanner | regex + Luhn | 100% | 100% | 0% | 1.000 |
-| MCP-Shield · description sanitizer | regex | **71.4%** | 100% | 0% | 0.833 |
-| MCP-Shield · schema fingerprint | exact | 100% | 100% | 0% | 1.000 |
+| Scenario | Layer | What happens |
+| :--- | :--- | :--- |
+| A tool changed after you approved it | MCP-Shield (Rust) | Remembers the exact shape of every tool. Flags a changed shape or a hidden instruction, and by default hands the agent back the version you approved. |
+| A document that matched every question | VectorAnchor (Python) | Notices which documents keep surfacing for unrelated topics. A legitimate document belongs to one topic, so one that answers everything is a plant and gets held back. |
+| A secret in the middle of an answer | TraceAudit (Python) | Watches the answer as it streams. Cuts a stream that drifted far from the model's normal voice, and replaces credentials and personal data before they are shown, logged, or stored. |
+| The console that shows it all | Dashboard (Next.js) | Stores every event before showing it, groups by session, and records every human decision. |
 
-The imperfect numbers are intentional and documented: the corpus retains a
-subtle bait document the frequency detector misses and novel injection
-phrasing the sanitizer does not recognize. The PII corpus retains a
-card-shaped tracking number, which the Luhn check now rejects. The fingerprint
-score is exact by construction, not a learned accuracy claim.
+Run each attack on its own, no Docker required:
+
+```bash
+cd mcp-shield    && bash fixtures/run_demo.sh   # tool changed
+cd vector-anchor && bash fixtures/run_demo.sh   # document matched every topic
+cd trace-audit   && bash fixtures/run_demo.sh   # secret in the answer
+```
+
+→ you should see: `DEMO PASSED: rug pull detected, blocked in enforce mode, forwarded (with warnings) in monitor mode.`
+→ you should see: `[OK]   universal-bait document quarantined (anomaly score = 4 across distinct topics)`
+→ you should see: `[OK]   reasoning divergence terminated the stream early` and `[OK]   credential + email redacted in the reasoning trace`
+
+The two Python demos start their own server on port 8001 and 8002. If the
+Compose stack is already up, use `MONOLITH_VA_PORT=8011` and
+`MONOLITH_TA_PORT=8012` instead.
+
+---
+
+## How it works
+
+Four parts, no shared library. They talk over HTTP and stdio, and they agree on
+one event format: the same JSON envelope, written to disk first and delivered
+over an authenticated connection. The dashboard persists an event before
+publishing it, so what you triage is what was actually captured.
+
+The dashboard is at <http://localhost:3000>. Sign in with the
+`MONOLITH_OPERATOR_TOKEN` value from your `.env`. It has four pages: the
+**threat overview** (live feed, severity and per-module breakdowns), the
+**investigation queue** at `/investigate` (assign, acknowledge, resolve, reopen;
+every decision is appended, never edited), **operations** at `/operations`
+(delivery backlog, dead letters, evidence age), and **benchmarks** at
+`/benchmarks`.
+
+Two independent layers flagging the same session as critical is enough to revoke
+that session everywhere until an analyst restores it. The rules are in
+[docs/OPERATIONS.md](docs/OPERATIONS.md). A revocation can also be pushed to your
+own webhook, signed, by the alert dispatcher. For a local demo with no sign-in,
+set `MONOLITH_DISABLE_AUTH=true` in `.env` and restart the stack. Local
+convenience, not a production setting.
+
+<details>
+<summary><strong>How the pieces are wired</strong></summary>
+
+```mermaid
+flowchart LR
+    A["Agent runtime"]
+    S["MCP-Shield<br/>Tool integrity"]
+    V["VectorAnchor<br/>Memory integrity"]
+    T["TraceAudit<br/>Reasoning integrity"]
+    O["Durable outboxes<br/>spool · retry · dead-letter"]
+    I["Authenticated ingest"]
+    P[("PostgreSQL<br/>event ledgers")]
+    D["Unified dashboard<br/>live feed · investigations"]
+    W["Alert dispatcher<br/>signed revocation webhook"]
+
+    A -->|"MCP stdio"| S
+    A -->|"retrieve"| V
+    A -->|"generate (SSE)"| T
+    S --> O
+    V --> O
+    T --> O
+    O --> I --> P --> D
+    P --> W
+```
+
+The envelope's exact fields are versioned in
+[`contracts/schemas/`](contracts/schemas/). `tenant_id + agent_id + session_id`
+is the cross-layer correlation boundary.
+
+</details>
+
+<details>
+<summary><strong>Credential mediation (Secret Boundary)</strong></summary>
+
+An opt-in mode where the agent never holds a real credential. It calls a
+policy-bound tool; the proxy resolves the secret, injects it into the outbound
+HTTPS request internally, and returns a sanitized body.
+
+```bash
+cd mcp-shield && bash fixtures/run_secret_boundary_demo.sh
+```
+
+→ you should see: `DEMO PASSED: the boundary shadowed the impostor, intercepted the call locally, refused the metadata destination, and leaked no credential.`
+
+See [docs/SECRET_BOUNDARY.md](docs/SECRET_BOUNDARY.md).
+
+</details>
+
+---
+
+## How well it works
+
+Each detector is scored against a labelled, deterministic corpus and stored as
+a confusion matrix.
+
+| Module · detector | Caught | False alarms | F1 |
+| :--- | ---: | ---: | ---: |
+| VectorAnchor · frequency anomaly | 75% | 0% | 0.857 |
+| TraceAudit · reasoning divergence | 100% | 0% | 1.000 |
+| TraceAudit · PII scanner | 100% | 0% | 1.000 |
+| MCP-Shield · description sanitizer | 71.4% | 0% | 0.833 |
+| MCP-Shield · schema fingerprint | 100% | 0% | 1.000 |
+
+The imperfect numbers are intentional. The corpus keeps one subtle bait document
+the frequency detector misses and some novel phrasing the sanitizer does not
+recognise, so the misses count instead of being smoothed away. The fingerprint
+score is exact by construction, not a tuned accuracy claim.
 
 > [!CAUTION]
 > These are small, synthetic, offline fixtures for reproducible engineering
-> evaluation—not production-representative traffic or a claim of field
+> evaluation, not production-representative traffic and not a claim of field
 > accuracy. Real deployments must recalibrate against their own data.
 
-Read [EVALUATION.md](EVALUATION.md) for thresholds, false-positive analysis,
-known evasions, latency measurements, and reproduction commands.
-
-With the stack running, compute and upload a complete scorecard:
+Overhead is small: about 0.13 ms to analyse a 20-tool list, 0.78 ms to audit a
+60-token reply, and 0.44 ms per retrieval. With the stack running, recompute
+and upload the scorecards:
 
 ```bash
 bash scripts/run_benchmarks.sh
 ```
 
-For provenance-bearing local runs, use the evaluation profiles. Each result
-records the Git revision, source hashes, Python version, backend, command,
-duration, and copied detector outputs:
-
-```bash
-python evaluation/run_profile.py deterministic
-python evaluation/run_profile.py real  # requires Chroma's default embedder + Ollama
-```
-
-The deterministic profile is the reproducible CI/demo claim. The real profile
-is intentionally reported as **NOT MEASURED** until its external model and
-embedding dependencies are installed and the run actually completes.
+→ you should see: `vector-anchor: scored`, `trace-audit: scored`, `mcp-shield: scored`, then `201 {"recorded":5,...}`.
 
 ---
 
-## Verification
+## If it breaks
 
-### Fast checks — no Docker
-
-```bash
-# Tool layer
-cd mcp-shield
-cargo fmt --all -- --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
-bash fixtures/verify_outbox.sh
-
-# Memory layer
-cd ../vector-anchor
-python -m pytest tests/ -q
-python fixtures/benchmark_detection.py
-
-# Reasoning layer
-cd ../trace-audit
-python -m pytest tests/ -q
-python fixtures/benchmark_detection.py
-
-# Control plane
-cd ../dashboard
-npm ci
-npm run lint
-npm test
-npm run build
-```
-
-### Live-stack contracts
-
-Run these from the repository root after the Compose stack is healthy:
-
-```bash
-bash scripts/verify_ingest.sh
-bash scripts/verify_recovery.sh
-bash scripts/verify_incidents.sh
-bash scripts/verify_correlation.sh
-bash scripts/verify_circuit_breaker.sh
-bash scripts/verify_benchmarks.sh
-```
-
-CI runs the fast suites first, then pays the cost of building the full stack
-only after they pass. Container logs are captured automatically on integration
-failure.
-
----
-
-## Security model
-
-Project Black Monolith separates three principal types:
-
-| Principal | Credential | Scope |
-| :--- | :--- | :--- |
-| Detection module | Per-tenant, per-module bearer token | Ingest for exactly one module and tenant |
-| Human operator | Bootstrap token or browser session | One role and tenant |
-| Federated operator | Validated OIDC/Supabase access token | Explicit role and tenant claims; optional AAL2 |
-| Dashboard runtime | PostgreSQL `monolith_app` role | Only required SQL operations |
-
-Credentials are not interchangeable: a module cannot close its own findings,
-an operator cannot claim another tenant or actor in a request body, and the
-dashboard sheds migration privileges before serving application queries.
-Cluster role creation and password rotation run only in the database bootstrap;
-application migrations reject role-management SQL before execution.
-
-Agent-facing `/retrieve` and `/generate` endpoints are intended for a trusted
-service network; their correlation headers provide attribution, not general
-end-user authentication.
-
-For disclosure instructions and scope, read [SECURITY.md](SECURITY.md).
-
----
-
-## Development
-
-Each defense module is independently runnable:
-
-| Component | Stack | Guide |
-| :--- | :--- | :--- |
-| MCP-Shield | Rust, Tokio, Serde, HMAC/SHA-256 | [mcp-shield/README.md](mcp-shield/README.md) |
-| VectorAnchor | Python, FastAPI, embedded ChromaDB | [vector-anchor/README.md](vector-anchor/README.md) |
-| TraceAudit | Python, FastAPI, streaming SSE | [trace-audit/README.md](trace-audit/README.md) |
-| Dashboard | Next.js 16, React 19.2, PostgreSQL | [dashboard/README.md](dashboard/README.md) |
-
-```text
-project-black-monolith/
-├── mcp-shield/          tool-schema integrity and MCP enforcement
-├── vector-anchor/       retrieval poisoning detection and quarantine
-├── trace-audit/         reasoning divergence and trace redaction
-├── dashboard/           authenticated feed, investigations, benchmarks
-├── supabase/            versioned PostgreSQL migrations
-├── contracts/           JSON Schema, OpenAPI, fixtures, compatibility gate
-├── evaluation/          deterministic and real-backend run profiles
-├── python-common/       shared durable Python event delivery
-├── scripts/             secrets, benchmarks, and integration contracts
-├── run_full_demo.sh     correlated three-layer demonstration
-└── .github/             CI and repository automation
-```
-
-### Project documentation
-
-| Document | Purpose |
+| What you see | What to do |
 | :--- | :--- |
-| [EVALUATION.md](EVALUATION.md) | Calibration, accuracy, false positives, evasions, and overhead |
-| [docs/IDENTITY_AND_ACCESS.md](docs/IDENTITY_AND_ACCESS.md) | Credentials, roles, tenants, sessions, RLS, and database grants |
-| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Health signals, evidence export, retention, and response checklist |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Local setup, ground rules, and commit conventions |
-| [SECURITY.md](SECURITY.md) | Defensive intent, disclosure process, and scope |
+| `error: services are not all healthy` | The stack is not up. Run `docker compose up -d --build --wait`, then `docker compose ps` to find the failing service. |
+| `Python was not found` from the secrets script | On Windows `python` can be a Microsoft Store alias. Use the full path to your interpreter. |
+| `Refusing to overwrite .env` | You already have one. Add `--force` to regenerate it. |
+| `DEMO FAILED — N check(s) failed` | The failing `[FAIL]` line names the missing event. That module's dashboard log has the reason. |
+| Sign-in rejected | The console wants the raw value of `MONOLITH_OPERATOR_TOKEN`, without the variable name. |
+| `port is already allocated` | The two Python demos need 8001 and 8002. Use `MONOLITH_VA_PORT=8011` and `MONOLITH_TA_PORT=8012`, or stop the Compose stack. |
+
+To wipe the demo state and the events it produced, run
+`bash scripts/reset_demo_state.sh`. For a completely fresh start, including the
+database volume, `docker compose down -v`.
 
 ---
 
-## Known limits
+## What this is not
 
-- The supplied corpora are synthetic and intentionally small.
-- Regex detectors trade semantic coverage for transparent, deterministic
-  behavior.
-- VectorAnchor defaults to hash embeddings for an offline demo; semantic
-  embeddings require deployment-specific calibration.
-- MCP-Shield supports line-delimited stdio and MCP Streamable HTTP POST
-  responses in JSON or SSE. It does not open the optional standalone GET SSE
-  channel for unsolicited server notifications.
-- The project demonstrates layered controls; it is not a universal agent
-  sandbox or a substitute for model, network, and host isolation.
+- The corpora are synthetic and intentionally small.
+- Pattern matching is predictable but incomplete. Clever phrasing can slip past it.
+- VectorAnchor uses a simple offline word-matching embedder for the demo. A real deployment should recalibrate.
+- MCP-Shield speaks line-delimited stdio and MCP Streamable HTTP POST responses. It does not open the optional standalone GET SSE channel.
+- This is layered detection on three specific layers. It is not an agent sandbox, and it does not replace model, network, or host isolation.
+
+Detection modules hold a per-module bearer token and can write only their own
+events. Operators hold a role-scoped session for one tenant. The dashboard runs
+as a restricted database role that cannot rewrite stored evidence. The
+agent-facing `/retrieve` and `/generate` endpoints expect a trusted service
+network, not end-user login. Scope and disclosure: [SECURITY.md](SECURITY.md).
+Full model: [docs/IDENTITY_AND_ACCESS.md](docs/IDENTITY_AND_ACCESS.md).
 
 ---
 
-## Contributing
+## Go deeper
+
+Each part is independently runnable and has its own guide: [MCP-Shield](mcp-shield/README.md) · [VectorAnchor](vector-anchor/README.md) · [TraceAudit](trace-audit/README.md) · [Dashboard](dashboard/README.md) · [Secret Boundary](crates/pbm-secret-boundary/README.md).
+
+- [EVALUATION.md](EVALUATION.md) — calibration, accuracy, false positives, known evasions, overhead
+- [CONTRIBUTING.md](CONTRIBUTING.md) — local setup, ground rules, commit conventions
+- [docs/OPERATIONS.md](docs/OPERATIONS.md) — health signals, evidence export, retention, response checklist
+- [docs/SECRET_BOUNDARY.md](docs/SECRET_BOUNDARY.md) — credential mediation for agent tool calls
+- [docs/EVALUATION_AND_AGENT.md](docs/EVALUATION_AND_AGENT.md) — held-out benchmark profile and the protected note agent
+
+Run every live-stack contract check:
+
+```bash
+bash scripts/run_all_verifications.sh
+```
+
+→ you should see: five scripts printing `RESULT: N passed, 0 failed`, one printing
+`ALL RECOVERY CHECKS PASSED`, then `ALL VERIFICATION SCRIPTS COMPLETED`.
+
+---
+
+## Contributing and license
 
 Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), keep
 the shared event contract backward-compatible, and include an independent test
 for any new security claim.
 
-## License
-
 Released under the [MIT License](LICENSE). Copyright © 2026 Sleepers Research.
-
-<div align="center">
-
-<sub>
 Originally developed under the working name AEOS Guard for a B.E. final-year
 submission. The MCP-Shield, VectorAnchor, and TraceAudit module names are
 unchanged.
-</sub>
-
-</div>
-
-See [real-model evaluation and the protected note agent](docs/EVALUATION_AND_AGENT.md)
-for the held-out benchmark profile, real-backend setup, and safe reset workflow.
-
-## Release candidate and evaluation
-
-See [0.2.0 release guide](docs/RELEASE_0_2.md) and [0.3.0 release candidate](docs/RELEASE_0_3.md) for cross-platform installation,
-independent evaluation, real-model CI, fault testing, and reproducible source packages.

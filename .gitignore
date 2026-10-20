@@ -1,68 +1,101 @@
-# â”€â”€ Secrets / environment â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Secrets / environment ───────────────────────────────────────────────
 .env
 .env.*
 !.env.example
 *.pem
 *.key
+*.p12
+*.pfx
 
-# â”€â”€ Rust (mcp-shield) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Rust (mcp-shield, crates/pbm-secret-boundary) ───────────────────────
 target/
-**/target/
-# Runtime-generated trusted-schema store
+# Runtime-generated trusted-schema store (written relative to the CWD)
 baseline_hashes.json
-# Lock file that serializes read-modify-write cycles on that store
+# Lock file serializing read-modify-write cycles on that store
 baseline_hashes.json.lock
-**/baseline_hashes.json.lock
+# A custom baseline path gets its own <name>.lock sibling
+*.json.lock
 
-# â”€â”€ Python (vector-anchor, trace-audit) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Python (vector-anchor, trace-audit, python-common) ──────────────────
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 *.egg-info/
 .venv/
 venv/
-# Runtime-generated data / models
+# setuptools build artifacts (python-common is a buildable package)
+build/
+dist/
+
+# ── Runtime-generated data / models ─────────────────────────────────────
 chroma_store/
-**/chroma_store/
 baseline_distribution.json
-# Runtime detector state (rolling retention + quarantine), written by the service
-detector_state.json
-**/detector_state.json
+# Detector state plus its .tmp / .unreadable / .unreadable.N siblings
+**/detector_state.json*
 .ollama/
 
-# â”€â”€ Node / Next.js (dashboard) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Durable event outboxes (hold event payloads; never commit) ──────────
+# SQLite outbox (vector-anchor, trace-audit) plus its -wal / -shm sidecars
+*outbox.db*
+# MCP-Shield JSONL spool plus its .dead / .lock / .tmp siblings
+*outbox.jsonl
+*outbox.dead
+*outbox.lock
+*outbox.tmp
+
+# ── Node / Next.js (dashboard) ──────────────────────────────────────────
 node_modules/
 .next/
 next-env.d.ts
-tsconfig.tsbuildinfo
+*.tsbuildinfo
+**/.eslintcache
 npm-debug.log*
 
-# â”€â”€ Local-only agent guidance â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Local-only agent guidance ───────────────────────────────────────────
 CLAUDE.md
 
-# â”€â”€ Editor / OS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Editor / OS / patch dirties ─────────────────────────────────────────
 .DS_Store
 desktop.ini
 Thumbs.db
+ehthumbs.db
 .idea/
 .vscode/
 *.swp
+*.orig
+*.rej
+*~
+*.bak
 
-# â”€â”€ Local presentation material (not part of the codebase) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Logs and temporary files ────────────────────────────────────────────
+*.log
+*.tmp
+
+# ── Local presentation material (not part of the codebase) ──────────────
 AEOS_Guard_*.pdf
 build_aeos_*.py
 _aeos_p*.png
 build_five_project_explanations.py
 output/
 
-# â”€â”€ Generated benchmark reports (per-run artifacts, uploaded not stored) â”€â”€
+# ── Generated benchmark reports (per-run artifacts, uploaded not stored) ─
 **/fixtures/benchmark_results.json
 evaluation/results/
 
-# â”€â”€ Local Compose overrides (e.g. an alternate host port) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Local Compose overrides (e.g. an alternate host port) ───────────────
 docker-compose.override.yml
 
-# Local protected-agent state and logs
+# ── Local protected-agent state and logs ────────────────────────────────
 .agent-state/
 .venv-next/
 /dist/
+
+# ── Throwaway native PostgreSQL cluster (scripts/native_smoke.py) ───────
+/.native-pg-*/
+
+# ── Local-only leftovers (not part of the codebase) ─────────────────────
+/video/
+/o.json
+/r.json

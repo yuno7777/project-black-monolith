@@ -10,3 +10,18 @@
 .env
 .env.*
 !*.env.example
+# Local event outboxes and detector state must never enter a build context.
+# Names are listed explicitly: a wildcard here would swallow outbox.rs.
+**/outbox.jsonl
+**/outbox.dead
+**/outbox.lock
+**/outbox.tmp
+**/*outbox.db*
+**/detector_state.json*
+**/baseline_distribution.json
+**/baseline_hashes.json
+# Local runtime artifacts
+.native-pg-*
+dist
+evaluation/results
+*.log
