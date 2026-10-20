@@ -1563,7 +1563,10 @@ mod tests {
 
     #[test]
     fn a_recognised_first_contact_is_taken_as_written() {
-        assert_eq!(parse_first_contact(Some("trust")), (FirstContact::Trust, None));
+        assert_eq!(
+            parse_first_contact(Some("trust")),
+            (FirstContact::Trust, None)
+        );
         assert_eq!(
             parse_first_contact(Some("approve")),
             (FirstContact::Approve, None)

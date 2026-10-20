@@ -677,15 +677,15 @@ class EventEmitter:
             else None
         )
         self.revocation_poller: RevokedSessionPoller | None = None
-        # Read the cadence once. It is a decision, and a decision read twice
-        # is read twice with two chances to differ.
-        poll_interval = (
-            _poll_interval_ms() if self.outbox and dashboard_url and event_token else 0
-        )
-        if poll_interval and (
-            (poll_url := os.environ.get("MONOLITH_SESSION_POLL_URL"))
-            or (poll_url := revocation_poll_url(dashboard_url))
-        ):
+        if self.outbox and dashboard_url and event_token:
+            # Read the cadence once. It is a decision, and a decision read
+            # twice is read twice with two chances to differ.
+            poll_interval = _poll_interval_ms()
+            poll_url = (
+                os.environ.get("MONOLITH_SESSION_POLL_URL")
+                or revocation_poll_url(dashboard_url)
+            )
+            if poll_interval and poll_url:
                 try:
                     self.revocation_poller = RevokedSessionPoller(
                         poll_url,
