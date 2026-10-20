@@ -114,6 +114,11 @@ async def _run_relay(frames, *, divergence_enabled=False):
     return [event async for event in relay.run(frames)]
 
 
+async def _run_relay_with_auditor(frames, relay):
+    """Drive a relay the test built itself, so it can configure the audit."""
+    return [event async for event in relay.run(frames)]
+
+
 def _tmp_path():
     import tempfile
     from pathlib import Path
@@ -974,7 +979,9 @@ def test_an_auditor_failure_drains_the_queue_before_the_refusal():
     class _FailingAuditor:
         """An auditor whose read of the upstream fails part-way through."""
 
-        async def audit_tokens(self, source, ctx, divergence_enabled=False, emit_sync=False):
+        async def audit_tokens(
+            self, source, ctx, divergence_enabled=False, emit_sync=False, literals=()
+        ):
             async for _ in source:
                 pass
             yield {"type": "error", "error": "upstream_stream_error"}
@@ -1155,3 +1162,180 @@ def test_a_base_url_that_already_ends_in_v1_is_not_doubled(tmp_path):
             b"{}", cfg, {"x-api-key": "client-key"}
         )
         assert url == expected, configured
+
+
+# --- a credential that comes back inside a normal answer ------------------
+
+
+# An Anthropic key is hyphenated, and the openai-style pattern stops at the
+# first hyphen, so no pattern in the scanner can match this shape. Only
+# knowing the exact credential finds it.
+OPERATOR_KEY = "sk-ant-api03-operator-fallback-key-0123456789"
+
+
+def test_the_relay_redacts_the_operator_key_echoed_in_an_answer():
+    """The operator's own key must not reach the client through the answer.
+
+    The error path already redacted it. The success path did not, and the
+    pattern scanner cannot catch a hyphenated Anthropic key, so a normal
+    200 answer that happened to contain the operator's fallback key handed
+    that key to a client that never had it.
+    """
+    frames = _frames(
+        (
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            },
+        ),
+        (
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "text_delta",
+                    "text": f"the key is {OPERATOR_KEY} and that is all",
+                },
+            },
+        ),
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        ("message_stop", {"type": "message_stop"}),
+    )
+
+    cfg = _cfg(_tmp_path(), anthropic_api_key=OPERATOR_KEY)
+    counts = build_distribution(NORMAL_TOKENS * 5)
+    auditor = StreamAuditor(cfg, counts, lambda *_a, **_k: None)
+    relay = AnthropicRelay(auditor, None, divergence_enabled=False)
+    events = asyncio.run(_run_relay_with_auditor(frames, relay))
+
+    text = "".join(event["text"] for event in events if event["kind"] == "text")
+    assert OPERATOR_KEY not in text
+    assert "[REDACTED:anthropic_api_key]" in text
+    assert text.endswith("and that is all")
+
+
+def test_the_relay_redacts_the_clients_own_key_echoed_in_an_answer():
+    """A client's own credential is redacted when the upstream repeats it."""
+    client_key = "sk-ant-api03-client-supplied-key-9876543210"
+    frames = _frames(
+        (
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            },
+        ),
+        (
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "text_delta",
+                    "text": f"I have {client_key} on file",
+                },
+            },
+        ),
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        ("message_stop", {"type": "message_stop"}),
+    )
+
+    cfg = _cfg(_tmp_path())
+    counts = build_distribution(NORMAL_TOKENS * 5)
+    auditor = StreamAuditor(cfg, counts, lambda *_a, **_k: None)
+    relay = AnthropicRelay(
+        auditor, None, divergence_enabled=False, literals=(client_key,)
+    )
+    events = asyncio.run(_run_relay_with_auditor(frames, relay))
+
+    text = "".join(event["text"] for event in events if event["kind"] == "text")
+    assert client_key not in text
+    assert "[REDACTED:anthropic_api_key]" in text
+
+
+def test_a_credential_split_across_fragments_is_still_caught():
+    """The literal is matched on the whole buffer, not on one fragment.
+
+    The upstream splits its answer into word-sized fragments, so a key
+    lands across two of them. The look-behind that catches a pattern split
+    across fragments has to catch a literal split the same way.
+    """
+    client_key = "sk-ant-api03-client-supplied-key-9876543210"
+    frames = _frames(
+        (
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            },
+        ),
+        (
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "the key is sk-ant-api03-"},
+            },
+        ),
+        (
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "client-supplied-key-9876543210 ok"},
+            },
+        ),
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        ("message_stop", {"type": "message_stop"}),
+    )
+
+    cfg = _cfg(_tmp_path())
+    counts = build_distribution(NORMAL_TOKENS * 5)
+    auditor = StreamAuditor(cfg, counts, lambda *_a, **_k: None)
+    relay = AnthropicRelay(
+        auditor, None, divergence_enabled=False, literals=(client_key,)
+    )
+    events = asyncio.run(_run_relay_with_auditor(frames, relay))
+
+    text = "".join(event["text"] for event in events if event["kind"] == "text")
+    assert client_key not in text
+    assert "[REDACTED:anthropic_api_key]" in text
+    assert "ok" in text
+
+
+def test_the_gateway_redacts_the_operator_key_echoed_in_a_200_answer(tmp_path):
+    """End to end: the operator's key never reaches the client.
+
+    The upstream repeats the key back inside a normal answer. The client
+    gets a 200, and the answer it gets must not contain the credential the
+    gateway held on its behalf.
+    """
+    fake_anthropic_server.Handler.echo_key = OPERATOR_KEY
+    try:
+        with _Stub("echo") as stub:
+            _setup(
+                tmp_path,
+                anthropic_base_url=f"http://127.0.0.1:{stub.port}",
+                anthropic_api_key=OPERATOR_KEY,
+            )
+            client = TestClient(app, raise_server_exceptions=True)
+            response = client.post(
+                "/v1/messages",
+                json={
+                    "model": "stub-model",
+                    "max_tokens": 1024,
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "stream": True,
+                },
+            )
+    finally:
+        fake_anthropic_server.Handler.echo_key = ""
+
+    assert response.status_code == 200
+    assert OPERATOR_KEY not in response.text
+    assert "[REDACTED:anthropic_api_key]" in response.text
