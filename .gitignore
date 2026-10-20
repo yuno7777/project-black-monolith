@@ -92,6 +92,9 @@ docker-compose.override.yml
 .venv-next/
 /dist/
 
+# ── Local event outbox (host runs of the modules, not the compose stack) ─
+.monolith/
+
 # ── Throwaway native PostgreSQL cluster (scripts/native_smoke.py) ───────
 /.native-pg-*/
 
