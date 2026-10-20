@@ -195,6 +195,75 @@ def test_outbox_creates_composite_status_indexes(tmp_path):
     delivery.close()
 
 
+def test_an_oversized_event_is_trimmed_and_spooled_rather_than_lost(tmp_path):
+    # An event whose evidence is larger than the spool's payload cap used to
+    # raise out of the emitter: the detection was never spooled, so it never
+    # reached the ledger, and the exception could take the detection path
+    # with it. The evidence is trimmed and the detection is kept.
+    emit = make_emitter("vector-anchor", None, None, str(tmp_path / "unused.db"))
+    delivery = EventOutbox(
+        str(tmp_path / "outbox.db"),
+        "https://dashboard.invalid/api/ingest",
+        "test-token-value",
+        start_worker=False,
+    )
+    emit.outbox = delivery
+    try:
+        emit(
+            "corpus_poison_quarantine",
+            "critical",
+            {"document": "x" * (512 * 1024)},
+        )
+
+        assert delivery.stats()["pending"] == 1
+        row = delivery._connection.execute(
+            "select payload from event_outbox where status = 'pending'"
+        ).fetchone()
+        payload = row[0]
+        assert len(payload) <= 256 * 1024
+
+        stored = json.loads(payload)
+        # The detection survives: what happened, how bad it was, and who it
+        # happened to.
+        assert stored["event_type"] == "corpus_poison_quarantine"
+        assert stored["severity"] == "critical"
+        assert stored["tenant_id"] == "default"
+        # The evidence is trimmed, and says so.
+        assert "truncated" in stored["details"]["document"]
+    finally:
+        delivery.close()
+
+
+def test_evidence_that_cannot_be_trimmed_still_leaves_a_detection(tmp_path):
+    # Evidence that is not made of strings — a long list of numbers — cannot
+    # be trimmed a piece at a time. The event is still kept, with a marker
+    # where the evidence was.
+    emit = make_emitter("vector-anchor", None, None, str(tmp_path / "unused.db"))
+    delivery = EventOutbox(
+        str(tmp_path / "outbox.db"),
+        "https://dashboard.invalid/api/ingest",
+        "test-token-value",
+        start_worker=False,
+    )
+    emit.outbox = delivery
+    try:
+        emit("tool_description_injection", "warning", {"scores": [1] * 200_000})
+
+        assert delivery.stats()["pending"] == 1
+        row = delivery._connection.execute(
+            "select payload from event_outbox where status = 'pending'"
+        ).fetchone()
+        payload = row[0]
+        assert len(payload) <= 256 * 1024
+
+        stored = json.loads(payload)
+        assert stored["event_type"] == "tool_description_injection"
+        assert stored["details"]["truncated"] is True
+        assert stored["details"]["original_payload_bytes"] > 256 * 1024
+    finally:
+        delivery.close()
+
+
 def test_replay_dead_letters_resets_dead_rows_and_wakes_worker(tmp_path):
     delivery = outbox(tmp_path)
     delivery._post = lambda _payload: (422, "http 422")  # type: ignore[method-assign]

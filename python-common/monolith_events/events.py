@@ -125,6 +125,99 @@ def tenant_scope(value: str | None) -> str | None:
     return cleaned
 
 
+def _dumps(value: Any) -> bytes:
+    """Serialize the way the emitter serializes: compact, UTF-8, no padding."""
+    return json.dumps(value, separators=(",", ":")).encode("utf-8")
+
+
+def _string_leaves(value: Any, path: tuple[Any, ...] = ()) -> list[tuple[tuple[Any, ...], str]]:
+    """Every string in a JSON-shaped structure, as (path, text) pairs.
+
+    Paths are tuples of dict keys and list indexes, so a caller can replace
+    one leaf without rebuilding the structure around it.
+    """
+    leaves: list[tuple[tuple[Any, ...], str]] = []
+    if isinstance(value, str):
+        leaves.append((path, value))
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            leaves.extend(_string_leaves(item, path + (key,)))
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            leaves.extend(_string_leaves(item, path + (index,)))
+    return leaves
+
+
+def _replace_at(root: Any, path: tuple[Any, ...], replacement: str) -> None:
+    node = root
+    for step in path[:-1]:
+        node = node[step]
+    node[path[-1]] = replacement
+
+
+# How many individual strings may be trimmed before the whole evidence is
+# replaced by a marker. Trimming one leaf at a time re-serializes the event
+# each round, and an event with ten thousand small strings would turn a
+# detection into a long CPU burn.
+MAX_TRIMMED_LEAVES = 64
+
+
+def _fit_event_payload(event: dict[str, Any], payload: bytes | None = None) -> bytes:
+    """Serialize an event so it fits the outbox's payload cap.
+
+    An event whose evidence is too large is trimmed, not dropped. The
+    detection *is* the evidence, and losing it because the evidence was
+    large is how a defense goes quiet exactly when it matters — because the
+    attacker chooses the size of the payload. The trimmed event says that it
+    was trimmed, so an operator can tell a short record from a full one.
+
+    `payload` is the already-serialized event, when the caller has one: the
+    common case fits, and it must not pay for a second serialization.
+    """
+    if payload is None:
+        payload = _dumps(event)
+    if len(payload) <= MAX_EVENT_PAYLOAD_BYTES:
+        return payload
+
+    original_bytes = len(payload)
+    details = event.get("details")
+    if isinstance(details, (dict, list)):
+        # The envelope is everything but the evidence, so this is how much
+        # room the evidence itself has.
+        envelope = _dumps({**event, "details": {}})
+        budget = MAX_EVENT_PAYLOAD_BYTES - len(envelope)
+        trimmed = _trim_strings(details, budget)
+        candidate = {**event, "details": trimmed}
+        payload = _dumps(candidate)
+        if len(payload) <= MAX_EVENT_PAYLOAD_BYTES:
+            return payload
+
+    # The evidence is not made of strings, or there are too many of them to
+    # trim one at a time. The event itself is kept — it is the detection —
+    # and says that the evidence did not fit.
+    candidate = {
+        **event,
+        "details": {
+            "truncated": True,
+            "original_payload_bytes": original_bytes,
+            "reason": "the evidence was larger than the outbox's payload limit",
+        },
+    }
+    return _dumps(candidate)
+
+
+def _trim_strings(details: Any, budget: int) -> Any:
+    """Replace the longest strings in a structure with a size marker."""
+    trimmed = json.loads(json.dumps(details))
+    leaves = _string_leaves(details)
+    leaves.sort(key=lambda leaf: len(leaf[1]), reverse=True)
+    for path, text in leaves[:MAX_TRIMMED_LEAVES]:
+        _replace_at(trimmed, path, f"[truncated {len(text)} bytes]")
+        if len(_dumps(trimmed)) <= budget:
+            return trimmed
+    return trimmed
+
+
 def _safe_delivery_url(value: str, *, allow_insecure_http: bool = False) -> bool:
     try:
         parsed = urllib.parse.urlsplit(value)
@@ -743,10 +836,12 @@ class EventEmitter:
             try:
                 self.outbox.enqueue(
                     event["event_id"],
-                    line.encode("utf-8"),
+                    _fit_event_payload(event, line.encode("utf-8")),
                     tenant_id=event["tenant_id"],
                 )
-            except sqlite3.Error as error:
+            except (sqlite3.Error, ValueError) as error:
+                # The emitter never raises. A detection that takes the
+                # process down with it is a detection that did not happen.
                 print(
                     f"event outbox enqueue failed: {type(error).__name__}",
                     file=sys.stderr,
