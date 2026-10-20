@@ -101,9 +101,27 @@ paths:
   /admin/replay-dead-letters:
     post:
       operationId: replayDeadLetters
-      description: VectorAnchor and TraceAudit requeue their dead-lettered outbox events.
+      description: |
+        VectorAnchor and TraceAudit requeue their dead-lettered outbox events.
+
+        A module's outbox is shared by every tenant it serves, so the replay
+        is scoped with the `tenant` query parameter: a tenant-scoped replay
+        moves only that tenant's records and leaves everybody else's dead.
+        Omitting the parameter replays the whole spool, which is the local
+        operator's action rather than a tenant's. A `tenant` that cannot be
+        read is refused with a 422 rather than ignored — a typo must never
+        widen the replay.
       security:
         - bearerAuth: []
+      parameters:
+        - name: tenant
+          in: query
+          required: false
+          description: The tenant whose dead letters are requeued.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
       responses:
         "200":
           description: Number of records moved back to pending.
@@ -111,6 +129,16 @@ paths:
             application/json:
               schema:
                 $ref: "./schemas/vector-anchor-api.v1.schema.json#/$defs/replayDeadLettersResponse"
+        "422":
+          description: The tenant could not be read, so the scope was refused.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: ["detail"]
+                properties:
+                  detail:
+                    type: string
   /admin/reload-baseline:
     post:
       operationId: reloadTraceAuditBaseline

@@ -343,6 +343,10 @@ export async function replayDeadLetters(tenantId: string): Promise<DeadLetterRep
   const token =
     process.env.MONOLITH_MODULE_ADMIN_TOKEN ?? process.env.MONOLITH_ADMIN_TOKEN;
   const allowInsecure = process.env.MONOLITH_ALLOW_INSECURE_MODULE_HEALTH === "true";
+  // The replay is scoped to the tenant that asked for it. A module's outbox
+  // is shared by every tenant it serves, so an unscoped replay would requeue
+  // another tenant's evidence and count it here as this tenant's.
+  const scope = encodeURIComponent(tenantId);
 
   const moduleResults = await Promise.all(
     MODULE_RUNTIME_ENV.map(async ({ module, env }) => {
@@ -350,7 +354,11 @@ export async function replayDeadLetters(tenantId: string): Promise<DeadLetterRep
       if (!baseUrl) {
         return { module, configured: false, ok: false, replayed: 0 };
       }
-      const target = moduleAdminUrl(baseUrl, "/admin/replay-dead-letters", allowInsecure);
+      const target = moduleAdminUrl(
+        baseUrl,
+        `/admin/replay-dead-letters?tenant=${scope}`,
+        allowInsecure,
+      );
       if (!target || (token && !isBearerToken(token))) {
         return {
           module,

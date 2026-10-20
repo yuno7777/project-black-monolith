@@ -159,7 +159,7 @@ async fn main() -> Result<()> {
         let outbox = outbox::outbox_or_from_env_path()
             .context("failed to initialize outbox for dead-letter replay")?;
         let replayed = outbox
-            .replay_dead_letters()
+            .replay_dead_letters(None)
             .context("failed to replay dead-letter events")?;
         eprintln!("replayed {replayed} dead-letter event(s) back to outbox");
         return Ok(());

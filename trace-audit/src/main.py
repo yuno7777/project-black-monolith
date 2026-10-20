@@ -9,6 +9,7 @@ divergence, and secrets are redacted before they are forwarded or logged.
 
 from __future__ import annotations
 
+import inspect
 import json
 import math
 import os
@@ -37,7 +38,14 @@ from .anthropic_gateway import (
     upstream_timeout,
 )
 from .config import MODULE_NAME, load_config
-from .events import EventContext, context_from_headers, is_session_revoked, make_emitter, now_ms
+from .events import (
+    EventContext,
+    context_from_headers,
+    is_session_revoked,
+    make_emitter,
+    now_ms,
+    tenant_scope,
+)
 from .pii_scanner import scan
 from .redaction import redact
 from .stream_proxy import POLICY_VERSION, SAFE_REFUSAL, StreamAuditor
@@ -466,36 +474,100 @@ async def reload_baseline(request: Request) -> dict:
     }
 
 
+def _accepts_tenant_scope(replay: object) -> bool:
+    """Whether a replay callable can be scoped to one tenant."""
+    try:
+        parameters = inspect.signature(replay).parameters  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+    if "tenant_id" in parameters:
+        return True
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+
+
+def _replay_through(replay: object, tenant: str | None) -> int:
+    """Requeue dead letters through a replay callable, honouring the scope.
+
+    A scope the callable cannot honour is refused rather than dropped:
+    replaying the whole spool on behalf of one tenant is exactly the mistake
+    the scope exists to prevent.
+    """
+    if tenant is None:
+        return int(replay())  # type: ignore[operator]
+    if not _accepts_tenant_scope(replay):
+        raise HTTPException(
+            status_code=409,
+            detail="this outbox cannot scope a replay to one tenant",
+        )
+    return int(replay(tenant_id=tenant))  # type: ignore[operator]
+
+
+def _replay_dead_rows(outbox: object, tenant: str | None) -> int:
+    """Requeue dead rows for an outbox that does not expose the helper.
+
+    Kept for an outbox that is not this package's `EventOutbox`: it reaches
+    into the table directly, and it honours the tenant scope the same way,
+    because an unscoped replay would requeue another tenant's evidence.
+    """
+    timestamp = now_ms()
+    with outbox._lock, outbox._connection:  # type: ignore[attr-defined]
+        if tenant is None:
+            cursor = outbox._connection.execute(  # type: ignore[attr-defined]
+                """update event_outbox
+                   set status = 'pending', attempts = 0,
+                       next_attempt_ms = ?, updated_ms = ?
+                   where status = 'dead'""",
+                (timestamp, timestamp),
+            )
+        else:
+            cursor = outbox._connection.execute(  # type: ignore[attr-defined]
+                """update event_outbox
+                   set status = 'pending', attempts = 0,
+                       next_attempt_ms = ?, updated_ms = ?
+                   where status = 'dead' and tenant_id = ?""",
+                (timestamp, timestamp, tenant),
+            )
+        replayed = int(
+            cursor.rowcount
+            if cursor.rowcount is not None and cursor.rowcount >= 0
+            else 0
+        )
+    if hasattr(outbox, "_wake"):
+        outbox._wake.set()
+    return replayed
+
+
 @app.post("/admin/replay-dead-letters")
 async def replay_dead_letters(request: Request) -> dict:
+    """Requeue dead-lettered outbox events, optionally for one tenant.
+
+    `?tenant=` narrows the replay to one tenant. The outbox is shared by every
+    tenant this module serves, so an unscoped replay requeues another tenant's
+    evidence too. A tenant that cannot be read is refused rather than ignored:
+    a typo must never widen the replay to the whole spool.
+    """
     _require_admin_token(request)
+    try:
+        tenant = tenant_scope(request.query_params.get("tenant"))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     emit = getattr(app.state, "emit", None)
     replayed = 0
     if emit is not None:
-        if hasattr(emit, "replay_dead_letters") and callable(emit.replay_dead_letters):
-            replayed = int(emit.replay_dead_letters())
+        replay = getattr(emit, "replay_dead_letters", None)
+        if callable(replay):
+            replayed = _replay_through(replay, tenant)
         else:
             outbox = getattr(emit, "outbox", None)
             if outbox is not None:
-                if hasattr(outbox, "replay_dead_letters") and callable(outbox.replay_dead_letters):
-                    replayed = int(outbox.replay_dead_letters())
+                replay = getattr(outbox, "replay_dead_letters", None)
+                if callable(replay):
+                    replayed = _replay_through(replay, tenant)
                 elif hasattr(outbox, "_connection") and hasattr(outbox, "_lock"):
-                    timestamp = now_ms()
-                    with outbox._lock, outbox._connection:
-                        cursor = outbox._connection.execute(
-                            """update event_outbox
-                               set status = 'pending', attempts = 0,
-                                   next_attempt_ms = ?, updated_ms = ?
-                               where status = 'dead'""",
-                            (timestamp, timestamp),
-                        )
-                        replayed = int(
-                            cursor.rowcount
-                            if cursor.rowcount is not None and cursor.rowcount >= 0
-                            else 0
-                        )
-                    if hasattr(outbox, "_wake"):
-                        outbox._wake.set()
+                    replayed = _replay_dead_rows(outbox, tenant)
     return {"replayed": replayed}
 
 

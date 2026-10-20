@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 
 import pytest
 from monolith_events.events import (
@@ -187,6 +188,10 @@ def test_outbox_creates_composite_status_indexes(tmp_path):
         "status",
         "updated_ms",
     ]
+    assert indexes["idx_event_outbox_tenant_status"] == [
+        "tenant_id",
+        "status",
+    ]
     delivery.close()
 
 
@@ -224,5 +229,94 @@ def test_replay_dead_letters_resets_dead_rows_and_wakes_worker(tmp_path):
     delivery.flush_once()
     assert delivery.stats()["pending"] == 0
     assert delivery.stats()["dead"] == 0
+    delivery.close()
+
+
+def test_a_spooled_event_is_attributed_to_the_tenant_it_names(tmp_path):
+    delivery = outbox(tmp_path)
+    delivery.enqueue("event-1", b'{"event_id":"event-1","tenant_id":"acme"}')
+    rows = delivery._connection.execute(
+        "select tenant_id from event_outbox where event_id = 'event-1'"
+    ).fetchall()
+    assert rows == [("acme",)]
+    delivery.close()
+
+
+def test_a_tenant_scoped_replay_leaves_another_tenants_dead_letters_alone(tmp_path):
+    delivery = outbox(tmp_path)
+    delivery._post = lambda _payload: (422, "http 422")  # type: ignore[method-assign]
+    delivery.enqueue("event-acme", b'{"event_id":"event-acme","tenant_id":"acme"}')
+    delivery.enqueue("event-other", b'{"event_id":"event-other","tenant_id":"other"}')
+    delivery.flush_once()
+    assert delivery.stats()["dead"] == 2
+
+    # An operator for one tenant has no authority over another tenant's
+    # evidence, and the count they are given is their own.
+    assert replay_dead_letters(delivery, tenant_id="acme") == 1
+    assert delivery.stats()["pending"] == 1
+    assert delivery.stats()["dead"] == 1
+
+    rows = delivery._connection.execute(
+        "select event_id, tenant_id, status from event_outbox order by event_id"
+    ).fetchall()
+    assert rows == [
+        ("event-acme", "acme", "pending"),
+        ("event-other", "other", "dead"),
+    ]
+    delivery.close()
+
+
+def test_a_tenant_that_cannot_be_read_is_refused_rather_than_widened(tmp_path):
+    delivery = outbox(tmp_path)
+    delivery._post = lambda _payload: (422, "http 422")  # type: ignore[method-assign]
+    delivery.enqueue("event-1", b'{"event_id":"event-1","tenant_id":"acme"}')
+    delivery.flush_once()
+
+    # An unreadable scope must never fall back to "everything": the event
+    # stays dead rather than being handed to a tenant nobody asked about.
+    with pytest.raises(ValueError):
+        delivery.replay_dead_letters(tenant_id="")
+    with pytest.raises(ValueError):
+        delivery.replay_dead_letters(tenant_id="acme\nother")
+    assert delivery.stats()["dead"] == 1
+    assert delivery.stats()["pending"] == 0
+    delivery.close()
+
+
+def test_an_outbox_written_before_the_tenant_column_still_gets_attributed(tmp_path):
+    path = str(tmp_path / "legacy.db")
+    connection = sqlite3.connect(path)
+    connection.execute(
+        """create table event_outbox (
+            event_id text primary key,
+            payload blob not null,
+            attempts integer not null default 0,
+            next_attempt_ms integer not null,
+            status text not null default 'pending',
+            last_error text,
+            created_ms integer not null,
+            updated_ms integer not null
+        )"""
+    )
+    connection.execute(
+        "insert into event_outbox values (?, ?, 0, 0, 'dead', null, 1, 1)",
+        ("legacy-1", b'{"event_id":"legacy-1","tenant_id":"acme"}'),
+    )
+    connection.commit()
+    connection.close()
+
+    delivery = EventOutbox(
+        path,
+        "https://dashboard.invalid/api/ingest",
+        "test-token-value",
+        start_worker=False,
+    )
+    # Evidence that predates the column is still evidence: it is attributed
+    # from the payload it carries, not skipped.
+    rows = delivery._connection.execute(
+        "select tenant_id from event_outbox where event_id = 'legacy-1'"
+    ).fetchall()
+    assert rows == [("acme",)]
+    assert delivery.replay_dead_letters(tenant_id="acme") == 1
     delivery.close()
 
