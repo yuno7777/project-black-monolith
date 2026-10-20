@@ -96,8 +96,13 @@ class UpstreamStreamError(RuntimeError):
     """The upstream stream ended in a failure rather than an answer."""
 
 
-def _delta_text(delta: dict[str, Any]) -> str:
-    """The model-authored payload of one delta, whatever kind it is."""
+def audited_delta_text(delta: dict[str, Any]) -> str:
+    """The model-authored payload of one delta, whatever kind it is.
+
+    Public because the baseline capture has to count fragments at the
+    same granularity the auditor counts them: a baseline of whole words
+    scored against a stream of deltas would fire on ordinary traffic.
+    """
     field = DELTA_PAYLOAD_FIELD.get(str(delta.get("type")), "text")
     value = delta.get(field)
     return value if isinstance(value, str) else ""
@@ -255,7 +260,7 @@ class AnthropicRelay:
             elif kind == "content_block_delta":
                 delta = data.get("delta")
                 if isinstance(delta, dict) and delta.get("type") in AUDITED_DELTA_KINDS:
-                    text = _delta_text(delta)
+                    text = audited_delta_text(delta)
                     index = data.get("index")
                     block_index = index if isinstance(index, int) else 0
                     if text:
@@ -868,10 +873,12 @@ async def collect_message(
 
 __all__ = [
     "ANTHROPIC_VERSION",
+    "AUDITED_DELTA_KINDS",
     "AnthropicRelay",
     "DIVERGENCE_REASON",
     "POLICY_VERSION",
     "UpstreamStreamError",
+    "audited_delta_text",
     "build_upstream_request",
     "collect_message",
     "format_sse",

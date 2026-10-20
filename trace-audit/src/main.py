@@ -143,6 +143,10 @@ MAX_PROMPT_BYTES = 64 * 1024
 MAX_BASELINE_TOKEN_BYTES = 512
 MAX_BASELINE_TOKEN_COUNT = 2_147_483_647
 MAX_BASELINE_TOTAL = 100_000_000_000_000
+# The model a baseline was captured from. The name is bounded like every
+# other identity in the system: it is compared against a client-supplied
+# model, so it has to be short and printable.
+MAX_BASELINE_MODEL_BYTES = 128
 
 class GenerateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -245,7 +249,10 @@ def _validate_distribution_mapping(
 
 
 def _write_baseline_atomic(
-    path: str, counts: dict[str, int], distribution: dict[str, Any] | None = None
+    path: str,
+    counts: dict[str, int],
+    distribution: dict[str, Any] | None = None,
+    model: str | None = None,
 ) -> None:
     parent = os.path.dirname(os.path.abspath(path))
     if parent:
@@ -258,9 +265,55 @@ def _write_baseline_atomic(
     }
     if distribution is not None:
         payload["distribution"] = distribution
+    if model:
+        # The model the baseline was captured from. It is the key that
+        # opens the divergence gate, so a baseline written without it is
+        # model-agnostic and the gate stays closed for it.
+        payload["model"] = model
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
     os.replace(tmp_path, path)
+
+
+def _validate_baseline_model(value: Any) -> str | None:
+    """The model a baseline was captured from, if the caller named one.
+
+    ``None`` means "no model", which is not the same as an error: a
+    baseline that does not say where it came from is model-agnostic, and
+    the gateway refuses to score a live stream against it.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("baseline model must be a string")
+    trimmed = value.strip()
+    if not trimmed:
+        return None
+    if len(trimmed.encode("utf-8")) > MAX_BASELINE_MODEL_BYTES or not trimmed.isprintable():
+        raise ValueError(
+            f"baseline model must be printable and at most {MAX_BASELINE_MODEL_BYTES} bytes"
+        )
+    return trimmed
+
+
+def _same_distribution(left: dict[str, int], right: dict[str, int]) -> bool:
+    """Whether two token maps describe the same distribution.
+
+    One of them may be raw counts and the other a set of weights, so the
+    two are compared as proportions rather than as raw numbers: a reload
+    that re-posts the same distribution in a different notation has not
+    changed where the baseline came from.
+    """
+    if set(left) != set(right):
+        return False
+    left_total = sum(left.values())
+    right_total = sum(right.values())
+    if left_total <= 0 or right_total <= 0:
+        return False
+    for token, count in left.items():
+        if abs(count / left_total - right[token] / right_total) > 1e-6:
+            return False
+    return True
 
 
 def _load_baseline(path: str) -> dict[str, int]:
@@ -430,17 +483,40 @@ async def reload_baseline(request: Request) -> dict:
             raise HTTPException(status_code=400, detail="invalid JSON body") from exc
         if not isinstance(body, dict):
             raise HTTPException(status_code=400, detail="request body must be a JSON object")
+        try:
+            model = _validate_baseline_model(body.get("model"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         dist = body.get("distribution") if "distribution" in body else body.get("counts")
         if dist is not None:
             try:
                 counts = _validate_distribution_mapping(dist, allow_floats=True)
-                _write_baseline_atomic(
-                    cfg.baseline_path,
-                    counts,
-                    distribution=dist if "distribution" in body else None,
-                )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if model is None:
+                # No model was named. The recorded one is kept only if the
+                # distribution is the one it was recorded for. A
+                # replacement from an unnamed model is model-agnostic,
+                # because a distribution from another model scored
+                # against this one would terminate ordinary traffic —
+                # and a baseline that claims a provenance it does not
+                # have is worse than one that admits it has none.
+                model = _load_baseline_model(cfg.baseline_path)
+                if model is not None:
+                    try:
+                        unchanged = _same_distribution(
+                            _load_baseline(cfg.baseline_path), counts
+                        )
+                    except ValueError:
+                        unchanged = False
+                    if not unchanged:
+                        model = None
+            _write_baseline_atomic(
+                cfg.baseline_path,
+                counts,
+                distribution=dist if "distribution" in body else None,
+                model=model,
+            )
 
     try:
         baseline_counts = _load_baseline(cfg.baseline_path)
@@ -460,11 +536,19 @@ async def reload_baseline(request: Request) -> dict:
         {
             "baseline_tokens": sum(baseline_counts.values()),
             "baseline_vocab": len(baseline_counts),
+            # The model the baseline belongs to. It is the key that opens
+            # the divergence gate, so an operator reading the ledger can
+            # see whether the gate is armed for the model in use.
+            "baseline_model": app.state.baseline_model,
         },
     )
     return {
         "reloaded": True,
         "vocab_size": len(baseline_counts),
+        # The model the baseline is attributed to, or null when it is
+        # model-agnostic — which means the divergence gate is closed for
+        # every model.
+        "baseline_model": app.state.baseline_model,
     }
 
 

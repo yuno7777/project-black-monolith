@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "fixtures"))
 
+import baseline_capture  # noqa: E402
 import fake_anthropic_server  # noqa: E402
 from src import main  # noqa: E402
 from src.anthropic_gateway import (  # noqa: E402
@@ -580,6 +581,140 @@ def test_a_baseline_from_another_model_disables_divergence(tmp_path):
 
     assert response.status_code == 200
     assert "message_stop" in response.text
+
+
+def test_a_baseline_captured_from_the_answering_model_arms_the_divergence_gate(
+    tmp_path, monkeypatch
+):
+    """The whole chain, end to end: capture, record, arm, fire.
+
+    The gate could never be armed. Nothing wrote the model a baseline was
+    captured from, so the baseline on disk could never name a model, so the
+    gateway could never match it against the model that was answering — and
+    the reasoning layer never terminated anything in any shipped
+    configuration.
+
+    The chain is: the capture records the model it captured from, the
+    reload keeps it, the gateway matches it against the model answering,
+    and a stream that leaves that model's distribution is cut short.
+    """
+    baseline_file = tmp_path / "baseline.json"
+    monkeypatch.setenv("MONOLITH_BASELINE_PATH", str(baseline_file))
+    monkeypatch.setenv("MONOLITH_ANTHROPIC_API_KEY", "capture-fixture-value")
+    monkeypatch.setenv("MONOLITH_ANTHROPIC_MODEL", "stub-model")
+    monkeypatch.setenv("MONOLITH_MODEL_BACKEND", "mock")
+
+    with _Stub("clean") as stub:
+        monkeypatch.setenv(
+            "MONOLITH_ANTHROPIC_BASE_URL", f"http://127.0.0.1:{stub.port}"
+        )
+        # The capture streams from the Anthropic-shaped upstream and
+        # records the model it captured from.
+        baseline_capture.main(["--force", "--anthropic", "--model", "stub-model"])
+        captured = json.loads(baseline_file.read_text(encoding="utf-8"))
+        assert captured["model"] == "stub-model"
+        assert captured["counts"], "the capture recorded no tokens at all"
+
+        # The reload keeps the model, and arms the gate for it.
+        _cfg_out, events = _setup(
+            tmp_path,
+            anthropic_base_url=f"http://127.0.0.1:{stub.port}",
+            baseline_path=str(baseline_file),
+        )
+        client = TestClient(app, raise_server_exceptions=True)
+        reloaded = client.post(
+            "/admin/reload-baseline",
+            headers={"Authorization": "Bearer admin-secret-token-0000"},
+        )
+        assert reloaded.status_code == 200
+        assert reloaded.json()["baseline_model"] == "stub-model"
+        assert app.state.baseline_model == "stub-model"
+
+        # The model that is answering is the model the baseline was captured
+        # from, so the gate is armed and a divergent answer is cut short.
+        fake_anthropic_server.Handler.mode = "divergent"
+        response = client.post(
+            "/v1/messages",
+            headers={"x-api-key": "client-key"},
+            json={
+                "model": "stub-model",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    payloads = _sse_payloads(response.text)
+    text = "".join(
+        payload["delta"]["text"]
+        for payload in payloads
+        if payload["type"] == "content_block_delta"
+    )
+    # The client is handed the refusal, and none of the divergent trace.
+    assert text == SAFE_REFUSAL
+    assert "zzxq" not in response.text
+    # The stream is still well formed: every block the client was told
+    # about is closed.
+    opened = [p["index"] for p in payloads if p["type"] == "content_block_start"]
+    closed = [p["index"] for p in payloads if p["type"] == "content_block_stop"]
+    assert opened == closed
+    # And the ledger says the defense fired.
+    types = [event[0] for event in events]
+    assert "reasoning_divergence_terminate" in types
+    terminate = next(
+        event for event in events if event[0] == "reasoning_divergence_terminate"
+    )
+    assert terminate[1] == "critical"
+    assert terminate[2]["kl_divergence"] >= 1.0
+    assert terminate[4]["outcome"] == "terminated"
+
+
+def test_a_baseline_from_another_model_leaves_the_answer_alone(tmp_path):
+    """A baseline from another model cannot score this one.
+
+    A KL score against a distribution from a different model says nothing
+    about the model that is answering, so terminating on it would refuse
+    ordinary traffic. The gate stays closed, the answer arrives whole, and
+    the ledger says why — once, not once per request.
+    """
+    main._DIVERGENCE_NOTICES.clear()
+    try:
+        with _Stub("divergent") as stub:
+            _cfg_out, events = _setup(
+                tmp_path, anthropic_base_url=f"http://127.0.0.1:{stub.port}"
+            )
+            app.state.baseline_model = "some-other-model"
+            client = TestClient(app, raise_server_exceptions=True)
+            response = client.post(
+                "/v1/messages",
+                headers={"x-api-key": "client-key"},
+                json={
+                    "model": "stub-model",
+                    "max_tokens": 1024,
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "stream": True,
+                },
+            )
+    finally:
+        main._DIVERGENCE_NOTICES.clear()
+
+    assert response.status_code == 200
+    # The answer is not terminated.
+    assert "reasoning_divergence_terminate" not in [event[0] for event in events]
+    text = "".join(
+        payload["delta"]["text"]
+        for payload in _sse_payloads(response.text)
+        if payload["type"] == "content_block_delta"
+    )
+    assert "zzxq" in text, "the divergent answer was cut short with the gate disarmed"
+    # And the ledger says the gate was off, and why.
+    notices = [event for event in events if event[0] == "divergence_disabled"]
+    assert len(notices) == 1
+    assert notices[0][1] == "info"
+    assert notices[0][2]["reason"] == "baseline_model_mismatch"
+    assert notices[0][2]["baseline_model"] == "some-other-model"
+    assert notices[0][2]["requested_model"] == "stub-model"
 
 
 def test_a_request_over_the_operator_ceiling_is_refused(tmp_path):

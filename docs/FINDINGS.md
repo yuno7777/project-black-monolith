@@ -31,7 +31,8 @@ unconfirmed finding is a fix to the wrong thing.
 
 ### 1. The reasoning layer's KL divergence is off in every shipped configuration
 
-**Status:** verified. **Where:** `trace-audit/src/main.py`,
+**Status:** fixed by `fix(trace-audit): record the model a baseline was captured
+from`. **Where:** `trace-audit/src/main.py`,
 `trace-audit/fixtures/baseline_capture.py`. **Effort:** medium.
 
 `_load_baseline_model` is the only reader of the baseline file's `"model"`
@@ -56,6 +57,31 @@ format, or the model comparison would fail no test.
 baseline is captured from one backend and the request is answered by another.
 Then either write the key on capture or drop the gate, and cover both the
 armed and the disarmed path.
+
+**How it was settled.** The answer is: *a baseline names the model it was
+captured from, and it is matched against the model that is answering.* The
+capture writes the key, the reload keeps it, and a distribution that arrives
+without a name becomes model-agnostic rather than inheriting a provenance it
+does not have.
+
+Three things changed.
+
+- `fixtures/baseline_capture.py` records the model it captured from. The
+  offline backend records `"mock"` — not a model, so a baseline from it keeps
+  the gate shut for every real model, which is the correct direction. A new
+  `--anthropic` mode captures from the Messages API at the granularity the
+  auditor actually scores (the text deltas, not whole words), because a
+  baseline of whole words scored against a stream of deltas would fire on
+  ordinary traffic.
+- `_write_baseline_atomic` takes the model, and `/admin/reload-baseline`
+  preserves the recorded one instead of destroying it. A replacement
+  distribution that names no model is model-agnostic; one that names a model
+  is recorded as given.
+- The armed path is now tested for the first time, end to end: capture from
+  an Anthropic-shaped upstream, reload, and a stream that leaves the
+  distribution is cut short with a critical `reasoning_divergence_terminate`
+  event. The disarmed path is tested too — a mismatch leaves the answer alone
+  and records a one-shot `divergence_disabled` notice saying why.
 
 ### 2. A notification failure rolls back the evidence it was raised for
 

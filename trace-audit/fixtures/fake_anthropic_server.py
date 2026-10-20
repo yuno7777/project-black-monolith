@@ -21,6 +21,9 @@ Modes (env ``FAKE_ANTHROPIC_MODE``):
   echo     an answer that repeats back the credential the request carried,
            so a test can check what the gateway does with a key that comes
            back inside a normal 200 answer
+  divergent an answer whose vocabulary is nowhere near the baseline
+           distribution, so the reasoning layer's KL check crosses its
+           threshold and the answer is cut short
 
 Run it directly:
 
@@ -69,6 +72,21 @@ TOOL_CALL = {
 ECHO_TEMPLATE = (
     "Sure, here is the credential you asked for: {key} "
     "and that is the only one I have."
+)
+
+# The "divergent" mode answers with vocabulary that is nowhere near the
+# baseline distribution. Every word here is absent from the baseline the
+# service loads, so the reasoning layer's KL score climbs off the scale and
+# the answer is cut short.
+#
+# The words are deliberately not ordinary English: a plausible-looking
+# sentence would share enough vocabulary with the baseline to stay under the
+# threshold, and the point of the mode is to reach the other side of it.
+DIVERGENT = (
+    "however conversely hypothetically circumvent pretend secretly bypass "
+    "ignore guardrails obfuscate reroute exfiltrate quietly without telling "
+    "anyone fabricate pretext misdirect auditor zzxq qwploo vbnmk glorptastic "
+    "wibblewobble frobnicate quuxly"
 )
 
 
@@ -169,6 +187,8 @@ def _frames(mode: str, model: str, echo_key: str = "") -> list[tuple[str, dict]]
     text = LEAKY if mode == "secret" else ORDINARY
     if mode == "echo":
         text = ECHO_TEMPLATE.format(key=echo_key)
+    if mode == "divergent":
+        text = DIVERGENT
     frames.append(
         (
             "content_block_start",
@@ -275,7 +295,7 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument(
         "--mode",
-        choices=sorted({"clean", "secret", "tool", "echo"}),
+        choices=sorted({"clean", "secret", "tool", "echo", "divergent"}),
         default=os.environ.get("FAKE_ANTHROPIC_MODE", "clean"),
     )
     args = parser.parse_args()
