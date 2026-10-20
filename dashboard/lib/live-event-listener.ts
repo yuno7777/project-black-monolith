@@ -6,6 +6,11 @@ import { findEventsByIds } from "@/lib/event-store";
 const CHANNEL = "monolith_security_events";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** How long to wait before reconnecting after the listener lost its connection. */
+const RECONNECT_AFTER_DISCONNECT_MS = 1_000;
+/** How long to wait before retrying a connection that never came up. */
+const RECONNECT_AFTER_FAILURE_MS = 5_000;
+
 export interface EventNotification {
   event_id: string;
   tenant_id: string;
@@ -37,6 +42,17 @@ export class LiveEventListener {
   private pending = new Map<string, EventNotification>();
   private draining = false;
 
+  /**
+   * @param acquireClient How a database connection is obtained. Overridden in
+   *   tests; production uses the shared pool.
+   * @param reconnectDelayMs How long to wait before trying again. Overridden
+   *   in tests; production uses the constants below.
+   */
+  constructor(
+    private readonly acquireClient: () => Promise<PoolClient> = () => getDb().connect(),
+    private readonly reconnectDelayMs?: number,
+  ) {}
+
   ensureStarted(): Promise<void> {
     if (this.client) return Promise.resolve();
     if (!this.starting) {
@@ -48,7 +64,18 @@ export class LiveEventListener {
   }
 
   private async connect() {
-    const client = await getDb().connect();
+    let client: PoolClient;
+    try {
+      client = await this.acquireClient();
+    } catch (error) {
+      // There was no connection to be had. The listener schedules its own
+      // retry: a listener that stays down until the next client happens to
+      // connect leaves the live view dead, and the client that asked for it
+      // has already been told that live delivery is unavailable.
+      console.error("live event database listener could not connect", error);
+      this.scheduleReconnect(false);
+      throw error;
+    }
     client.on("notification", (message) => {
       if (message.channel !== CHANNEL) return;
       const notification = parseEventNotification(message.payload);
@@ -58,11 +85,17 @@ export class LiveEventListener {
       console.error("live event database listener disconnected", error);
       this.disconnect(client);
     });
+    // A connection that ends without an error is still a disconnect.
+    client.on("end", () => this.disconnect(client));
     try {
       await client.query(`listen ${CHANNEL}`);
       this.client = client;
     } catch (error) {
       client.release(true);
+      // The LISTEN itself failed. The listener schedules its own retry for
+      // the same reason as above: nobody is going to ask it to start again.
+      console.error("live event database listener could not LISTEN", error);
+      this.scheduleReconnect(false);
       throw error;
     }
   }
@@ -71,26 +104,28 @@ export class LiveEventListener {
     if (this.client !== client) return;
     this.client = undefined;
     client.release(true);
-    if (this.retry) clearTimeout(this.retry);
-    this.retry = setTimeout(() => {
-      this.retry = undefined;
-      void this.ensureStarted().catch((error) => {
-        console.error("live event database listener reconnect failed", error);
-        this.disconnectIfIdle();
-      });
-    }, 1_000);
-    this.retry.unref?.();
+    this.scheduleReconnect(true);
   }
 
-  private disconnectIfIdle() {
-    if (this.client || this.retry) return;
+  /**
+   * Try again, and keep trying, until the listener is up.
+   *
+   * @param afterDisconnect Whether the listener was up and lost its
+   *   connection, which is worth retrying sooner than a connection that
+   *   never succeeded.
+   */
+  private scheduleReconnect(afterDisconnect: boolean) {
+    if (this.retry) clearTimeout(this.retry);
+    const delay =
+      this.reconnectDelayMs ??
+      (afterDisconnect ? RECONNECT_AFTER_DISCONNECT_MS : RECONNECT_AFTER_FAILURE_MS);
     this.retry = setTimeout(() => {
       this.retry = undefined;
       void this.ensureStarted().catch((error) => {
         console.error("live event database listener reconnect failed", error);
-        this.disconnectIfIdle();
+        this.scheduleReconnect(false);
       });
-    }, 5_000);
+    }, delay);
     this.retry.unref?.();
   }
 

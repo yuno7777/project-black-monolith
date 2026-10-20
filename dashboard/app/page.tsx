@@ -11,6 +11,7 @@ import SeverityDonut from "./components/SeverityDonut";
 import ThemeToggle from "./components/ThemeToggle";
 import OperatorBadge from "./components/OperatorBadge";
 import { IconIntercept, IconActivity, IconAlert, IconBolt, IconSearch, IconLedger, IconX } from "./components/Icons";
+import { EventStreamClient } from "@/lib/event-stream-client";
 
 /** Key for the "you have seen the pointer" flag. */
 const FIRST_RUN_KEY = "monolith.onboarding.dismissed";
@@ -72,31 +73,37 @@ export default function Page() {
   }, []);
 
   useEffect(() => {
-    const es = new EventSource("/api/events");
-    es.onopen = () => setConnected(true);
-    es.onerror = () => setConnected(false);
-    es.onmessage = (msg) => {
-      try {
-        const evt = JSON.parse(msg.data) as MonolithEvent;
-        if (!evt.event_id || seen.current.has(evt.event_id)) return;
-        seen.current.add(evt.event_id);
-        // Subscribe-before-replay prevents gaps, but a just-committed live
-        // event can arrive before older replay frames. Sort by collector time
-        // after de-duplication so that safe ordering cannot put stale evidence
-        // above the latest event.
-        setEvents((prev) =>
-          [evt, ...prev]
-            .sort(
-              (a, b) =>
-                (b.received_ms ?? b.timestamp_ms) - (a.received_ms ?? a.timestamp_ms),
-            )
-            .slice(0, 500),
-        );
-      } catch {
-        /* ignore malformed frame */
-      }
-    };
-    return () => es.close();
+    // The wrapper owns the reconnection: the browser abandons a source it
+    // could not connect to, and the live view would stay dark until the
+    // operator reloaded the page by hand.
+    const stream = new EventStreamClient({
+      url: "/api/events",
+      onOpen: () => setConnected(true),
+      onError: () => setConnected(false),
+      onMessage: (data) => {
+        try {
+          const evt = JSON.parse(data) as MonolithEvent;
+          if (!evt.event_id || seen.current.has(evt.event_id)) return;
+          seen.current.add(evt.event_id);
+          // Subscribe-before-replay prevents gaps, but a just-committed live
+          // event can arrive before older replay frames. Sort by collector time
+          // after de-duplication so that safe ordering cannot put stale
+          // evidence above the latest event.
+          setEvents((prev) =>
+            [evt, ...prev]
+              .sort(
+                (a, b) =>
+                  (b.received_ms ?? b.timestamp_ms) - (a.received_ms ?? a.timestamp_ms),
+              )
+              .slice(0, 500),
+          );
+        } catch {
+          /* ignore malformed frame */
+        }
+      },
+    });
+    stream.start();
+    return () => stream.stop();
   }, []);
 
   // Triage state lives in the ledger, not on the event stream, so the overview
