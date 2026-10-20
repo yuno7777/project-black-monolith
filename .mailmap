@@ -1,34 +1,22 @@
-# .mailmap — canonical identity mapping.
+# .mailmap — canonical identity mapping for local git tooling.
 #
-# GitHub resolves commit authors and `Co-authored-by` co-authors against this
-# file when it builds the repository's contributors list. Every entry below
-# folds a non-human identity into the account that actually owns this repo, so
-# the sidebar lists one contributor instead of three.
+# This file makes `git log %aN`, `git shortlog` and `git blame` in this repo
+# report one identity for the owner, instead of splitting across the two
+# addresses the owner has authored commits with.
+#
+# It does NOT affect the GitHub contributors sidebar. GitHub builds that list
+# from commit authors and from `Co-authored-by` co-authors, and it does not
+# consult `.mailmap` when it does so — verified against the live repository on
+# 2026-10-20, where a mailmap covering both the Dependabot App address and
+# the co-author address left the sidebar unchanged. The sidebar was fixed by
+# rewriting the history instead (trailers stripped, bot-authored commits
+# re-attributed), which is the only mechanism GitHub honours.
 #
 # Format:  Proper Name <proper@email>  <commit name> <commit@email>
 #
 # The `proper@email` is the account's own GitHub noreply, which is the
 # canonical address GitHub links to the `yuno7777` account.
 
-# --- The repository owner -------------------------------------------------
-#
-# Both of my commit addresses belong to the same GitHub account. Pin the
-# canonical one so the two never split into two contributor rows.
+# The repository owner authored commits under two addresses, both linked to
+# the same GitHub account. Pin the canonical one so they cannot split.
 Abhishek Satarkar <69352090+yuno7777@users.noreply.github.com> <abhisheksatarkar098@gmail.com>
-
-# --- Dependabot -----------------------------------------------------------
-#
-# Dependency-bump commits are authored by the Dependabot GitHub App, which
-# shows up as a separate contributor (a bot) on the repo page. Those bumps are
-# reviewed and merged as part of my own work, so count them as mine.
-Abhishek Satarkar <69352090+yuno7777@users.noreply.github.com> dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>
-
-# --- Co-author trailers ---------------------------------------------------
-#
-# `Co-authored-by` trailers on my commits are counted by GitHub as additional
-# contributors. Fold them into my own identity as well. The name-specific
-# lines cover the exact trailer text; the final line is the email-only
-# fallback, which also covers any future variant of the same address.
-Abhishek Satarkar <69352090+yuno7777@users.noreply.github.com> Claude Opus 4.8 <noreply@anthropic.com>
-Abhishek Satarkar <69352090+yuno7777@users.noreply.github.com> Claude Opus 5 <noreply@anthropic.com>
-Abhishek Satarkar <69352090+yuno7777@users.noreply.github.com> <noreply@anthropic.com>
