@@ -74,6 +74,18 @@ An agent that can see that a document was filtered knows its context is
 incomplete, which is the difference between a defense the agent can work
 around and one it silently routes around.
 
+**The server does not die on a bad response.** It is the agent's only door
+into the memory layer: a process that exits takes the retrieve tool with it
+and leaves the session half-blind. So every way the service can misbehave —
+unreachable, slow, answering with something that is not JSON, answering with
+a body it stops sending half way through — comes back as an error result on
+the wire and the server carries on. That includes the failure path: the body
+of an *error* response is read inside the handler that caught the error, and
+an exception raised there is not caught by the sibling clauses of the same
+`try`, so a service that answers `500` with a body it never finishes
+sending used to kill the server outright. The status code is the fact; the
+body is a nicety, and the nicety is the part that can fail to arrive.
+
 | Variable                     | Default                  | Purpose                                  |
 | ---------------------------- | ------------------------ | ---------------------------------------- |
 | `MONOLITH_VECTOR_ANCHOR_URL` | `http://127.0.0.1:8001`  | the service to forward `retrieve` to      |

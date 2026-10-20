@@ -130,9 +130,15 @@ class _Client:
     def receive(self, timeout: float = 15.0) -> dict:
         return self.messages.get(timeout=timeout)
 
-    def call(self, method: str, params: dict | None = None, request_id=1) -> dict:
+    def call(
+        self,
+        method: str,
+        params: dict | None = None,
+        request_id=1,
+        timeout: float = 15.0,
+    ) -> dict:
         self.send(method, params, request_id)
-        return self.receive()
+        return self.receive(timeout=timeout)
 
     def close(self) -> None:
         try:
@@ -303,6 +309,60 @@ def test_a_response_that_stops_mid_stream_is_an_error_result_not_a_crash(
     finally:
         _FakeVectorAnchor.raw = None
         _FakeVectorAnchor.truncate_by = 0
+
+
+def test_an_error_response_that_stops_mid_stream_is_an_error_result_not_a_crash(
+    client, fake_service
+):
+    # The failure path has the same hazard as the success path, and it is
+    # worse: the body of an error response is read inside the handler that
+    # caught the error, and an exception raised there is not caught by the
+    # sibling clauses of the same try. So a service that answers 500 with
+    # a body it never finishes sending used to kill the server outright.
+    _FakeVectorAnchor.status = 500
+    _FakeVectorAnchor.raw = b'{"detail": "the service fell over half way thr'
+    _FakeVectorAnchor.truncate_by = 40
+    try:
+        response = client.call(
+            "tools/call",
+            {"name": "retrieve", "arguments": {"query": "anything"}},
+            request_id=1,
+            timeout=8.0,
+        )
+        assert response["result"]["isError"] is True
+        text = response["result"]["content"][0]["text"]
+        # The status code is the fact; the body is a nicety, and the nicety
+        # is the part that could not be read.
+        assert "500" in text
+        assert "could not be read" in text
+        # The server is still alive and still serving the protocol.
+        assert client.call("ping", {}, request_id=2, timeout=8.0)["result"] == {}
+    finally:
+        _FakeVectorAnchor.status = 200
+        _FakeVectorAnchor.raw = None
+        _FakeVectorAnchor.truncate_by = 0
+
+
+def test_an_error_response_with_a_readable_body_says_what_it_said(
+    client, fake_service
+):
+    # The normal failure path is unchanged: the service's explanation is
+    # what the agent is told.
+    _FakeVectorAnchor.status = 503
+    _FakeVectorAnchor.raw = b'{"detail": "the corpus is rebuilding"}'
+    try:
+        response = client.call(
+            "tools/call",
+            {"name": "retrieve", "arguments": {"query": "anything"}},
+            request_id=1,
+        )
+        assert response["result"]["isError"] is True
+        text = response["result"]["content"][0]["text"]
+        assert "503" in text
+        assert "the corpus is rebuilding" in text
+    finally:
+        _FakeVectorAnchor.status = 200
+        _FakeVectorAnchor.raw = None
 
 
 def test_a_response_that_is_not_utf8_is_an_error_result_not_a_crash(

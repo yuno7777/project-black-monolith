@@ -188,7 +188,7 @@ while every pre-existing test still passes.
 
 ### 7. The VectorAnchor MCP server still dies on a truncated error body
 
-**Status:** reported. **Where:** `vector-anchor/src/mcp_server.py`. **Effort:** small.
+**Status:** verified, and fixed. **Where:** `vector-anchor/src/mcp_server.py`. **Effort:** small.
 
 `except urllib.error.HTTPError as error: detail = error.read()...` reads the
 body of a 5xx **inside** the handler, and `error.read()` raises
@@ -200,6 +200,17 @@ the agent's retrieve tool with it.
 
 The existing test covers only the 200 path — it sets the truncation but
 leaves `status = 200`.
+
+**The fix.** The error body is read by a helper that cannot raise: the
+status code is the fact, the body is a nicety, and a nicety that cannot be
+read is reported as such instead of taking the server down. Underneath
+that, a retrieve call can no longer kill the session either way — any
+exception the clauses above do not name becomes an error result on the
+wire, with the traceback on stderr for the operator.
+
+The fix is proved by mutating it back: with the old read of the error body
+restored, the new test fails because the server never answers — the
+`queue.Empty` is the crashed process.
 
 ### 8. The revocation snapshot carries session ids only
 
@@ -346,3 +357,11 @@ up.
   PR #66: each tool is inspected on its own, a tool the shield cannot vouch
   for is withheld, a tool that only breaks the spec is still fully checked
   and served, and the rest of the listing keeps its protection.
+- **The memory layer's door died on a truncated error body** (§7 above). The
+  body of a 5xx is read inside the handler that caught the error, and an
+  exception raised there is not caught by the sibling clauses of the same
+  `try` — so a service that answered `500` with a body it never finished
+  sending killed the MCP server and took the agent's retrieve tool with it.
+  Fixed in PR #67: the error body is read by a helper that cannot raise,
+  and a retrieve call that fails in any way comes back as an error result
+  on the wire instead of taking the session down.
