@@ -585,17 +585,22 @@ mod tests {
         );
         let bearer = format!(
             "Authorization: Bearer {}{}",
-            "abcdef0123456789",
-            "ABCDEF0123456789"
+            "abcdef0123456789", "ABCDEF0123456789"
         );
         let cases: [(&str, String); 5] = [
             ("a JSON Web Token", jwt),
             ("a bearer token", bearer),
             ("a Slack bot token", slack),
-            ("a GitLab token", format!("glpat-{}", "ABCDEFGHIJKLMNOPQRST")),
+            (
+                "a GitLab token",
+                format!("glpat-{}", "ABCDEFGHIJKLMNOPQRST"),
+            ),
             (
                 "an Anthropic key",
-                format!("sk-ant-{}-{}", "api03", "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"),
+                format!(
+                    "sk-ant-{}-{}",
+                    "api03", "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+                ),
             ),
         ];
         for (label, value) in cases {
