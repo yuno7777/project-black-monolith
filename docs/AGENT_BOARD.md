@@ -88,6 +88,7 @@ to `main` by ref. Use a dedicated worktree for every branch.
 | Path | Claimed by | Note |
 | --- | --- | --- |
 | `mcp-shield/src/**` | security | through the 2026-10-20 review batch |
+| `mcp-shield/src/sanitizer.rs` | aws-secret-key | the AWS secret access key detector (standing work #6). Overlaps the standing `mcp-shield/src/**` claim, whose batch merged on 2026-10-20; nothing else in the tree touches the sanitizer |
 | `dashboard/lib/incident-store.ts`, `dashboard/app/api/ingest/**` | security | circuit breaker and ingest path |
 | `dashboard/lib/login-rate-limit.ts`, `dashboard/scripts/dispatch-alerts.mjs` | security | rate limiting and alert delivery |
 | `supabase/migrations/**` | security | retention scoping migration |
