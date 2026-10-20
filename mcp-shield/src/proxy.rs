@@ -1126,6 +1126,32 @@ pub(crate) fn analyze_tools_list_with_boundary(
     // land in the ledger tied together rather than as unrelated rows.
     let trace = events::new_trace_id();
 
+    // Hold the baseline lock across the whole read-analyse-write cycle. The
+    // proxy reloads the baseline so an operator's out-of-band approval takes
+    // effect live, and then writes it back; without the lock, an operator
+    // command that landed in between was reverted by the proxy's own write.
+    //
+    // A lock that cannot be taken is reported and the analysis continues
+    // without it: refusing to analyse would turn a filesystem problem into
+    // "the tools/list was never checked", which is the one outcome the
+    // fail-open rule must never produce.
+    let _baseline_lock = match store.acquire_lock() {
+        Ok(lock) => Some(lock),
+        Err(error) => {
+            tracing::error!(
+                error = %error,
+                "could not lock the baseline store; an operator command may be overwritten by this write"
+            );
+            events::emit_traced(
+                "baseline_lock_failed",
+                Severity::Critical,
+                json!({ "error": error.to_string() }),
+                Some(&trace),
+            );
+            None
+        }
+    };
+
     let Some(tools) = msg
         .result
         .as_ref()

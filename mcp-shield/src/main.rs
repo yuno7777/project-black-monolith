@@ -115,6 +115,10 @@ async fn main() -> Result<()> {
         let tool = &server_cmd[1];
         let config = proxy::ShieldConfig::from_env()?;
         let mut store = fingerprint::BaselineStore::load(&config.baseline_path, &config.hmac_key)?;
+        // Hold the lock across the read-modify-write cycle, so a proxy that
+        // is running against the same baseline cannot revert this approval
+        // with its own write.
+        let _lock = store.acquire_lock()?;
         if !store.approve(tool) {
             // Not an error to be swallowed: approving a name that is not
             // pending means the operator approved something other than what
@@ -136,6 +140,7 @@ async fn main() -> Result<()> {
         let tool = &server_cmd[1];
         let config = proxy::ShieldConfig::from_env()?;
         let mut store = fingerprint::BaselineStore::load(&config.baseline_path, &config.hmac_key)?;
+        let _lock = store.acquire_lock()?;
         if !store.revoke(tool) {
             bail!(
                 "no approved tool named {tool:?} in baseline; \

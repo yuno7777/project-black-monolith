@@ -14,6 +14,7 @@
 //! secret key.
 
 use anyhow::{anyhow, bail, Context, Result};
+use fs2::FileExt;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -28,6 +29,16 @@ type HmacSha256 = Hmac<Sha256>;
 const MAX_BASELINE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_BASELINE_TOOLS: usize = 10_000;
 const MAX_TOOL_NAME_BYTES: usize = 128;
+
+/// The lock file that serializes read-modify-write cycles on a baseline.
+fn lock_path_for(path: &Path) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "baseline".to_string());
+    name.push_str(".lock");
+    path.with_file_name(name)
+}
 
 /// Recursively serialize a JSON value with object keys sorted, producing a
 /// deterministic canonical form. `serde_json::Map` preserves insertion order
@@ -150,6 +161,22 @@ pub struct BaselineStore {
     reload_failure: Option<String>,
     /// Whether the current `reload_failure` has already been reported.
     reload_failure_reported: bool,
+    /// Path of the lock file that serializes read-modify-write cycles
+    /// against the baseline, across processes.
+    lock_path: PathBuf,
+}
+
+/// An exclusive lock on the baseline file.
+///
+/// The proxy reloads the baseline so that an operator's out-of-band
+/// `--approve` or `--revoke` takes effect live, and then writes the
+/// baseline back. Without a lock, an operator command that landed between
+/// the read and the write was silently reverted by the proxy's own write.
+///
+/// The lock is a separate file rather than the baseline itself, so the
+/// baseline stays exactly as `save` writes it.
+pub struct BaselineLock {
+    _file: std::fs::File,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -164,6 +191,34 @@ struct BaselineFile {
 }
 
 impl BaselineStore {
+    /// Take the exclusive lock on the baseline.
+    ///
+    /// Hold it across a read-modify-write cycle. The proxy reloads the
+    /// baseline so an operator's out-of-band approval takes effect live, and
+    /// then writes it back; without the lock, an operator command that
+    /// landed in between was reverted by the proxy's own write.
+    pub fn acquire_lock(&self) -> Result<BaselineLock> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&self.lock_path)
+            .with_context(|| {
+                format!(
+                    "failed to open the baseline lock file {}",
+                    self.lock_path.display()
+                )
+            })?;
+        file.lock_exclusive().with_context(|| {
+            format!(
+                "failed to lock the baseline lock file {}",
+                self.lock_path.display()
+            )
+        })?;
+        Ok(BaselineLock { _file: file })
+    }
+
     /// Whether an operator-approved baseline already exists for this tool.
     ///
     /// The proxy uses this before trust-on-first-use registration so enforce
@@ -213,6 +268,7 @@ impl BaselineStore {
                 );
                 return Ok(Self {
                     path: path.to_path_buf(),
+                    lock_path: lock_path_for(path),
                     hmac_key: hmac_key.to_vec(),
                     tools: HashMap::new(),
                     pending: HashMap::new(),
@@ -295,6 +351,7 @@ impl BaselineStore {
         );
         Ok(Self {
             path: path.to_path_buf(),
+            lock_path: lock_path_for(path),
             hmac_key: hmac_key.to_vec(),
             tools: file.tools,
             pending: file.pending,
@@ -587,6 +644,52 @@ impl BaselineStore {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The baseline lock must actually exclude a second holder.
+    ///
+    /// The proxy reloads the baseline so an operator's out-of-band approval
+    /// takes effect live, and then writes it back. Without the lock, an
+    /// operator command that landed in between was reverted by the proxy's
+    /// own write, so the operator's approval silently did nothing.
+    #[test]
+    fn the_baseline_lock_excludes_a_second_holder() {
+        let path = std::env::temp_dir().join(format!(
+            "mcp-shield-baseline-lock-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(lock_path_for(&path));
+        let store = BaselineStore::load(&path, b"test-key").expect("fresh baseline");
+
+        let guard = store.acquire_lock().expect("the first lock is granted");
+        let second = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_path_for(&path))
+            .expect("lock file");
+        assert!(
+            second.try_lock_exclusive().is_err(),
+            "a second holder must not be granted the baseline lock"
+        );
+
+        drop(guard);
+        let third = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_path_for(&path))
+            .expect("lock file");
+        assert!(
+            third.try_lock_exclusive().is_ok(),
+            "the lock must be released when the guard is dropped"
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(lock_path_for(&path));
+    }
 
     #[test]
     fn canonicalize_is_key_order_independent() {
