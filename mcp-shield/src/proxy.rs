@@ -1089,6 +1089,40 @@ pub(crate) enum AnalysisOutcome {
     Analyzed { rewritten: Option<String> },
 }
 
+/// A detection whose `action` depends on what the agent is actually sent.
+///
+/// The events are collected while the tools are inspected and emitted once
+/// the response that will be forwarded is known. Emitting them earlier would
+/// let the ledger claim an enforcement — a rewrite, a block, a withdrawal —
+/// that never reached the agent, which is worse than reporting nothing: an
+/// operator reading the ledger would believe the poison had been stopped.
+struct DeferredEvent {
+    event_type: &'static str,
+    severity: Severity,
+    details: Value,
+    /// True when the event's `action` says an enforcement happened. Such an
+    /// event is corrected if the enforcement did not reach the agent.
+    claims_enforcement: bool,
+}
+
+/// Emit the collected detections, correcting any claim of enforcement that
+/// did not happen.
+///
+/// `applied` is true when the tool list the agent receives is the sanitized
+/// one. When it is false, an event that said "rewritten" or "blocked" is
+/// restated as "not_enforced" — the detection still happened, and hiding it
+/// would be its own lie.
+fn emit_deferred(deferred: &mut Vec<DeferredEvent>, trace: &str, applied: bool) {
+    for mut event in deferred.drain(..) {
+        if event.claims_enforcement && !applied {
+            if let Some(object) = event.details.as_object_mut() {
+                object.insert("action".to_string(), json!("not_enforced"));
+            }
+        }
+        events::emit_traced(event.event_type, event.severity, event.details, Some(trace));
+    }
+}
+
 /// Validate the identity-bearing parts of every advertised tool before any
 /// baseline is registered. Duplicate or missing names make "the schema for
 /// tool X" ambiguous and could let an invalid first response seed a baseline
@@ -1249,6 +1283,15 @@ pub(crate) fn analyze_tools_list_with_boundary(
     let mut clean_tools: Option<Vec<Value>> = None;
     let mut blocked_tools: HashSet<usize> = HashSet::new();
 
+    // Detections are collected here and emitted once the response that will
+    // be forwarded is known, so the ledger can only claim an enforcement
+    // that actually happened.
+    let mut deferred: Vec<DeferredEvent> = Vec::new();
+
+    // Set when a tool could not be fingerprinted; the listing is abandoned
+    // rather than forwarded half-checked.
+    let mut fingerprint_error: Option<anyhow::Error> = None;
+
     for (index, tool) in tools.iter().enumerate() {
         let name = tool
             .get("name")
@@ -1291,15 +1334,15 @@ pub(crate) fn analyze_tools_list_with_boundary(
                 tool = name,
                 "WITHHELD revoked tool; approve with: mcp-shield --approve <tool>"
             );
-            events::emit_traced(
-                "tool_revoked",
-                Severity::Warning,
-                json!({
+            deferred.push(DeferredEvent {
+                event_type: "tool_revoked",
+                severity: Severity::Warning,
+                details: json!({
                     "tool": name,
                     "action": "withheld_revoked",
                 }),
-                Some(&trace),
-            );
+                claims_enforcement: true,
+            });
             continue;
         }
 
@@ -1314,21 +1357,34 @@ pub(crate) fn analyze_tools_list_with_boundary(
                 finding_count = findings.len(),
                 "BLOCKED suspicious first-contact tool; baseline was not registered"
             );
-            events::emit_traced(
-                "suspicious_description",
-                Severity::Warning,
-                json!({
+            deferred.push(DeferredEvent {
+                event_type: "suspicious_description",
+                severity: Severity::Warning,
+                details: json!({
                     "tool": name,
                     "findings": findings,
                     "action": "blocked_first_contact",
                 }),
-                Some(&trace),
-            );
+                claims_enforcement: true,
+            });
             continue;
         }
 
         // --- 1. schema fingerprint vs. trusted baseline -----------------
-        let hash = fingerprint::fingerprint_tool(hmac_key, tool)?;
+        //
+        // A fingerprint that cannot be computed is not a reason to abandon
+        // the whole listing, but it is a reason to abandon this tool: the
+        // schema cannot be compared with a baseline, so it cannot be
+        // vouched for. The error is held rather than propagated, so the
+        // detections already collected are still reported — as detections
+        // that were not enforced.
+        let hash = match fingerprint::fingerprint_tool(hmac_key, tool) {
+            Ok(hash) => hash,
+            Err(error) => {
+                fingerprint_error = Some(error);
+                break;
+            }
+        };
 
         // First-contact gate. A fingerprint proves a schema has not *changed*;
         // it cannot tell a clean first sighting from one that arrived already
@@ -1347,18 +1403,18 @@ pub(crate) fn analyze_tools_list_with_boundary(
             // Emitted on every serving, not only the first: each time an
             // unapproved tool is advertised to the agent it is a fresh attempt
             // to be used, exactly as with a mismatched schema.
-            events::emit_traced(
-                "tool_pending_approval",
-                Severity::Warning,
-                json!({
+            deferred.push(DeferredEvent {
+                event_type: "tool_pending_approval",
+                severity: Severity::Warning,
+                details: json!({
                     "tool": name,
                     "hash": hash,
                     "description": description,
                     "newly_parked": newly_parked,
                     "action": "withheld_pending_approval",
                 }),
-                Some(&trace),
-            );
+                claims_enforcement: true,
+            });
             continue;
         }
 
@@ -1370,12 +1426,12 @@ pub(crate) fn analyze_tools_list_with_boundary(
                     hash = fingerprint::short(&hash),
                     "first sighting; registered trusted baseline fingerprint"
                 );
-                events::emit_traced(
-                    "baseline_registered",
-                    Severity::Info,
-                    json!({ "tool": name, "hash": hash }),
-                    Some(&trace),
-                );
+                deferred.push(DeferredEvent {
+                    event_type: "baseline_registered",
+                    severity: Severity::Info,
+                    details: json!({ "tool": name, "hash": hash }),
+                    claims_enforcement: false,
+                });
             }
             Verdict::Match => {
                 tracing::info!(
@@ -1420,10 +1476,10 @@ pub(crate) fn analyze_tools_list_with_boundary(
                     clean_tools.get_or_insert_with(|| tools.clone())[index] = baseline.tool.clone();
                     restored_from_baseline = true;
                 }
-                events::emit_traced(
-                    "schema_mismatch",
-                    Severity::Critical,
-                    json!({
+                deferred.push(DeferredEvent {
+                    event_type: "schema_mismatch",
+                    severity: Severity::Critical,
+                    details: json!({
                         "tool": name,
                         "baseline_hash": baseline.hash,
                         "current_hash": hash,
@@ -1434,8 +1490,8 @@ pub(crate) fn analyze_tools_list_with_boundary(
                         "mode": if mode == ShieldMode::Enforce { "enforce" } else { "monitor" },
                         "action": if blocked { "rewritten" } else { "forwarded" },
                     }),
-                    Some(&trace),
-                );
+                    claims_enforcement: blocked,
+                });
             }
         }
 
@@ -1457,10 +1513,10 @@ pub(crate) fn analyze_tools_list_with_boundary(
                  \x20   matched patterns:\n{}",
                 summary.join("\n"),
             );
-            events::emit_traced(
-                "suspicious_description",
-                Severity::Warning,
-                json!({
+            deferred.push(DeferredEvent {
+                event_type: "suspicious_description",
+                severity: Severity::Warning,
+                details: json!({
                     "tool": name,
                     "findings": findings,
                     "action": if mode == ShieldMode::Enforce {
@@ -1469,8 +1525,8 @@ pub(crate) fn analyze_tools_list_with_boundary(
                         "reported"
                     },
                 }),
-                Some(&trace),
-            );
+                claims_enforcement: mode == ShieldMode::Enforce,
+            });
             // A suspicious schema that matches a baseline created previously
             // in monitor mode is still unsafe when enforcement is enabled.
             // With no clean replacement available, remove it from the list.
@@ -1480,7 +1536,13 @@ pub(crate) fn analyze_tools_list_with_boundary(
         }
     }
 
-    store.save_if_dirty()?;
+    // A tool that could not be fingerprinted ends the listing: half a
+    // checked catalogue is not a checked catalogue. The detections made
+    // so far are still reported, but as detections that were not enforced.
+    if let Some(error) = fingerprint_error {
+        emit_deferred(&mut deferred, &trace, false);
+        return Err(error).context("failed to fingerprint a tool schema");
+    }
 
     let has_boundary_tools = boundary
         .map(|b| !b.get_mcp_tool_descriptors().is_empty())
@@ -1500,7 +1562,8 @@ pub(crate) fn analyze_tools_list_with_boundary(
     // logged rather than corrected — not about leaving a tools/list
     // untouched. The sanitizer and fingerprint decisions above remain
     // mode-gated exactly as before.
-    let rewritten = if clean_tools.is_some() || !blocked_tools.is_empty() || has_boundary_tools {
+    let enforced = clean_tools.is_some() || !blocked_tools.is_empty();
+    let rewritten = if enforced || has_boundary_tools {
         let rewritten_tools = clean_tools.unwrap_or_else(|| tools.clone());
         let mut filtered: Vec<Value> = rewritten_tools
             .into_iter()
@@ -1511,10 +1574,48 @@ pub(crate) fn analyze_tools_list_with_boundary(
             let secret_tools = boundary_ref.get_mcp_tool_descriptors();
             filtered.extend(secret_tools);
         }
-        Some(rebuild_response(msg, filtered)?)
+        match rebuild_response(msg, filtered) {
+            Ok(line) => Some(line),
+            Err(error) => {
+                // The response could not be rebuilt, so the agent will be
+                // sent the server's original bytes. Say so, rather than
+                // claiming an enforcement that is not happening.
+                emit_deferred(&mut deferred, &trace, false);
+                return Err(error);
+            }
+        }
     } else {
         None
     };
+
+    // The baseline is written after the response is decided, so a failure to
+    // write it cannot change what the agent receives. A trust store that
+    // cannot be written is a serious operational failure — the defence is
+    // still applied, but it is no longer durable, and every registration
+    // made in this cycle stops counting as a trust decision until the write
+    // succeeds.
+    if let Err(error) = store.save_if_dirty() {
+        tracing::error!(
+            error = %error,
+            "could not persist the baseline store; the enforcement above was applied, \
+             but the trust store is not durable"
+        );
+        if let Some(message) = store.take_persist_failure() {
+            events::emit_traced(
+                "baseline_persist_failed",
+                Severity::Critical,
+                json!({
+                    "error": message,
+                    "action": "baseline_not_persisted",
+                }),
+                Some(&trace),
+            );
+        }
+    }
+
+    // The detections are reported last, so each one can say what the agent
+    // was actually sent.
+    emit_deferred(&mut deferred, &trace, enforced && rewritten.is_some());
     Ok(AnalysisOutcome::Analyzed { rewritten })
 }
 
@@ -1593,14 +1694,18 @@ mod tests {
     }
 
     fn tools_list_response(description: &str) -> JsonRpcMessage {
+        tools_list_of(vec![json!({
+            "name": "read_file",
+            "description": description,
+            "inputSchema": { "type": "object" }
+        })])
+    }
+
+    fn tools_list_of(tools: Vec<Value>) -> JsonRpcMessage {
         let raw = json!({
             "jsonrpc": "2.0",
             "id": 2,
-            "result": { "tools": [{
-                "name": "read_file",
-                "description": description,
-                "inputSchema": { "type": "object" }
-            }]}
+            "result": { "tools": tools }
         })
         .to_string();
         JsonRpcMessage::parse(&raw).expect("test message must parse")
@@ -2497,6 +2602,180 @@ mod tests {
             !line.contains("ignore previous instructions"),
             "agent must never see the poisoned description"
         );
+    }
+
+    /// A baseline that cannot be written must not change what the agent gets.
+    ///
+    /// The write used to sit between the enforcement decisions and the
+    /// rewrite, and a failure there aborted the whole analysis: the fail-open
+    /// path forwarded the server's original bytes — the poisoned schema —
+    /// while the ledger had already recorded the response as rewritten and
+    /// the tool as blocked. A disk problem turned the tool layer off.
+    #[test]
+    fn a_failed_baseline_write_does_not_discard_the_enforcement() {
+        let dir = std::env::temp_dir().join(format!(
+            "mcp-shield-persist-failure-{}-{}",
+            std::process::id(),
+            "enforcement"
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp directory");
+        let path = dir.join("baseline.json");
+
+        let mut store = BaselineStore::load(&path, KEY).expect("fresh test baseline");
+        // First sighting registers the clean schema as the trusted baseline.
+        analyze_tools_list(
+            &tools_list_response(CLEAN_DESC),
+            &mut store,
+            KEY,
+            ShieldMode::Enforce,
+            FirstContact::Trust,
+        )
+        .expect("baseline registration ok");
+        assert!(path.exists(), "the first write must succeed");
+
+        // The trust store becomes unwritable: the file it wants to replace is
+        // now a directory, so the atomic replace cannot happen. The file is
+        // still there and still readable, so the proxy keeps enforcing with
+        // the baseline it already holds.
+        std::fs::remove_file(&path).expect("remove the baseline file");
+        std::fs::create_dir(&path).expect("replace the baseline file with a directory");
+
+        // A rug-pulled schema arrives together with a tool that has never
+        // been seen. The new tool makes the store dirty, so the write is
+        // attempted — and fails.
+        let outcome = analyze_tools_list(
+            &tools_list_of(vec![
+                json!({
+                    "name": "read_file",
+                    "description": POISONED_DESC,
+                    "inputSchema": { "type": "object" }
+                }),
+                json!({
+                    "name": "write_file",
+                    "description": "Write a file and return its contents.",
+                    "inputSchema": { "type": "object" }
+                }),
+            ]),
+            &mut store,
+            KEY,
+            ShieldMode::Enforce,
+            FirstContact::Trust,
+        )
+        .expect("a baseline that cannot be written must not fail the analysis");
+
+        let AnalysisOutcome::Analyzed {
+            rewritten: Some(line),
+        } = outcome
+        else {
+            panic!("enforce mode must still produce a rewritten response");
+        };
+        assert!(
+            line.contains(CLEAN_DESC),
+            "the agent must receive the trusted schema even though the baseline could not be written"
+        );
+        assert!(
+            !line.contains("ignore previous instructions"),
+            "the agent must never see the poisoned description"
+        );
+
+        // The ledger must say what actually happened.
+        let recorded = crate::events::recorder::drain();
+        let mismatch = recorded
+            .iter()
+            .find(|(event_type, _, _)| event_type == "schema_mismatch")
+            .expect("the mismatch must be reported");
+        assert_eq!(
+            mismatch.2["action"], "rewritten",
+            "the ledger must claim the rewrite that was sent"
+        );
+        let persist_failure = recorded
+            .iter()
+            .find(|(event_type, _, _)| event_type == "baseline_persist_failed")
+            .expect("a baseline that cannot be written must be reported");
+        assert_eq!(
+            persist_failure.1,
+            Severity::Critical,
+            "an unwritable trust store is a critical operational failure"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A registration the proxy could not write is not a trust decision.
+    ///
+    /// Trust on first use is a guess. Once the guess is on disk it is a
+    /// decision the operator can see, review and revoke. A guess that could
+    /// not be written is neither, and must not stand in for one: the tool
+    /// stays untrusted, so the first-contact gate still applies to it.
+    #[test]
+    fn a_registration_that_could_not_be_written_is_not_treated_as_trusted() {
+        let dir = std::env::temp_dir().join(format!(
+            "mcp-shield-persist-failure-{}-{}",
+            std::process::id(),
+            "untrusted"
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp directory");
+        let path = dir.join("baseline.json");
+
+        let mut store = BaselineStore::load(&path, KEY).expect("fresh test baseline");
+        // The store is unwritable from the start: the file it wants to
+        // replace is a directory.
+        std::fs::create_dir(&path).expect("a directory where the baseline should be");
+
+        analyze_tools_list(
+            &tools_list_response(CLEAN_DESC),
+            &mut store,
+            KEY,
+            ShieldMode::Enforce,
+            FirstContact::Trust,
+        )
+        .expect("a baseline that cannot be written must not fail the analysis");
+
+        assert!(
+            !store.contains("read_file"),
+            "a registration that could not be written is a guess, not a trust decision"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A detection that was not enforced must not claim it was.
+    #[test]
+    fn a_detection_that_was_not_enforced_says_so() {
+        let mut deferred = vec![DeferredEvent {
+            event_type: "schema_mismatch",
+            severity: Severity::Critical,
+            details: json!({ "tool": "read_file", "action": "rewritten" }),
+            claims_enforcement: true,
+        }];
+
+        emit_deferred(&mut deferred, "trace-under-test", false);
+
+        let recorded = crate::events::recorder::drain();
+        assert_eq!(recorded.len(), 1, "the detection must still be reported");
+        assert_eq!(
+            recorded[0].2["action"], "not_enforced",
+            "an enforcement that did not happen must not be claimed"
+        );
+    }
+
+    /// An enforcement that did happen keeps its claim.
+    #[test]
+    fn an_enforced_detection_keeps_its_action() {
+        let mut deferred = vec![DeferredEvent {
+            event_type: "schema_mismatch",
+            severity: Severity::Critical,
+            details: json!({ "tool": "read_file", "action": "rewritten" }),
+            claims_enforcement: true,
+        }];
+
+        emit_deferred(&mut deferred, "trace-under-test", true);
+
+        let recorded = crate::events::recorder::drain();
+        assert_eq!(recorded.len(), 1, "the detection must still be reported");
+        assert_eq!(recorded[0].2["action"], "rewritten");
     }
 
     #[test]
