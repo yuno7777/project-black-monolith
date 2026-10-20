@@ -2293,6 +2293,47 @@ test("an operational failure is not a detection", async () => {
   assert.equal(operational.total, 3);
 });
 
+test("a tool the shield could not vouch for is a detection and a block", async () => {
+  const { summarizeSession } = await import("../lib/session-report");
+
+  // The shield withheld a malformed tool: the agent never saw it, so it is
+  // both a finding and something that did not reach the agent intact.
+  const withheld = summarizeSession([
+    {
+      event_id: "55555555-5555-4555-8555-555555555555",
+      schema_version: 2,
+      timestamp_ms: 1,
+      module: "mcp-shield",
+      event_type: "tool_malformed",
+      severity: "warning",
+      details: { tool: "decoy", action: "withheld_malformed" },
+      tenant_id: "tenant-malformed",
+      outcome: "withheld_malformed",
+    },
+  ]);
+  assert.equal(withheld.detections, 1);
+  assert.equal(withheld.blocks, 1);
+
+  // A tool that only breaks the spec was still checked and still served, so
+  // nothing was stopped and nothing was found: the operator's attention is
+  // worth having, but it is not a detection and it is not a block.
+  const analysed = summarizeSession([
+    {
+      event_id: "66666666-6666-4666-8666-666666666666",
+      schema_version: 2,
+      timestamp_ms: 2,
+      module: "mcp-shield",
+      event_type: "tool_malformed",
+      severity: "info",
+      details: { tool: "decoy", action: "analysed" },
+      tenant_id: "tenant-malformed",
+      outcome: "analysed",
+    },
+  ]);
+  assert.equal(analysed.detections, 0);
+  assert.equal(analysed.blocks, 0);
+});
+
 test("the ledger path returns the same fields as the memory path", async () => {
   const { listSessionIncidents } = await import("../lib/session-report");
   const globalRef = globalThis as unknown as { __monolithPool?: unknown };
