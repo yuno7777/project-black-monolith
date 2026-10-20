@@ -296,6 +296,52 @@ class SessionReportTests(unittest.TestCase):
         # And the breakdown says what it covers.
         self.assertIn("the counts below cover the first 1000", output)
 
+    def test_the_report_is_asked_for_by_agent(self):
+        """A session id another agent shared would merge two runs.
+
+        The correlation boundary is (tenant, agent, session), and the
+        launcher minted both the session id and the agent id for this run.
+        So it asks the dashboard for its own agent's events, instead of
+        whatever else in the tenant happened to use the same session id.
+        """
+        seen: list[str] = []
+
+        class _Dashboard(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - stdlib signature
+                seen.append(self.path)
+                payload = b"{}"
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _Dashboard)
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                print_session_report(
+                    f"http://127.0.0.1:{server.server_address[1]}",
+                    "sess-1",
+                    "operator-token-value",
+                    agent_id="agent one",
+                    allow_insecure=False,
+                )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        # The agent id is a query parameter, so it is percent-encoded.
+        self.assertEqual(seen, ["/api/sessions/sess-1?agent_id=agent%20one"])
+        # And the operator can see which run the report is about.
+        self.assertIn("agent one", buffer.getvalue())
+
 
 class PlanRedactionTests(unittest.TestCase):
     def test_the_plan_does_not_print_a_secret(self):

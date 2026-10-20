@@ -783,6 +783,7 @@ def print_session_report(
     dashboard_url: str,
     session_id: str,
     operator_token: str | None,
+    agent_id: str | None = None,
     allow_insecure: bool = False,
 ) -> None:
     if not operator_token:
@@ -801,6 +802,13 @@ def print_session_report(
         )
         return
     url = dashboard_url.rstrip("/") + f"/api/sessions/{session_id}"
+    if agent_id:
+        # The correlation boundary is (tenant, agent, session), not (tenant,
+        # session). The launcher minted both the session id and the agent
+        # id for this run, so it can ask for exactly its own run; a session
+        # id another agent happened to share would otherwise merge two runs
+        # into one report about "what this run tripped".
+        url += "?agent_id=" + urllib.parse.quote(agent_id, safe="")
     # A plain-HTTP dashboard means the operator token travels in cleartext,
     # and urllib would hand the request to an ambient http_proxy on the way
     # out — to a host that is not the loopback address the guard just
@@ -828,6 +836,8 @@ def print_session_report(
     print("\n  Session report")
     print("  --------------")
     print(f"  session    {session_id}")
+    if agent_id:
+        print(f"  agent      {agent_id}")
     total = summary.get("total", 0)
     counted = summary.get("counted", total)
     print(f"  events     {total}")
@@ -1078,6 +1088,7 @@ def main(argv: list[str] | None = None) -> int:
             dashboard_url,
             session_id,
             operator_token,
+            agent_id=agent_id,
             allow_insecure=allow_insecure_dashboard,
         )
     return exit_code
