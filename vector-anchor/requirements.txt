@@ -1,7 +1,7 @@
-fastapi>=0.142.2
-uvicorn[standard]>=0.29
-pydantic>=2.13.5
+fastapi>=0.141.1
+uvicorn[standard]>=0.52.1
+pydantic>=2.13.4
 chromadb>=1.5.9
 # ChromaDB requests uvicorn[standard]. Declare its Linux-only event loop
 # explicitly so the hashed lock remains complete when compiled on Windows.
-uvloop>=0.23.0; sys_platform != "win32"
+uvloop>=0.22.1; sys_platform != "win32"
