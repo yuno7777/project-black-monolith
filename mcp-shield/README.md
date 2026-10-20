@@ -195,6 +195,7 @@ Configuration (environment variables):
 | `MCP_SHIELD_BASELINE` | `baseline_hashes.json`          | baseline store path                      |
 | `MONOLITH_DASHBOARD_URL` | *(unset)*                    | if set (e.g. `http://localhost:3000/api/ingest`), events are also POSTed here |
 | `MONOLITH_EVENT_OUTBOX_PATH` | *(unset)*                | durable JSONL event spool path |
+| `MONOLITH_ADMIN_TOKEN` | *(unset)*                | bearer token for the status listener's administrative endpoints (`GET /stats`, `POST /admin/replay-dead-letters`). **Not** interchangeable with `MONOLITH_EVENT_TOKEN`: without this token the endpoints refuse every request (`503`) |
 | `MCP_SHIELD_REMOTE_TOKEN` | *(unset)*                   | bearer token for `--remote-url`; never put credentials in the URL |
 | `MCP_SHIELD_PROTOCOL_VERSION` | `2025-11-25`            | MCP version sent to a remote endpoint |
 | `MCP_SHIELD_REMOTE_TIMEOUT_SECS` | `300`                | positive per-request timeout for a remote endpoint |

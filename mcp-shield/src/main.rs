@@ -181,9 +181,27 @@ async fn main() -> Result<()> {
             if !trimmed.is_empty() {
                 let outbox = outbox::outbox_or_from_env_path()
                     .context("failed to access outbox for status listener")?;
-                let admin_token = std::env::var("MONOLITH_ADMIN_TOKEN")
-                    .ok()
-                    .or_else(|| std::env::var("MONOLITH_EVENT_TOKEN").ok());
+                // The administrative credential is deliberately *not* the
+                // ingest credential. `MONOLITH_EVENT_TOKEN` is transmitted on
+                // every event the module emits, so it is the broadest-held
+                // secret in this process; doubling it as the administrative
+                // credential would hand `POST /admin/replay-dead-letters` —
+                // which re-queues every dead-lettered event — to anybody who
+                // holds the ingest token, on a listener the shipped compose
+                // file binds to every interface. With no administrative
+                // credential configured the endpoints answer 503, which is the
+                // fail-closed contract `admin_authorized` already implements.
+                let admin_token = match std::env::var("MONOLITH_ADMIN_TOKEN") {
+                    Ok(token) if !token.trim().is_empty() => Some(token),
+                    _ => {
+                        tracing::warn!(
+                            "MONOLITH_ADMIN_TOKEN is not set; the status listener's administrative \
+                             endpoints (/stats, /admin/replay-dead-letters) will refuse every \
+                             request. MONOLITH_EVENT_TOKEN is not used as a substitute"
+                        );
+                        None
+                    }
+                };
                 let local_addr = outbox::spawn_status_listener(trimmed, outbox, admin_token)
                     .with_context(|| format!("failed to bind status listener on {trimmed}"))?;
                 tracing::info!(
