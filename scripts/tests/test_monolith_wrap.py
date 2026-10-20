@@ -1,3 +1,4 @@
+import http.client
 import io
 import json
 import os
@@ -7,6 +8,7 @@ import sys
 import tempfile
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from contextlib import redirect_stdout
@@ -568,6 +570,78 @@ class InjectorTests(unittest.TestCase):
         # The client's own credential is forwarded, never replaced.
         self.assertEqual(sent["headers"]["x-api-key"], "client-secret-key")
         self.assertEqual(sent["headers"]["authorization"], "Bearer client-token")
+
+    def test_the_clients_credential_does_not_go_through_an_ambient_proxy(self):
+        """The hop to the auditor carries the client's own credential.
+
+        urllib honours http_proxy by default, and on Windows it reads the
+        registry's ProxyEnable and ProxyServer as well, so a request meant
+        for the local auditor would be handed to whatever proxy the host
+        happens to be configured with — and the client's credential would
+        go with it, in cleartext, to a host that is not the auditor.
+        """
+        seen: list[str] = []
+
+        class _Proxy(BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802 - stdlib signature
+                seen.append(self.headers.get("x-api-key") or "")
+                self.send_response(200)
+                self.send_header("content-type", "text/event-stream")
+                self.send_header("content-length", "0")
+                self.end_headers()
+
+            def log_message(self, *_args):
+                pass
+
+        proxy = ThreadingHTTPServer(("127.0.0.1", 0), _Proxy)
+        thread = Thread(target=proxy.serve_forever, daemon=True)
+        thread.start()
+        try:
+            environment = {
+                key: value
+                for key, value in os.environ.items()
+                if key.lower() not in ("http_proxy", "https_proxy")
+            }
+            environment["http_proxy"] = f"http://127.0.0.1:{proxy.server_address[1]}"
+            with patch.dict(os.environ, environment, clear=True):
+                body = json.dumps(
+                    {"model": "claude-sonnet-5", "messages": [{"role": "user", "content": "hi"}]}
+                )
+                # The client side talks to the injector over a plain
+                # socket: urllib would apply the same ambient proxy to it,
+                # and the request under test would never reach the injector
+                # at all.
+                parsed = urllib.parse.urlsplit(self.injector.base_url)
+                connection = http.client.HTTPConnection(
+                    parsed.hostname, parsed.port, timeout=15
+                )
+                try:
+                    connection.request(
+                        "POST",
+                        "/v1/messages",
+                        body=body.encode("utf-8"),
+                        headers={
+                            "content-type": "application/json",
+                            "x-api-key": "client-secret-key",
+                        },
+                    )
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 200)
+                    response.read()
+                finally:
+                    connection.close()
+        finally:
+            proxy.shutdown()
+            proxy.server_close()
+            thread.join(timeout=5)
+
+        # The proxy saw nothing: the hop never went to it.
+        self.assertEqual(seen, [])
+        # And the auditor got the request, with the client's credential.
+        self.assertEqual(len(self.trace_audit.received), 1)
+        self.assertEqual(
+            self.trace_audit.received[0]["headers"]["x-api-key"], "client-secret-key"
+        )
 
     def test_a_client_cannot_forge_the_session_it_is_stamped_with(self):
         # The launcher promises that the session id on every request is the

@@ -154,6 +154,32 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
+def _should_use_ambient_proxy(url: str) -> bool:
+    """Whether an ambient proxy may carry this request.
+
+    A proxy is a second destination the operator did not name, and two
+    cases rule it out.
+
+    A loopback target. urllib does not bypass loopback on Windows — it
+    reads the registry's ProxyEnable and ProxyServer instead — so a
+    machine with a system proxy sends a request meant for 127.0.0.1 to a
+    remote host. The credential on that request goes with it.
+
+    A plain-HTTP target. The credential is then readable by whoever
+    answers, and a proxy is a whoever. This is the same rule the secret
+    boundary applies to a resolved secret, for the same reason.
+
+    An HTTPS request to a remote host is left alone: it is tunnelled
+    through the proxy end to end, so the proxy cannot read the
+    credential, and a corporate network is often the only route to the
+    model provider at all.
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https":
+        return False
+    return not _is_loopback_host(parsed.hostname or "")
+
+
 def credential_transport_is_trusted(url: str, allow_insecure: bool) -> bool:
     """Whether a credential may be sent to this address over this scheme.
 
@@ -295,15 +321,19 @@ def http_get_json(
     url: str,
     timeout: float = 5.0,
     headers: dict[str, str] | None = None,
-    use_proxy: bool = True,
+    use_proxy: bool | None = None,
 ):
     """Fetch a JSON document.
 
-    ``use_proxy=False`` ignores the ambient ``http_proxy``/``https_proxy``
-    environment. urllib honours them by default, so a request that looks
-    like it is going to a loopback address can be handed to a proxy on the
-    way — and a credential in that request would go with it.
+    ``use_proxy`` decides whether the ambient ``http_proxy``/``https_proxy``
+    environment may carry the request. It defaults to what
+    :func:`_should_use_ambient_proxy` says about this URL: urllib honours
+    the ambient proxy by default, so a request that looks like it is going
+    to a loopback address can be handed to a proxy on the way — and a
+    credential in that request would go with it.
     """
+    if use_proxy is None:
+        use_proxy = _should_use_ambient_proxy(url)
     request = urllib.request.Request(url, headers=headers or {})
     with _opener(use_proxy).open(request, timeout=timeout) as response:
         body = response.read()
@@ -433,7 +463,13 @@ class _InjectorHandler(BaseHTTPRequestHandler):
             method=method,
         )
         try:
-            response = _opener().open(request, timeout=self.read_timeout)
+            # The ambient proxy may not carry this hop. The request holds
+            # the client's own credential, and a request meant for the
+            # local auditor would otherwise be handed to whatever proxy
+            # the host happens to be configured with.
+            response = _opener(use_proxy=_should_use_ambient_proxy(target)).open(
+                request, timeout=self.read_timeout
+            )
         except urllib.error.HTTPError as error:
             payload = error.read()
             self.send_response(error.code)
@@ -706,15 +742,16 @@ def print_session_report(
     # A plain-HTTP dashboard means the operator token travels in cleartext,
     # and urllib would hand the request to an ambient http_proxy on the way
     # out — to a host that is not the loopback address the guard just
-    # approved. An HTTPS request is tunnelled through the proxy instead,
-    # which cannot read the token, so the proxy is left alone there.
-    plain_http = urllib.parse.urlparse(url).scheme == "http"
+    # approved. A loopback dashboard has the same problem on a machine with
+    # a system proxy, because urllib does not bypass loopback on Windows.
+    # An HTTPS request to a remote host is tunnelled through the proxy
+    # instead, which cannot read the token, so the proxy is left alone
+    # there.
     try:
         report = http_get_json(
             url,
             timeout=15.0,
             headers={"authorization": f"Bearer {operator_token}"},
-            use_proxy=not plain_http,
         )
     except urllib.error.HTTPError as error:
         print(f"\n  The session report could not be read: HTTP {error.code}.")
