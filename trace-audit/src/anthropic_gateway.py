@@ -199,9 +199,15 @@ class AnthropicRelay:
         self._redactions: list[str] = []
         self._terminated = False
         self._stop_reason = "end_turn"
+        # True when the upstream ended the answer without the message_stop
+        # every complete answer carries. It is tracked separately from the
+        # stop reason because the caller has to record the truncation in the
+        # ledger, and "the stream was cut short" is not the same fact as
+        # "the auditor refused".
+        self._truncated = False
         self._usage: dict[str, Any] = {}
 
-    # -- upstream side ---------------------------------------------------
+    # — upstream side ---------------------------------------------------
 
     async def _source(self, upstream: AsyncIterator[tuple[str, dict[str, Any]]]) -> AsyncIterator:
         """Turn the upstream SSE stream into auditable text fragments.
@@ -261,7 +267,7 @@ class AnthropicRelay:
             if isinstance(index, int):
                 self._client_blocks.add(index)
 
-    # -- client side -----------------------------------------------------
+    # — client side -----------------------------------------------------
 
     async def run(self, upstream: AsyncIterator[tuple[str, dict[str, Any]]]) -> AsyncIterator[dict]:
         """Yield the client's view of the answer, event by event.
@@ -320,7 +326,17 @@ class AnthropicRelay:
                 yield {"kind": "terminated", "reason": evt.get("reason", "terminated")}
                 return
             elif kind == "error":
+                # The auditor failed mid-answer. The queued events are
+                # released first, for the same reason the truncation path
+                # releases them: a client that has been told about a content
+                # block must be told the block closed before the refusal
+                # opens another one, or it is left holding a block it never
+                # saw the end of.
+                for queued in self._release_ready(self._pushes):
+                    self._note_client_block(queued.data)
+                    yield {"kind": "passthrough", "event": queued.name, "data": queued.data}
                 self._terminated = True
+                self._stop_reason = "upstream_error"
                 yield {"kind": "terminated", "reason": evt.get("error", "upstream_stream_error")}
                 return
         if not self._saw_message_stop:
@@ -340,6 +356,7 @@ class AnthropicRelay:
                 yield {"kind": "passthrough", "event": queued.name, "data": queued.data}
             self._terminated = True
             self._stop_reason = "upstream_error"
+            self._truncated = True
             yield {"kind": "terminated", "reason": "upstream_stream_error"}
             return
         for queued in self._release_ready(self._pushes):
@@ -441,6 +458,11 @@ class AnthropicRelay:
         return {
             "terminated": self._terminated,
             "stop_reason": self._stop_reason,
+            # True when the upstream ended the answer without the
+            # message_stop every complete answer carries. The caller
+            # records it: an answer that was cut short has to be in the
+            # ledger, or the run reads as a clean one.
+            "truncated": self._truncated,
             "redactions": list(self._redactions),
             "redaction_count": len(self._redactions),
             "blocks": len(self._block_kind),
@@ -479,7 +501,16 @@ def build_upstream_request(
     what the model is asked to do.
     """
     base = cfg.anthropic_base_url.rstrip("/")
-    url = base if base.endswith("/v1/messages") else base + "/v1/messages"
+    # The operator may configure the API root ("https://api.anthropic.com"),
+    # the versioned root (".../v1") or the endpoint itself. All three name
+    # the same endpoint, and appending blindly to a base that already ends
+    # in /v1 asks for /v1/v1/messages, so every audited call 404s.
+    if base.endswith("/v1/messages"):
+        url = base
+    elif base.endswith("/v1"):
+        url = base + "/messages"
+    else:
+        url = base + "/v1/messages"
     headers = {
         "content-type": "application/json",
         "accept": "text/event-stream",

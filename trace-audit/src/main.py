@@ -15,6 +15,7 @@ import os
 import threading
 import time
 import uuid
+from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from secrets import compare_digest
 from typing import Any
@@ -134,6 +135,11 @@ MAX_PROMPT_BYTES = 64 * 1024
 MAX_BASELINE_TOKEN_BYTES = 512
 MAX_BASELINE_TOKEN_COUNT = 2_147_483_647
 MAX_BASELINE_TOTAL = 100_000_000_000_000
+
+# The shortest credential the literal redaction pass will substitute. Below
+# this a "credential" is a word, and pulling a word out of an upstream error
+# message would mangle it without protecting anything.
+MIN_REDACTED_SECRET_LENGTH = 8
 
 
 class GenerateRequest(BaseModel):
@@ -809,7 +815,11 @@ def _divergence_notice_once(
     )
 
 
-def _redact_upstream_error(error_body: bytes, ctx: EventContext | None) -> bytes:
+def _redact_upstream_error(
+    error_body: bytes,
+    ctx: EventContext | None,
+    secrets: Sequence[str] = (),
+) -> bytes:
     """Redact credential-shaped spans in an upstream error body.
 
     The success path is audited, so every byte of a model's answer is scanned
@@ -817,10 +827,31 @@ def _redact_upstream_error(error_body: bytes, ctx: EventContext | None) -> bytes
     is upstream-controlled text and this was the one place where it reached
     the client verbatim. A provider that echoes a key back in its error
     message would hand that key to the agent.
+
+    Two passes, because they catch different things. The scanner finds the
+    *shapes* it was written for. The literal pass finds the exact credential
+    this gateway holds — the operator's fallback key — whatever shape it
+    happens to have: Anthropic keys are hyphenated ("sk-ant-..."), and the
+    openai-style pattern stops at the first hyphen, so a pattern-only pass
+    would let the operator's own key straight through to the client that
+    never had it.
     """
     text = error_body.decode("utf-8", errors="replace")
     matches = scan(text)
-    if not matches:
+    # The pattern redaction runs first: it replaces spans by offset, and
+    # substituting a literal afterwards would move those offsets out from
+    # under it.
+    redacted = redact(text, matches)
+    literal_hits = 0
+    for secret in secrets:
+        # A short "credential" is a word, and redacting a word out of an
+        # error message helps nobody.
+        if not secret or len(secret) < MIN_REDACTED_SECRET_LENGTH:
+            continue
+        if secret in redacted:
+            redacted = redacted.replace(secret, "[REDACTED:anthropic_api_key]")
+            literal_hits += 1
+    if not matches and not literal_hits:
         return error_body
     emit = getattr(app.state, "emit", None)
     if emit is not None:
@@ -840,7 +871,55 @@ def _redact_upstream_error(error_body: bytes, ctx: EventContext | None) -> bytes
                 outcome="redacted",
                 policy_version=POLICY_VERSION,
             )
-    return redact(text, matches).encode("utf-8")
+        if literal_hits:
+            emit(
+                "pii_redacted",
+                "warning",
+                {
+                    "label": "anthropic_api_key",
+                    "redacted_as": "[REDACTED:anthropic_api_key]",
+                    "position_tokens": 0,
+                    "source": "upstream_error_body",
+                },
+                ctx,
+                resource_type="reasoning_trace",
+                resource_id=ctx.trace_id if ctx else None,
+                outcome="redacted",
+                policy_version=POLICY_VERSION,
+            )
+    return redacted.encode("utf-8")
+
+
+def _report_truncated_answer(ctx: EventContext | None, summary: dict[str, Any]) -> None:
+    """Record an answer the upstream cut short.
+
+    The auditor emits ``generation_completed`` when a stream ends cleanly, so
+    a run whose answer was truncated used to leave the ledger saying the
+    generation completed — and the session report read as a run in which
+    nothing happened, for an answer the client never received. The truncation
+    is an operational failure rather than a security finding, so it is
+    recorded with a warning severity; the outcome says what it did to the
+    agent, which is the part that matters.
+    """
+    if not summary.get("truncated"):
+        return
+    emit = getattr(app.state, "emit", None)
+    if emit is None:
+        return
+    emit(
+        "generation_truncated",
+        "warning",
+        {
+            "reason": "upstream ended the answer before message_stop",
+            "stop_reason": summary.get("stop_reason"),
+            "blocks": summary.get("blocks"),
+        },
+        ctx,
+        resource_type="reasoning_trace",
+        resource_id=ctx.trace_id if ctx else None,
+        outcome="terminated",
+        policy_version=POLICY_VERSION,
+    )
 
 
 @app.post("/v1/messages")
@@ -964,7 +1043,15 @@ async def messages(request: Request):
         await response.aclose()
         await client.aclose()
         return Response(
-            content=_redact_upstream_error(error_body, ctx),
+            content=_redact_upstream_error(
+                error_body,
+                ctx,
+                # The credentials this request could have carried. The
+                # operator's fallback key is the dangerous one: the client
+                # never had it, and an upstream that echoes it would hand it
+                # to a party that never owned it.
+                secrets=(cfg.anthropic_api_key or "", client_key or "", client_auth or ""),
+            ),
             status_code=response.status_code,
             media_type="application/json",
         )
@@ -984,7 +1071,10 @@ async def messages(request: Request):
         except UpstreamStreamError as exc:
             # The upstream broke mid-answer. A partial answer delivered as a
             # complete one is worse than an error: the agent would act on it
-            # and never learn that it was truncated.
+            # and never learn that it was truncated. The truncation is
+            # recorded first, so the ledger says what happened even though
+            # the client only ever sees a 502.
+            _report_truncated_answer(ctx, relay.summary())
             raise HTTPException(
                 status_code=502,
                 detail="upstream model stream ended before the answer was complete",
@@ -999,6 +1089,11 @@ async def messages(request: Request):
             async for chunk in relay_sse(relay, response):
                 yield chunk
         finally:
+            # An answer the upstream cut short has to reach the ledger: the
+            # auditor emits generation_completed when a stream ends cleanly,
+            # so without this the run reads as a completed one for an answer
+            # the client never received.
+            _report_truncated_answer(ctx, relay.summary())
             await response.aclose()
             await client.aclose()
 

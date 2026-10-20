@@ -624,7 +624,7 @@ def test_a_truncated_upstream_answer_is_not_handed_over_as_a_complete_one(tmp_pa
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        _setup(tmp_path, anthropic_base_url=f"http://127.0.0.1:{port}")
+        _, events = _setup(tmp_path, anthropic_base_url=f"http://127.0.0.1:{port}")
         client = TestClient(app, raise_server_exceptions=True)
         response = client.post(
             "/v1/messages",
@@ -643,6 +643,11 @@ def test_a_truncated_upstream_answer_is_not_handed_over_as_a_complete_one(tmp_pa
 
     assert response.status_code == 502
     assert "complete" in response.json()["detail"]
+    # The ledger has to say what happened. The auditor emits
+    # generation_completed when a stream ends cleanly, so without a row for
+    # the truncation this run reads as a completed one — and the session
+    # report shows nothing at all for an answer the client never received.
+    assert "generation_truncated" in [event[0] for event in events]
 
 
 def test_the_non_streaming_message_keeps_a_tool_block():
@@ -953,3 +958,200 @@ def test_the_divergence_notice_cannot_be_flooded(tmp_path):
         assert len(notices) == main.MAX_DIVERGENCE_NOTICES
     finally:
         main._DIVERGENCE_NOTICES.clear()
+
+
+def test_an_auditor_failure_drains_the_queue_before_the_refusal():
+    """A stream that breaks mid-answer still has to start properly.
+
+    The error path did not release the queued events, so the client's
+    stream began with the refusal's content_block_start and no
+    message_start before it. A client that tracks the message envelope
+    reads that as a malformed stream, and a malformed stream is a transport
+    failure the agent retries — which is the wrong reaction to an upstream
+    that has already broken.
+    """
+
+    class _FailingAuditor:
+        """An auditor whose read of the upstream fails part-way through."""
+
+        async def audit_tokens(self, source, ctx, divergence_enabled=False, emit_sync=False):
+            async for _ in source:
+                pass
+            yield {"type": "error", "error": "upstream_stream_error"}
+
+    frames = _frames(
+        ("message_start", {"type": "message_start", "message": {"id": "msg_1"}}),
+        _block_start(0),
+        _block_delta(0, "the answer is 42"),
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+    )
+
+    async def run():
+        relay = AnthropicRelay(_FailingAuditor(), None, divergence_enabled=False)
+        return relay, [event async for event in relay.run(frames)]
+
+    relay, events = asyncio.run(run())
+
+    # The events the upstream queued before it broke reach the client.
+    delivered = [event["event"] for event in events if event["kind"] == "passthrough"]
+    assert "message_start" in delivered
+    assert "content_block_start" in delivered
+    assert "content_block_stop" in delivered
+    # And the refusal follows them.
+    terminated = [event for event in events if event["kind"] == "terminated"]
+    assert terminated and terminated[0]["reason"] == "upstream_stream_error"
+    # The refusal opens a fresh block: the client already saw block 0
+    # closed, and re-opening it would be a malformed stream.
+    assert _refusal_starts(relay.refusal_events("upstream_stream_error")) == [1]
+
+
+def test_a_truncated_stream_is_recorded_in_the_ledger(tmp_path):
+    """A stream that ends mid-answer has to be in the ledger.
+
+    The auditor emits generation_completed when a stream ends cleanly, so
+    without a row for the truncation the run reads as a completed one --
+    and the session report shows nothing for an answer the client never
+    received.
+    """
+
+    class Truncated(fake_anthropic_server.Handler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("content-length") or 0))
+            self.send_response(200)
+            self.send_header("content-type", "text/event-stream")
+            self.end_headers()
+            frame = (
+                'event: message_start\ndata: {"type":"message_start","message":'
+                '{"id":"msg_x","type":"message","role":"assistant","content":[],'
+                '"model":"stub-model","stop_reason":null,"usage":{}}}\n\n'
+                'event: content_block_start\ndata: {"type":"content_block_start",'
+                '"index":0,"content_block":{"type":"text","text":""}}\n\n'
+                'event: content_block_delta\ndata: {"type":"content_block_delta",'
+                '"index":0,"delta":{"type":"text_delta","text":"the answer is 42"}}\n\n'
+            )
+            self.wfile.write(frame.encode("utf-8"))
+            self.wfile.flush()
+            self.close_connection = True
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Truncated)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _, events = _setup(tmp_path, anthropic_base_url=f"http://127.0.0.1:{port}")
+        client = TestClient(app, raise_server_exceptions=True)
+        response = client.post(
+            "/v1/messages",
+            headers={"x-api-key": "client-key"},
+            json={
+                "model": "stub-model",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            },
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert response.status_code == 200
+    # The client is told the answer was cut short.
+    assert "ended before the answer was complete" in response.text
+    # And the ledger says so, with the outcome that says what it did to the
+    # agent: the answer was terminated, not delivered.
+    types = [event[0] for event in events]
+    assert "generation_truncated" in types
+    truncated = next(event for event in events if event[0] == "generation_truncated")
+    assert truncated[1] == "warning"
+    assert truncated[4]["outcome"] == "terminated"
+
+
+def test_the_operators_fallback_key_is_not_relayed_to_the_client(tmp_path):
+    """The gateway's own key must never reach a client that never had it.
+
+    The scanner finds the shapes it was written for, and the openai-style
+    pattern stops at the first hyphen — which an Anthropic key has
+    several of. A pattern-only pass therefore let the operator's fallback
+    key straight through to the client, in the one path the auditor was
+    not watching.
+    """
+    operator_key = "sk-ant-api03-operator-fallback-key-0123456789"
+
+    class EchoKey(fake_anthropic_server.Handler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("content-length") or 0))
+            payload = json.dumps(
+                {
+                    "type": "error",
+                    "error": {
+                        "type": "authentication_error",
+                        "message": f"the key {operator_key} was rejected",
+                    },
+                }
+            ).encode("utf-8")
+            self.send_response(401)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), EchoKey)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _, events = _setup(
+            tmp_path,
+            anthropic_base_url=f"http://127.0.0.1:{port}",
+            anthropic_api_key=operator_key,
+        )
+        client = TestClient(app, raise_server_exceptions=True)
+        # The client sends no credential of its own, so the gateway uses
+        # the operator's fallback — the key the client never had.
+        response = client.post(
+            "/v1/messages",
+            json={
+                "model": "stub-model",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            },
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    # The upstream's own error is still relayed: the reason for the refusal
+    # must not be replaced with an invented one.
+    assert response.status_code == 401
+    assert "authentication_error" in response.text
+    # But the key is not.
+    assert operator_key not in response.text
+    assert "[REDACTED:anthropic_api_key]" in response.text
+    # And the ledger records the redaction.
+    labels = [event[2].get("label") for event in events if event[0] == "pii_redacted"]
+    assert "anthropic_api_key" in labels
+
+
+def test_a_base_url_that_already_ends_in_v1_is_not_doubled(tmp_path):
+    """An operator who configures the versioned root gets a working call.
+
+    Appending the path blindly asks for /v1/v1/messages, and every audited
+    call 404s — which looks exactly like the gateway being broken.
+    """
+    for configured, expected in (
+        ("https://api.anthropic.com", "https://api.anthropic.com/v1/messages"),
+        ("https://api.anthropic.com/v1", "https://api.anthropic.com/v1/messages"),
+        ("https://api.anthropic.com/v1/", "https://api.anthropic.com/v1/messages"),
+        (
+            "https://api.anthropic.com/v1/messages",
+            "https://api.anthropic.com/v1/messages",
+        ),
+    ):
+        cfg = _cfg(tmp_path, anthropic_base_url=configured)
+        url, _headers, _payload = build_upstream_request(
+            b"{}", cfg, {"x-api-key": "client-key"}
+        )
+        assert url == expected, configured
