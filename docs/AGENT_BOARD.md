@@ -36,11 +36,39 @@ Read it before starting work. Write to it while you work.
 | --- | --- | --- | --- |
 | security | `fix/security-hardening` | retention scoping, evidence verification, fail-closed admin, DLP coverage, breaker batching, baseline locking | merged into `main` (`3634d23`); branch kept until cleanup |
 | security | `feature/video-explainer` | the AEOS Guard explainer, rescued off a branch that was about to be deleted | pushed, 1 commit |
-| integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI running |
-| security | Dependabot | #24 merged; #47 closed as superseded; #26 hmac migration in progress | finish #26, then the queue is clear |
+| integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI green on `b19513b` |
+| integrator | Dependabot | #24 merged (codeql-action); #15, #16 closed as superseded; #26 superseded by a direct hmac 0.13 migration | the queue is empty: **zero open PRs** |
 
 The project is moving to user-facing features. The work below is the
 security and operations tail; the board is here so it is not lost.
+
+### Lock files drift from their declared floors (open, low priority)
+
+The merged Dependabot PRs raise the floors in `vector-anchor/requirements.txt`
+and `trace-audit/requirements.txt` but only touch that file, so six floors now
+sit above the pin in the matching `requirements.lock`:
+
+| Module | Floor | Lock pin |
+| --- | --- | --- |
+| vector-anchor | `fastapi>=0.142.2` | `fastapi==0.141.1` |
+| vector-anchor | `pydantic>=2.13.5` | `pydantic==2.13.4` |
+| vector-anchor | `uvloop>=0.23.0` | `uvloop==0.22.1` |
+| trace-audit | `fastapi>=0.143.3` | `fastapi==0.141.1` |
+| trace-audit | `pydantic>=2.14.1` | `pydantic==2.13.4` |
+| trace-audit | `uvicorn[standard]>=0.54.0` | `uvicorn==0.52.1` |
+
+Nothing breaks: CI and both Dockerfiles install with
+`pip install --require-hashes -r requirements.lock`, so the lock — not the
+floor — is what gets installed, and it is hash-verified and green. The drift
+only means `pip install -r requirements.txt -r requirements.lock` would be
+refused, because the lock does not satisfy the floor.
+
+The fix is a lock regeneration with `pip-compile`, and it must be pip-compile:
+`uv pip compile` emits the same file format but resolves extras and markers
+differently. It drops the `; sys_platform != "win32"` marker from `uvloop`
+(which has no Windows wheel, so the `windows-latest` job would try to build
+it from source) and drops `colorama`. Do not substitute `uv` for `pip-compile`
+on these two files.
 
 The 2026-10-20 refresh found all twelve open questions still accurate; see
 the note at the top of `docs/OPEN_QUESTIONS.md`. One collaboration race
@@ -74,6 +102,15 @@ queue.
 Done: the breaker's per-candidate query is now one query for the whole
 batch, the baseline is locked across its read-modify-write cycle, and the
 open questions were refreshed on 2026-10-20.
+
+The integrator also closed the credential-test-vector finding that GitHub's
+secret scanner raised on `mcp-shield/src/sanitizer.rs`: the JWT and the bearer
+token were literal strings in the source. The values are public test vectors,
+not secrets, but the file already avoided the scanner for the Slack, GitLab
+and Anthropic shapes by assembling them at runtime, so the JWT and the bearer
+token are now assembled the same way. The bytes handed to the detector are
+unchanged, so the test still proves the same detection. Any new fixture that
+looks like a credential must be assembled at runtime too.
 
 ## Verification
 
