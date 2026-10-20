@@ -42,33 +42,38 @@ Read it before starting work. Write to it while you work.
 The project is moving to user-facing features. The work below is the
 security and operations tail; the board is here so it is not lost.
 
-### Lock files drift from their declared floors (open, low priority)
+### Requirement floors now match their locks (resolved)
 
-The merged Dependabot PRs raise the floors in `vector-anchor/requirements.txt`
-and `trace-audit/requirements.txt` but only touch that file, so six floors now
-sit above the pin in the matching `requirements.lock`:
+The merged Dependabot PRs raised the floors in `vector-anchor/requirements.txt`
+and `trace-audit/requirements.txt` but only touched that file, so six floors
+were left sitting above the pin in the matching `requirements.lock`. Nothing
+broke — CI and both Dockerfiles install with
+`pip install --require-hashes -r requirements.lock`, so the lock, not the
+floor, is what gets installed — but the two files contradicted each other.
 
-| Module | Floor | Lock pin |
-| --- | --- | --- |
-| vector-anchor | `fastapi>=0.142.2` | `fastapi==0.141.1` |
-| vector-anchor | `pydantic>=2.13.5` | `pydantic==2.13.4` |
-| vector-anchor | `uvloop>=0.23.0` | `uvloop==0.22.1` |
-| trace-audit | `fastapi>=0.143.3` | `fastapi==0.141.1` |
-| trace-audit | `pydantic>=2.14.1` | `pydantic==2.13.4` |
-| trace-audit | `uvicorn[standard]>=0.54.0` | `uvicorn==0.52.1` |
+The floors are now pinned to the versions the locks actually carry, so the
+`.txt` and the `.lock` agree, and `requirements.txt` documents what is
+deployed rather than an aspiration. The dependency *upgrade* is still owed and
+is now a separate, deliberate piece of work. Three things were learned trying
+to do it in place, and they are the reason it was not:
 
-Nothing breaks: CI and both Dockerfiles install with
-`pip install --require-hashes -r requirements.lock`, so the lock — not the
-floor — is what gets installed, and it is hash-verified and green. The drift
-only means `pip install -r requirements.txt -r requirements.lock` would be
-refused, because the lock does not satisfy the floor.
+1. **`pip-compile` must not be replaced with `uv pip compile`.** uv emits the
+   same file format but resolves extras and markers differently: it drops the
+   `; sys_platform != "win32"` marker from `uvloop` and drops `colorama`.
+   `uvloop` has no Windows wheel, so an unmarked `uvloop` makes the
+   `windows-latest` job try to build it from source.
+2. **Compiling on Linux drops `colorama`.** It arrives through `click`,
+   `build` and `tqdm` under `platform_system == "Windows"`, and the committed
+   locks were compiled on Windows and carry it.
+3. **Compiling on Windows cannot resolve `uvloop`.** It has no Windows wheel,
+   so `pip-compile` tries to build it and fails with "Getting requirements to
+   build wheel exited with 1".
 
-The fix is a lock regeneration with `pip-compile`, and it must be pip-compile:
-`uv pip compile` emits the same file format but resolves extras and markers
-differently. It drops the `; sys_platform != "win32"` marker from `uvloop`
-(which has no Windows wheel, so the `windows-latest` job would try to build
-it from source) and drops `colorama`. Do not substitute `uv` for `pip-compile`
-on these two files.
+Doing it properly means either compiling on Linux and restoring the `colorama`
+entry and the `uvloop` marker by hand, or compiling on Windows with `uvloop`
+held back. Either way it wants its own pull request, its own CI run on all
+three platforms, and a `pip check` on Windows to confirm the Windows-only
+entries are present.
 
 The 2026-10-20 refresh found all twelve open questions still accurate; see
 the note at the top of `docs/OPEN_QUESTIONS.md`. One collaboration race
