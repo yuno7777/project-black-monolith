@@ -16,7 +16,8 @@
 
 <br />
 
-[What this is](#what-this-is) · [Try it](#try-it) · [AI agent setup](#let-your-ai-agent-set-it-up-for-you) ·
+[What this is](#what-this-is) · [Try it](#try-it) · [Put your own agent behind it](#put-your-own-agent-behind-it) ·
+[AI agent setup](#let-your-ai-agent-set-it-up-for-you) ·
 [What you saw](#what-you-saw) · [How it works](#how-it-works) · [How well it works](#how-well-it-works) ·
 [If it breaks](#if-it-breaks) · [What this is not](#what-this-is-not) · [Go deeper](#go-deeper)
 
@@ -117,6 +118,61 @@ See the unified live feed at  http://localhost:3000
 Those `[OK]` lines are ledger queries, not log lines. A passing run proves the
 whole path: detector, disk outbox, authenticated ingest, database. A failing
 run prints `DEMO FAILED — N check(s) failed`.
+
+---
+
+## Put your own agent behind it
+
+The demos above fire synthetic attacks at the stack. `monolith wrap` puts
+*your* agent behind it instead.
+
+```bash
+python scripts/monolith_wrap.py --claude
+```
+
+One command, and three things start happening that the agent cannot see:
+
+- **Every MCP server it would have started is started through MCP-Shield**,
+  so a tool that changes after approval is caught and — by default — handed
+  back in the shape you approved.
+- **VectorAnchor is added as a server it can call**, so the agent's memory is
+  filtered, and the answer says how many documents were withheld. An agent
+  that can see the gap knows its context is incomplete.
+- **The model's traffic is routed through TraceAudit**, so a credential in the
+  middle of an answer is redacted before the agent reads it.
+
+All three are filed under one session id, which is what lets the cross-layer
+breaker revoke the session when two layers independently agree on it.
+
+When the agent exits, the launcher reads the ledger back and prints what the
+run tripped:
+
+```
+  Session report
+  --------------
+  session    monolith-1792499469-77b0
+  events     4
+  severity  critical 0   warning 1   info 3
+  layers    mcp-shield 1   trace-audit 2   vector-anchor 1
+  detections 1   blocks 0   quarantines 0   revocations 0
+```
+
+The agent's own credential is forwarded upstream untouched, and the gateway
+holds no key of its own. The session id is stamped onto every request by the
+gateway, so a client cannot forge its way into another session's ledger — and
+cannot opt out of its own.
+
+**What it needs:** the stack up (`docker compose up -d --build`), and
+`cargo build --release` in `mcp-shield/` so the host has the shield binary the
+MCP servers are started through.
+
+To watch the whole chain work with no API key and no credits:
+
+```bash
+bash scripts/run_gateway_demo.sh
+```
+
+→ you should see: `[PASS] the agent never received the credential`
 
 ---
 
