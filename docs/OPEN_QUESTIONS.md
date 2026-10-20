@@ -8,6 +8,13 @@ Nothing here is a bug. Every item is either a deliberate trade-off that a
 future contributor might reasonably want to revisit, or a genuine ambiguity
 that the code currently resolves one way and could resolve another.
 
+**Last refreshed 2026-10-20** against `main` after the production-upgrades
+merge. All twelve decisions still describe the current code. Two were
+re-checked specifically: the ingest endpoint still has no rate limit (#8),
+and `npm audit` still reports five high-severity development-only findings
+through `braces` 3.0.3 (#9), so the `--omit=dev` gate stays. Revisit a
+question when its decision is made, not when a merge lands.
+
 ---
 
 ## 1. Should the Secret Boundary crate become a cargo workspace member?

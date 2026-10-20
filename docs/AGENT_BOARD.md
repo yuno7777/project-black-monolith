@@ -34,14 +34,19 @@ Read it before starting work. Write to it while you work.
 
 | Agent | Branch | Working on | State |
 | --- | --- | --- | --- |
-| security | `fix/security-hardening` | retention scoping, evidence verification, fail-closed admin, DLP coverage, breaker batching, baseline locking | 6 commits ahead of `origin/main`, pushed, gates green — **awaiting merge** |
+| security | `fix/security-hardening` | retention scoping, evidence verification, fail-closed admin, DLP coverage, breaker batching, baseline locking | merged into `main` (`3634d23`); branch kept until cleanup |
 | security | `feature/video-explainer` | the AEOS Guard explainer, rescued off a branch that was about to be deleted | pushed, 1 commit |
-| (unassigned) | — | the local `main` tree is 19 commits behind `origin/main` and has an uncommitted file | **needs a `git pull --rebase` before anyone edits `main`** |
-| (unassigned) | — | 5 open Dependabot pull requests, all with green CI | merge the green ones, close the rest |
-| (unassigned) | — | `docs/OPEN_QUESTIONS.md` — 12 open decisions, several stale | write recommendations; a human decides |
+| integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI running |
+| security | Dependabot | #24 merged; #47 closed as superseded; #26 hmac migration in progress | finish #26, then the queue is clear |
 
 The project is moving to user-facing features. The work below is the
 security and operations tail; the board is here so it is not lost.
+
+The 2026-10-20 refresh found all twelve open questions still accurate; see
+the note at the top of `docs/OPEN_QUESTIONS.md`. One collaboration race
+happened: a branch was switched in the shared `main` worktree while another
+agent was merging, so the merge landed on the new branch and had to be moved
+to `main` by ref. Use a dedicated worktree for every branch.
 
 ## Claims
 
@@ -52,7 +57,7 @@ security and operations tail; the board is here so it is not lost.
 | `dashboard/lib/login-rate-limit.ts`, `dashboard/scripts/dispatch-alerts.mjs` | security | rate limiting and alert delivery |
 | `supabase/migrations/**` | security | retention scoping migration |
 | `contracts/openapi.yaml` | security | corrected the revocation snapshot wording |
-| `main` | — | **nobody.** The integrator merges; everyone else rebases. |
+| `main` | integrator | Merges and verification only; branch work happens in a worktree. |
 
 Free to claim: `vector-anchor/**`, `trace-audit/**`, `dashboard/app/api/operations/**`,
 `dashboard/app/api/benchmarks/**`, `docs/OPEN_QUESTIONS.md`, the Dependabot
@@ -64,11 +69,11 @@ queue.
 | --- | --- | --- | --- |
 | 1 | Module dead-letter replay is global while the database half of the same function is tenant-scoped, so a tenant admin replays other tenants' dead letters. | `dashboard/lib/operations-store.ts` | medium |
 | 2 | The ingest response carries the tenant's whole revocation set on every request, so the payload grows with the total number of quarantines. The fix needs the dashboard *and* `python-common` to agree on snapshot-versus-delta. | `dashboard/app/api/ingest/route.ts`, `python-common/monolith_events/events.py` | low — contract change |
-| 3 | `docs/OPEN_QUESTIONS.md` — refresh against what has landed. | `docs/OPEN_QUESTIONS.md` | medium |
-| 4 | The AWS secret access key has no detector. Deliberately: 40 characters of base64 has a false-positive rate that would hard-block ordinary calls. Needs a shape-aware detector, not a regex. | `mcp-shield/src/sanitizer.rs` | low |
+| 3 | The AWS secret access key has no detector. Deliberately: 40 characters of base64 has a false-positive rate that would hard-block ordinary calls. Needs a shape-aware detector, not a regex. | `mcp-shield/src/sanitizer.rs` | low |
 
 Done: the breaker's per-candidate query is now one query for the whole
-batch, and the baseline is locked across its read-modify-write cycle.
+batch, the baseline is locked across its read-modify-write cycle, and the
+open questions were refreshed on 2026-10-20.
 
 ## Verification
 
@@ -107,4 +112,4 @@ doing. It is a last resort, not a workflow — the board is the workflow.
 | --- | --- |
 | `archive/pre-automation-snapshot` | The pre-automation snapshot of the codebase, and the only copy of the `.commandcode/` preferences record. Tagged `archive/pre-automation-2026-08-28`. |
 | `feature/video-explainer` | The AEOS Guard explainer. The `video/` project existed only on a branch that was scheduled for deletion. |
-| `fix/security-hardening` | Until its commits are merged into `main`. |
+| `fix/security-hardening` | Merged into `main`; keep the branch and worktree until their owner confirms there is no further work. |
