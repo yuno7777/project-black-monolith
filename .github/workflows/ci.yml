@@ -25,6 +25,14 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
+      - name: Install pinned quality tools
+        run: python -m pip install --require-hashes -r requirements-quality.lock
+      - name: Lint the native tooling
+        # The launcher carries the agent's credential through the gateway, so
+        # it is worth the same lint gate the modules get. Nothing linted this
+        # directory before, and two ruff errors in it went unnoticed until a
+        # CI run failed on the same class of error one directory over.
+        run: python -m ruff check scripts
       - name: Verify native configuration and process lifecycle
         run: |
           python -m unittest discover -s scripts/tests -v
