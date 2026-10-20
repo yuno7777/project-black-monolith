@@ -5,6 +5,21 @@ folded into `main`, and what was decided at each conflict. It exists so the
 integration can survive a context compaction, and so a reviewer can see why
 each side was chosen where two sides differed.
 
+> **Update — the branch state below has moved on.**
+>
+> - `feat/production-upgrades` and the four `subagent-*` workstream branches
+>   have been merged into `main` (`7da5cdc`) and the worktrees removed.
+>   The commits below are history, not pending work.
+> - `fix/security-hardening` is **no longer a duplicate**. It was a
+>   byte-identical copy of `feat/production-upgrades` at `e8eb1bc`, and the
+>   instructions further down said to delete it. It has since taken two
+>   security-fix commits of its own, one of which is already in `main` via
+>   `a0a88f6` and one of which is not yet merged. **Do not delete it, and do
+>   not remove its worktree, until its remaining commit is in `main`.**
+> - `codex/preserve-local-work-2026-08-28` still holds the `video/`
+>   explainer project, which exists nowhere else. The instruction to move it
+>   before deleting the branch still stands, and nothing has done it yet.
+
 ## The branches
 
 `feat/production-upgrades` is the integration branch. It already contains all
@@ -24,9 +39,11 @@ The four workstream branches are therefore **ancestors** of
 `feat/production-upgrades` and carry no unique content. They are safe to
 delete once the integration lands.
 
-`fix/security-hardening` points at the same commit as
-`feat/production-upgrades` (`e8eb1bc`) and is a duplicate. Its worktree
-lives at a stale path under the system temp directory and can be removed.
+`fix/security-hardening` started as a copy of `feat/production-upgrades`
+at `e8eb1bc` and has since diverged: it now carries the security fixes
+that followed the review of that branch. See the update at the top of this
+document. Its worktree lives at a stale path under the system temp
+directory; it can be removed once its remaining commit is merged.
 
 ## The merge shape
 
@@ -116,12 +133,15 @@ The integration is only landed when all of these pass:
 ## After the merge
 
 - Delete the four `subagent-*` branches: all four point at `268e17f` and
-  carry nothing unique.
-- Delete `fix/security-hardening` and remove its stale worktree: it is a
-  byte-identical duplicate of `feat/production-upgrades`.
+  carry nothing unique. **Done** — they are merged and removed.
+- Delete `fix/security-hardening` and remove its stale worktree **only once
+  its remaining commit is in `main`**. It is no longer a byte-identical
+  duplicate of `feat/production-upgrades`; it carries security fixes.
 - Move the `video/` explainer project off `codex/preserve-local-work-2026-08-28`
   — that branch is 31 commits stale and is the only place that work
-  exists — then delete the branch.
+  exists — then delete the branch. **Still outstanding.** The project is a
+  Remotion app plus a rendered 14 MB mp4, and it is not an ancestor of
+  `main`, so deleting the branch today would destroy it.
 - Triage the 32 open Dependabot pull requests: merge the ones whose CI is
   green, close the rest. That is where the remote branch count actually
   goes.
