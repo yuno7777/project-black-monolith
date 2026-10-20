@@ -22,6 +22,7 @@ import { test } from "node:test";
 import { GET as sessionsGet } from "../app/api/sessions/route";
 import { clearMemoryEvents, normalizeEvent, persistEvents } from "../lib/event-store";
 import { listRecentSessions } from "../lib/onboarding-store";
+import type { MonolithEvent } from "../lib/types";
 
 const VIEWER_TOKEN = "viewer-operator-token-00000";
 const OTHER_TENANT_TOKEN = "viewer-operator-token-00001";
@@ -130,7 +131,7 @@ type SeedEvent = {
 };
 
 /** A seed, in the shape the in-memory ledger stores it. */
-function toLedgerEvent(seed: SeedEvent): Record<string, unknown> {
+function toLedgerEvent(seed: SeedEvent): MonolithEvent {
   return {
     ...normalizeEvent({
       event_id: randomUUID(),
