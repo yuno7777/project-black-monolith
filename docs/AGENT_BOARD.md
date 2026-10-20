@@ -34,6 +34,7 @@ Read it before starting work. Write to it while you work.
 
 | Agent | Branch | Working on | State |
 | --- | --- | --- | --- |
+| gateway-review | `fix/gateway-review-fixes` | the eleven findings from the agent-gateway review: credential containment in the shield and the launcher, the reasoning layer's answer path, the memory layer's attribution rule, the dashboard's session report | in progress; worktree `C:/Users/Abhi/Desktop/monolith-wt/gateway-fixes`; branched off `fix/credential-redaction-success-path` so the credential-redaction work is included |
 | security | `fix/security-hardening` | retention scoping, evidence verification, fail-closed admin, DLP coverage, breaker batching, baseline locking | merged into `main` (`3634d23`); branch kept until cleanup |
 | security | `feature/video-explainer` | the AEOS Guard explainer, rescued off a branch that was about to be deleted | pushed, 1 commit |
 | integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI green on `b19513b` |
@@ -85,6 +86,12 @@ to `main` by ref. Use a dedicated worktree for every branch.
 
 | Path | Claimed by | Note |
 | --- | --- | --- |
+| `mcp-shield/src/proxy.rs` | gateway-review | the child environment. Overlaps the standing `mcp-shield/src/**` claim, whose batch merged on 2026-10-20; coordinate if `agent/security/fail-closed-config` lands in the same file |
+| `scripts/monolith_wrap.py` | gateway-review | the launcher's child environment and the plan redactor |
+| `trace-audit/src/anthropic_gateway.py`, `trace-audit/src/stream_proxy.py`, `trace-audit/src/pii_scanner.py`, `trace-audit/src/main.py` | gateway-review | the answer path: the cross-block credential leak, the citation delta, the Anthropic key pattern, the refusal stream, the baseline model, the token ceiling |
+| `vector-anchor/src/mcp_server.py`, `vector-anchor/src/retriever_proxy.py` | gateway-review | session attribution on the retrieve path |
+| `dashboard/lib/session-report.ts`, `dashboard/app/api/sessions/[sessionId]/route.ts` | gateway-review | taken over from `add-agent-onboarding`, which offered it; the peer recorded it as "owned by peer session" and does not touch it |
+| `docs/FINDINGS.md` | gateway-review | the eleven findings land here, each with the commit that fixes it |
 | `mcp-shield/src/**` | security | through the 2026-10-20 review batch |
 | `dashboard/lib/incident-store.ts`, `dashboard/app/api/ingest/**` | security | circuit breaker and ingest path |
 | `dashboard/lib/login-rate-limit.ts`, `dashboard/scripts/dispatch-alerts.mjs` | security | rate limiting and alert delivery |
@@ -92,9 +99,10 @@ to `main` by ref. Use a dedicated worktree for every branch.
 | `contracts/openapi.yaml` | security | corrected the revocation snapshot wording |
 | `main` | integrator | Merges and verification only; branch work happens in a worktree. |
 
-Free to claim: `vector-anchor/**`, `trace-audit/**`, `dashboard/app/api/operations/**`,
-`dashboard/app/api/benchmarks/**`, `docs/OPEN_QUESTIONS.md`, the Dependabot
-queue.
+Free to claim: `vector-anchor/**` (apart from the two files above),
+`trace-audit/**` (apart from the four files above),
+`dashboard/app/api/operations/**`, `dashboard/app/api/benchmarks/**`,
+`docs/OPEN_QUESTIONS.md`, the Dependabot queue.
 
 ## Standing work
 
