@@ -87,19 +87,62 @@ fixture (3.29) crosses decisively.
 | ---------------- | ---------------------------------------------------------- |
 | `GET  /health`   | minimal liveness response                                  |
 | `POST /generate` | `{prompt, max_tokens?}` → SSE token stream (audited)        |
+| `POST /v1/messages` | Anthropic Messages API, audited (see below)              |
 | `GET  /stats`    | admin-authenticated detector + delivery health              |
 
 Each SSE `data:` line is a JSON event: `{type: "token", token, kl, threshold}`,
 `{type: "pii", label, redacted}`, `{type: "terminated", reason, kl, safe_refusal}`,
 or `{type: "done", peak_kl, tokens}`.
 
+## The Anthropic gateway (`POST /v1/messages`)
+
+`POST /v1/messages` is the Messages API every Anthropic client already
+speaks, put behind the auditor. Point a client's base URL at it and the
+answer is inspected as it arrives:
+
+- **The client's own credential is forwarded upstream untouched.** The gateway
+  holds no key of its own unless the operator configured one as a fallback
+  (`MONOLITH_ANTHROPIC_API_KEY`). A request that carries neither header is
+  rejected rather than sent unauthenticated.
+- **The body is forwarded byte for byte.** The only change is that the
+  upstream is always asked to stream, because the audit needs the stream; a
+  client that wanted one JSON document gets one, assembled here.
+- **The credential in the middle of an answer is redacted** before the client
+  sees it, and the redaction is reported to the ledger as `pii_redacted`.
+- **Divergence detection is only enabled when the baseline belongs to the
+  model being asked.** A baseline captured from a different model would make
+  the KL score meaningless — it would terminate ordinary traffic — so the
+  gateway disables it and records a one-shot `divergence_disabled` event
+  saying why. Credential redaction is model-independent and always runs.
+- **The operator's token ceiling is a ceiling.** A request asking for more
+  tokens than `MONOLITH_ANTHROPIC_MAX_TOKENS` is rejected with `400` rather
+  than silently truncated.
+- **A revoked session is refused** before the upstream is contacted.
+
+To try it with no API key and no credits:
+
+```sh
+python fixtures/fake_anthropic_server.py --port 8100 --mode secret
+MONOLITH_MODEL_BACKEND=anthropic \
+MONOLITH_ANTHROPIC_BASE_URL=http://127.0.0.1:8100 \
+  python -m uvicorn src.main:app --port 8002
+```
+
+The stub leaks AWS's own published example key — a value that exists in the
+AWS documentation so scanners can recognise it, and which is not a credential
+to anything.
+
 ## Configuration (environment variables)
 
 | Variable                    | Default    | Purpose                                        |
 | --------------------------- | ---------- | ---------------------------------------------- |
-| `MONOLITH_MODEL_BACKEND`    | `mock`     | `mock` (offline) or `ollama`                   |
+| `MONOLITH_MODEL_BACKEND`    | `mock`     | `mock` (offline), `ollama`, or `anthropic`      |
 | `MONOLITH_OLLAMA_URL`       | `http://localhost:11434` | Ollama base URL (ollama backend) |
 | `MONOLITH_OLLAMA_MODEL`     | `llama3.2` | model name (ollama backend)                    |
+| `MONOLITH_ANTHROPIC_BASE_URL`| `https://api.anthropic.com` | upstream for the Messages gateway |
+| `MONOLITH_ANTHROPIC_API_KEY`| *(unset)*  | fallback credential when the client sends none |
+| `MONOLITH_ANTHROPIC_MODEL`  | *(unset)*  | pin the upstream model regardless of the request |
+| `MONOLITH_ANTHROPIC_MAX_TOKENS` | `8192` | hard ceiling on `max_tokens` per request     |
 | `MONOLITH_BASELINE_PATH`    | `./baseline_distribution.json` | baseline distribution file |
 | `MONOLITH_KL_THRESHOLD`     | `1.0`      | divergence threshold for termination (derived; see above) |
 | `MONOLITH_TA_WINDOW`        | `20`       | rolling token window size                      |
@@ -132,11 +175,15 @@ appear raw in the client stream). The script prints `DEMO PASSED`.
 
 ## Known limitations
 
-- PII output uses a 16-token look-behind, so ordinary cross-token credential
-  splits are redacted before any fragment is released. A credential fragmented
-  across more than 16 tokens can outlive the bounded window; increasing it
-  trades more first-token latency for more coverage.
+- PII output holds text back in a bounded 256-character look-behind, so a
+  credential split across fragments is redacted before any fragment is
+  released. A credential longer than that window can outlive it; increasing
+  the window trades more first-token latency for more coverage.
 - The KL baseline is intentionally small for a fast demo; a production
   baseline would be captured from a large, representative prompt set.
 - Divergence detection flags *distributional* anomaly, not semantics — it is
   a stand-in for a real alignment-evasion classifier, not a substitute.
+- Against a real model, divergence detection stays **off** until a baseline
+  captured from that same model is loaded. The shipped baseline came from the
+  mock backend, so scoring a real model's output against it would terminate
+  ordinary traffic. Credential redaction is unaffected and always runs.

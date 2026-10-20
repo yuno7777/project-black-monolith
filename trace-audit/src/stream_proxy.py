@@ -146,6 +146,12 @@ POLICY_VERSION = "trace-audit/3"
 class _BufferedToken:
     token: str
     kl: float | None
+    # The push index of the fragment this text came from. It survives
+    # redaction, prefix releases and fragment splitting, so a caller that
+    # owns several logical streams (one per Anthropic content block, say) can
+    # attribute released text back to the exact fragment it belongs to even
+    # after a match rewrote it.
+    index: int = -1
 
 
 @dataclass
@@ -166,8 +172,14 @@ class PiiStreamBuffer:
         self.max_chars = max_chars
         self._suppress_run = False
         self._pending: list[_BufferedToken] = []
+        self._next_index = 0
 
     def push(self, token: str, kl: float | None) -> _BufferDrain:
+        # Every push consumes exactly one index — even one the suppressor
+        # swallows whole — so a caller's index bookkeeping stays aligned with
+        # the buffer's no matter how the text is later redacted.
+        index = self._next_index
+        self._next_index += 1
         if self._suppress_run:
             # Continue withholding an overlong unbroken candidate until its end.
             boundary = next((i for i, char in enumerate(token) if char.isspace()), None)
@@ -175,8 +187,18 @@ class PiiStreamBuffer:
                 return _BufferDrain([], [])
             token = token[boundary:]
             self._suppress_run = False
-        self._pending.append(_BufferedToken(token, kl))
+        self._pending.append(_BufferedToken(token, kl, index))
         return self._drain(force=False)
+
+    def released_through(self) -> int:
+        """Highest push index whose text has fully left the buffer.
+
+        A fragment that a redaction removed entirely still counts as released:
+        it is gone from `_pending` and will never produce output.
+        """
+        if not self._pending:
+            return self._next_index - 1
+        return min(item.index for item in self._pending) - 1
 
     def finish(self) -> _BufferDrain:
         return self._drain(force=True)
@@ -206,11 +228,15 @@ class PiiStreamBuffer:
                 if end <= self.max_chars:
                     return _BufferDrain([], [])
                 text = "".join(item.token for item in self._pending)
+                # The placeholder stands in for text that started in the first
+                # pending fragment, so it is attributed to that fragment.
+                first_index = self._pending[0].index
                 self._pending.clear()
                 self._suppress_run = True
                 match = PiiMatch("overlong_sensitive_candidate", 0, end, text)
                 return _BufferDrain(
-                    [_BufferedToken("[REDACTED:overlong_sensitive_candidate]", None)], [match]
+                    [_BufferedToken("[REDACTED:overlong_sensitive_candidate]", None, first_index)],
+                    [match],
                 )
         if matches:
             # A complete match cannot authorize release of the suffix: that
@@ -222,9 +248,9 @@ class PiiStreamBuffer:
             for item in original:
                 take = max(0, min(len(item.token), end - position))
                 if take:
-                    prefix.append(_BufferedToken(item.token[:take], item.kl))
+                    prefix.append(_BufferedToken(item.token[:take], item.kl, item.index))
                 if take < len(item.token):
-                    suffix.append(_BufferedToken(item.token[take:], item.kl))
+                    suffix.append(_BufferedToken(item.token[take:], item.kl, item.index))
                 position += len(item.token)
             self._pending = prefix
             outputs, applied = self._redact_matches(matches)
@@ -246,11 +272,12 @@ class PiiStreamBuffer:
                 return _BufferDrain(self._release_prefix(boundary + 1), [])
             # No safe boundary: a candidate may be arbitrarily long. Withhold
             # it instead of leaking its prefix, and consume its continuation.
+            first_index = self._pending[0].index
             self._pending.clear()
             self._suppress_run = True
             match = PiiMatch("overlong_sensitive_candidate", 0, len(text), text)
             return _BufferDrain(
-                [_BufferedToken("[REDACTED:overlong_sensitive_candidate]", None)], [match]
+                [_BufferedToken("[REDACTED:overlong_sensitive_candidate]", None, first_index)], [match]
             )
         return _BufferDrain([], [])
 
@@ -259,12 +286,12 @@ class PiiStreamBuffer:
         while count and self._pending:
             item = self._pending[0]
             take = min(count, len(item.token))
-            outputs.append(_BufferedToken(item.token[:take], item.kl))
+            outputs.append(_BufferedToken(item.token[:take], item.kl, item.index))
             count -= take
             if take == len(item.token):
                 self._pending.pop(0)
             else:
-                self._pending[0] = _BufferedToken(item.token[take:], item.kl)
+                self._pending[0] = _BufferedToken(item.token[take:], item.kl, item.index)
         return outputs
 
     def _matches_ending_in_latest(self) -> list[PiiMatch]:
@@ -309,7 +336,7 @@ class PiiStreamBuffer:
             last_start = match.start
 
         outputs = [
-            _BufferedToken(fragment, item.kl)
+            _BufferedToken(fragment, item.kl, item.index)
             for fragment, item in zip(fragments, self._pending, strict=True)
             if fragment
         ]
@@ -567,6 +594,25 @@ def _backend_stream(
     return _mock_stream(prompt, max_tokens)
 
 
+class _Flush:
+    """Sentinel asking the auditor to release its look-behind buffer now.
+
+    The buffer holds text back so a credential split across two fragments can
+    still be recognized as one. A caller that frames one model's answer into
+    several logical blocks needs that text released at the block boundary
+    rather than at the end of the whole answer, or the client would receive a
+    block's text after the block was already closed.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "<flush>"
+
+
+FLUSH = _Flush()
+
+
 class StreamAuditor:
     """Wraps a backend token stream with divergence + PII interception and
     yields event dicts ready for SSE serialization."""
@@ -594,17 +640,6 @@ class StreamAuditor:
         # MONOLITH_MAX_TOKENS is an operator-owned ceiling, not merely a
         # default that an untrusted request may override upward.
         max_tokens = min(max_tokens or self.cfg.max_tokens, self.cfg.max_tokens)
-        start = now_ms()
-        monitor = DivergenceMonitor(
-            baseline_counts=self.baseline_counts,
-            threshold=self.cfg.kl_threshold,
-            window_size=self.cfg.window_size,
-            min_tokens_before_check=self.cfg.min_tokens_before_check,
-            smoothing=self.cfg.smoothing,
-        )
-        reported_secrets: set[bytes] = set()
-        peak_kl = 0.0
-        pii_buffer = PiiStreamBuffer()
 
         if messages is None and model is None and temperature is None:
             stream = _backend_stream(prompt, max_tokens, self.cfg)
@@ -621,57 +656,112 @@ class StreamAuditor:
             except TypeError:
                 stream = _backend_stream(prompt, max_tokens, self.cfg)
 
-        try:
-            async for token in stream:
-                if isinstance(token, dict) and "error" in token:
-                    pii_buffer.clear()
-                    yield {"type": "error", "error": token["error"]}
-                    return
-                if not token:
+        async for evt in self.audit_tokens(stream, ctx):
+            yield evt
+
+    async def audit_tokens(
+        self,
+        source: AsyncIterator,
+        ctx: EventContext | None = None,
+        *,
+        divergence_enabled: bool = True,
+        emit_sync: bool = False,
+    ) -> AsyncIterator[dict]:
+        """Audit a token stream somebody else produced.
+
+        `source` yields plain strings (reasoning fragments) and may yield the
+        module-level `FLUSH` sentinel to ask for the bounded look-behind to be
+        released right now. `divergence_enabled` is False when the loaded
+        baseline was captured from a different model than the one answering:
+        the KL numbers would be meaningless, and terminating on them would
+        refuse ordinary traffic. PII redaction is model-independent and always
+        runs.
+        """
+        start = now_ms()
+        monitor = DivergenceMonitor(
+            baseline_counts=self.baseline_counts,
+            threshold=self.cfg.kl_threshold,
+            window_size=self.cfg.window_size,
+            min_tokens_before_check=self.cfg.min_tokens_before_check,
+            smoothing=self.cfg.smoothing,
+        )
+        reported_secrets: set[bytes] = set()
+        peak_kl = 0.0
+        pii_buffer = PiiStreamBuffer()
+
+        async def _redactions(matches) -> AsyncIterator[dict]:
+            for m in matches:
+                fingerprint = _secret_fingerprint(m.value)
+                if fingerprint in reported_secrets:
                     continue
+                reported_secrets.add(fingerprint)
+                self.emit(
+                    "pii_redacted",
+                    "warning",
+                    {
+                        "label": m.label,
+                        "redacted_as": f"[REDACTED:{m.label}]",
+                        "position_tokens": monitor.tokens_seen,
+                    },
+                    ctx,
+                    resource_type="reasoning_trace",
+                    resource_id=ctx.trace_id if ctx else None,
+                    outcome="redacted",
+                    policy_version=POLICY_VERSION,
+                )
+                yield {
+                    "type": "pii",
+                    "label": m.label,
+                    "redacted": f"[REDACTED:{m.label}]",
+                }
+
+        async def _released(drain: _BufferDrain) -> AsyncIterator[dict]:
+            async for evt in _redactions(drain.matches):
+                yield evt
+            for outgoing in drain.outputs:
+                yield {
+                    "type": "token",
+                    "token": outgoing.token,
+                    "kl": round(outgoing.kl, 4) if outgoing.kl is not None else None,
+                    "threshold": self.cfg.kl_threshold,
+                    "source_index": outgoing.index,
+                }
+
+        try:
+            async for item in source:
+                if item is FLUSH:
+                    drain = pii_buffer.finish()
+                    async for evt in _released(drain):
+                        yield evt
+                    if emit_sync:
+                        yield {
+                            "type": "sync",
+                            "released_through": pii_buffer.released_through(),
+                        }
+                    continue
+                if isinstance(item, dict) and "error" in item:
+                    pii_buffer.clear()
+                    yield {"type": "error", "error": item["error"]}
+                    return
+                if not item:
+                    continue
+                token = item
 
                 # Observe the reasoning token immediately; only client delivery is
                 # delayed by the bounded PII look-behind.
                 kl = monitor.observe(token)
-                if kl is not None:
+                if kl is not None and divergence_enabled:
                     peak_kl = max(peak_kl, kl)
 
                 drain = pii_buffer.push(token, kl)
-                if drain.matches:
-                    for m in drain.matches:
-                        fingerprint = _secret_fingerprint(m.value)
-                        if fingerprint in reported_secrets:
-                            continue
-                        reported_secrets.add(fingerprint)
-                        self.emit(
-                            "pii_redacted",
-                            "warning",
-                            {
-                                "label": m.label,
-                                "redacted_as": f"[REDACTED:{m.label}]",
-                                "position_tokens": monitor.tokens_seen,
-                            },
-                            ctx,
-                            resource_type="reasoning_trace",
-                            resource_id=ctx.trace_id if ctx else None,
-                            outcome="redacted",
-                            policy_version=POLICY_VERSION,
-                        )
-                        yield {
-                            "type": "pii",
-                            "label": m.label,
-                            "redacted": f"[REDACTED:{m.label}]",
-                        }
+                async for evt in _released(drain):
+                    yield evt
+                if emit_sync and not drain.outputs:
+                    # Tell the caller the buffer took the fragment, so it can
+                    # emit the events that were waiting behind it.
+                    yield {"type": "sync", "released_through": pii_buffer.released_through()}
 
-                for outgoing in drain.outputs:
-                    yield {
-                        "type": "token",
-                        "token": outgoing.token,
-                        "kl": round(outgoing.kl, 4) if outgoing.kl is not None else None,
-                        "threshold": self.cfg.kl_threshold,
-                    }
-
-                if kl is not None and monitor.is_divergent(kl):
+                if divergence_enabled and kl is not None and monitor.is_divergent(kl):
                     # Never release look-behind fragments after a terminated trace.
                     pii_buffer.clear()
                     self.emit(
@@ -713,38 +803,8 @@ class StreamAuditor:
             return
 
         drain = pii_buffer.finish()
-        if drain.matches:
-            for m in drain.matches:
-                fingerprint = _secret_fingerprint(m.value)
-                if fingerprint in reported_secrets:
-                    continue
-                reported_secrets.add(fingerprint)
-                self.emit(
-                    "pii_redacted",
-                    "warning",
-                    {
-                        "label": m.label,
-                        "redacted_as": f"[REDACTED:{m.label}]",
-                        "position_tokens": monitor.tokens_seen,
-                    },
-                    ctx,
-                    resource_type="reasoning_trace",
-                    resource_id=ctx.trace_id if ctx else None,
-                    outcome="redacted",
-                    policy_version=POLICY_VERSION,
-                )
-                yield {
-                    "type": "pii",
-                    "label": m.label,
-                    "redacted": f"[REDACTED:{m.label}]",
-                }
-        for outgoing in drain.outputs:
-            yield {
-                "type": "token",
-                "token": outgoing.token,
-                "kl": round(outgoing.kl, 4) if outgoing.kl is not None else None,
-                "threshold": self.cfg.kl_threshold,
-            }
+        async for evt in _released(drain):
+            yield evt
 
         self.emit(
             "generation_completed",
@@ -753,6 +813,7 @@ class StreamAuditor:
                 "tokens": monitor.tokens_seen,
                 "peak_kl": round(peak_kl, 4),
                 "latency_ms": now_ms() - start,
+                "divergence_enabled": divergence_enabled,
             },
             ctx,
             resource_type="reasoning_trace",
@@ -760,7 +821,11 @@ class StreamAuditor:
             outcome="completed",
             policy_version=POLICY_VERSION,
         )
-        yield {"type": "done", "peak_kl": round(peak_kl, 4), "tokens": monitor.tokens_seen}
+        yield {
+            "type": "done",
+            "peak_kl": round(peak_kl, 4),
+            "tokens": monitor.tokens_seen,
+        }
 
     audit_stream = audit
 

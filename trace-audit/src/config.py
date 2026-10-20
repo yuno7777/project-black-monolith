@@ -63,6 +63,24 @@ class Config:
     openai_api_key: str | None = None
     openai_model: str = "default"
 
+    # --- Anthropic gateway ---------------------------------------------
+    # The Messages API endpoint Claude Code and every other Anthropic client
+    # speaks. The gateway is transparent: it forwards the request upstream and
+    # pipes the answer back through the auditor.
+    anthropic_base_url: str = "https://api.anthropic.com"
+    # Credential used when the incoming request carries none. When it is
+    # unset the client's own credential is forwarded instead, so the gateway
+    # can sit in front of a normal Anthropic client without holding a key.
+    anthropic_api_key: str | None = None
+    # Override the model the upstream request names. Empty means "use the
+    # model the client asked for".
+    anthropic_model: str | None = None
+    # Ceiling on the tokens a single upstream request may ask for. Unlike
+    # MONOLITH_MAX_TOKENS (which truncates a generated stream) this one
+    # rejects the request, because truncating an answer mid-way would leave
+    # the client with a half-message it cannot parse.
+    anthropic_max_tokens: int = 8192
+
 
 def _valid_bearer_token(value: str) -> bool:
     return len(value) >= 16 and all(
@@ -84,8 +102,10 @@ def _validate_id(name: str, value: str | None, *, required: bool = False) -> Non
 
 
 def _validate_config(cfg: Config) -> Config:
-    if cfg.model_backend not in {"mock", "ollama", "openai"}:
-        raise ValueError("MONOLITH_MODEL_BACKEND must be 'mock', 'ollama', or 'openai'")
+    if cfg.model_backend not in {"mock", "ollama", "openai", "anthropic"}:
+        raise ValueError(
+            "MONOLITH_MODEL_BACKEND must be 'mock', 'ollama', 'openai', or 'anthropic'"
+        )
     if not cfg.ollama_base_url.startswith(("http://", "https://")):
         raise ValueError("MONOLITH_OLLAMA_URL must use http:// or https://")
     ollama_model = cfg.ollama_model.strip()
@@ -114,6 +134,26 @@ def _validate_config(cfg: Config) -> Config:
         raise ValueError("MONOLITH_OPENAI_API_KEY must be printable header-safe characters")
     if not cfg.baseline_path.strip():
         raise ValueError("MONOLITH_BASELINE_PATH must not be blank")
+    if not cfg.anthropic_base_url.startswith(("http://", "https://")):
+        raise ValueError("MONOLITH_ANTHROPIC_BASE_URL must use http:// or https://")
+    if cfg.anthropic_api_key is not None and (
+        not cfg.anthropic_api_key.strip()
+        or any(
+            not character.isprintable() or character in "\r\n"
+            for character in cfg.anthropic_api_key
+        )
+    ):
+        raise ValueError("MONOLITH_ANTHROPIC_API_KEY must be printable header-safe characters")
+    if cfg.anthropic_model is not None:
+        anthropic_model = cfg.anthropic_model.strip()
+        if (
+            not anthropic_model
+            or len(anthropic_model.encode("utf-8")) > 128
+            or any(not character.isprintable() for character in anthropic_model)
+        ):
+            raise ValueError("MONOLITH_ANTHROPIC_MODEL must be 1-128 printable UTF-8 bytes")
+    if not 1 <= cfg.anthropic_max_tokens <= 1_000_000:
+        raise ValueError("MONOLITH_ANTHROPIC_MAX_TOKENS must be between 1 and 1000000")
     if not math.isfinite(cfg.kl_threshold) or not 0 < cfg.kl_threshold <= 100:
         raise ValueError("MONOLITH_KL_THRESHOLD must be greater than 0 and at most 100")
     if not 1 <= cfg.window_size <= 10_000:
@@ -170,5 +210,13 @@ def load_config() -> Config:
         ),
         openai_api_key=os.environ.get("MONOLITH_OPENAI_API_KEY") or None,
         openai_model=os.environ.get("MONOLITH_OPENAI_MODEL", "default"),
+        anthropic_base_url=os.environ.get(
+            "MONOLITH_ANTHROPIC_BASE_URL", "https://api.anthropic.com"
+        ).rstrip("/"),
+        anthropic_api_key=os.environ.get("MONOLITH_ANTHROPIC_API_KEY") or None,
+        anthropic_model=os.environ.get("MONOLITH_ANTHROPIC_MODEL") or None,
+        anthropic_max_tokens=int(
+            os.environ.get("MONOLITH_ANTHROPIC_MAX_TOKENS", "8192")
+        ),
     )
     return _validate_config(cfg)

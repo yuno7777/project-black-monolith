@@ -19,13 +19,23 @@ from contextlib import asynccontextmanager
 from secrets import compare_digest
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .config import MODULE_NAME, load_config
 from .events import EventContext, context_from_headers, is_session_revoked, make_emitter, now_ms
 from .stream_proxy import POLICY_VERSION, SAFE_REFUSAL, StreamAuditor
+from .anthropic_gateway import (
+    AnthropicRelay,
+    build_upstream_request,
+    collect_message,
+    iter_sse_events,
+    relay_sse,
+    standalone_refusal_sse,
+    upstream_timeout,
+)
 
 # Sessions this process already refused, so the refusal event fires once per
 # session instead of once per request from a retrying agent.
@@ -279,6 +289,29 @@ def _load_baseline(path: str) -> dict[str, int]:
     raise ValueError("baseline distribution must contain a counts object")
 
 
+def _load_baseline_model(path: str) -> str | None:
+    """Which model the loaded baseline was captured from, if it says.
+
+    A KL divergence score is only meaningful against a baseline from the
+    same model: the token distribution of one model says nothing about
+    another's. A baseline with no recorded model is treated as
+    model-agnostic, and the gateway refuses to use it for termination.
+    """
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    model = data.get("model")
+    if isinstance(model, str) and model.strip():
+        return model.strip()
+    return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     cfg = load_config()
@@ -293,11 +326,13 @@ async def lifespan(app: FastAPI):
         allow_insecure_http=cfg.allow_insecure_dashboard,
     )
     baseline_counts = _load_baseline(cfg.baseline_path)
+    baseline_model = _load_baseline_model(cfg.baseline_path)
     auditor = StreamAuditor(cfg, baseline_counts, emit)
     app.state.cfg = cfg
     app.state.emit = emit
     app.state.baseline_counts = baseline_counts
     app.state.baseline = baseline_counts
+    app.state.baseline_model = baseline_model
     app.state.auditor = auditor
     app.state.proxy = auditor
     emit(
@@ -308,6 +343,7 @@ async def lifespan(app: FastAPI):
             "backend": cfg.model_backend,
             "baseline_tokens": sum(baseline_counts.values()),
             "baseline_vocab": len(baseline_counts),
+            "baseline_model": baseline_model,
         },
     )
     if not baseline_counts:
@@ -401,6 +437,7 @@ async def reload_baseline(request: Request) -> dict:
 
     app.state.baseline_counts = baseline_counts
     app.state.baseline = baseline_counts
+    app.state.baseline_model = _load_baseline_model(cfg.baseline_path)
     emit = getattr(app.state, "emit", lambda *_a, **_kw: None)
     auditor = StreamAuditor(cfg, baseline_counts, emit)
     app.state.auditor = auditor
@@ -669,3 +706,170 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
     if upstream_error is not None:
         result["error"] = upstream_error
     return result
+
+
+# --- Anthropic Messages gateway -------------------------------------------
+#
+# Claude Code and every other Anthropic client speak this endpoint. The
+# request is forwarded upstream unchanged and the answer comes back through
+# the auditor, so a credential the model emits is redacted before the agent
+# reads it. The wire format is preserved exactly: a client that cannot tell
+# the difference is the point.
+
+MAX_MESSAGES_BODY_BYTES = 4 * 1024 * 1024
+
+# One notice per (baseline model, requested model) pair, so a busy gateway
+# does not write a ledger row for every request it declines to score.
+_DIVERGENCE_NOTICES: set[tuple[str | None, str]] = set()
+_DIVERGENCE_NOTICE_LOCK = threading.Lock()
+
+
+def _divergence_notice_once(
+    baseline_model: str | None, requested_model: str, reason: str
+) -> None:
+    key = (baseline_model, requested_model)
+    with _DIVERGENCE_NOTICE_LOCK:
+        if key in _DIVERGENCE_NOTICES:
+            return
+        _DIVERGENCE_NOTICES.add(key)
+    emit = getattr(app.state, "emit", None)
+    if emit is None:
+        return
+    emit(
+        "divergence_disabled",
+        "info",
+        {
+            "requested_model": requested_model,
+            "baseline_model": baseline_model,
+            "reason": reason,
+            "message": (
+                "divergence detection is off for this model: the loaded baseline "
+                "was captured from a different model, so its KL scores would not "
+                "mean anything. Credential redaction still applies."
+            ),
+        },
+        resource_type="reasoning_trace",
+        outcome="divergence_disabled",
+        policy_version=POLICY_VERSION,
+    )
+
+
+@app.post("/v1/messages")
+async def messages(request: Request):
+    """The Anthropic Messages API, guarded.
+
+    The client's own credential is forwarded upstream untouched; the gateway
+    holds no key of its own unless the operator configured one as a fallback.
+    """
+    cfg = app.state.cfg
+    auditor: StreamAuditor = app.state.auditor
+    ctx = context_from_headers(request.headers)
+
+    raw = await request.body()
+    if len(raw) > MAX_MESSAGES_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="request body is too large")
+    try:
+        body = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="request body must be a JSON object")
+    model = body.get("model")
+    if not isinstance(model, str) or not model.strip() or len(model) > 128:
+        raise HTTPException(status_code=400, detail="model must be a string of 1-128 characters")
+    request_messages = body.get("messages")
+    if not isinstance(request_messages, list) or not request_messages:
+        raise HTTPException(status_code=400, detail="messages must be a non-empty array")
+    max_tokens = body.get("max_tokens")
+    if max_tokens is not None:
+        if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens < 1:
+            raise HTTPException(status_code=400, detail="max_tokens must be a positive integer")
+        if max_tokens > cfg.anthropic_max_tokens:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"max_tokens exceeds the operator ceiling of "
+                    f"{cfg.anthropic_max_tokens}"
+                ),
+            )
+
+    effective_model = cfg.anthropic_model or model
+    wants_json = body.get("stream") is False
+    if wants_json:
+        # The audit needs the stream: the answer is inspected as it arrives,
+        # so the upstream is always asked to stream and the single document
+        # is assembled here.
+        body["stream"] = True
+    if cfg.anthropic_model and cfg.anthropic_model != model:
+        # The operator pinned a model. Say so by asking for that one.
+        body["model"] = cfg.anthropic_model
+    if wants_json or (cfg.anthropic_model and cfg.anthropic_model != model):
+        raw = json.dumps(body, separators=(",", ":")).encode("utf-8")
+
+    if _session_is_revoked(ctx):
+        _report_revoked_session(ctx)
+        return Response(
+            content=standalone_refusal_sse(effective_model, f"msg_{uuid.uuid4().hex[:24]}"),
+            media_type="text/event-stream",
+        )
+
+    baseline_model = getattr(app.state, "baseline_model", None)
+    divergence_enabled = bool(baseline_model) and baseline_model == effective_model
+    if not divergence_enabled:
+        _divergence_notice_once(
+            baseline_model,
+            effective_model,
+            "baseline_model_mismatch" if baseline_model else "baseline_records_no_model",
+        )
+
+    url, headers, payload = build_upstream_request(
+        raw,
+        cfg,
+        {key.lower(): value for key, value in request.headers.items()},
+    )
+    client = httpx.AsyncClient(timeout=upstream_timeout())
+    upstream_request = client.build_request("POST", url, content=payload, headers=headers)
+    try:
+        response = await client.send(upstream_request, stream=True)
+    except httpx.HTTPError as exc:
+        await client.aclose()
+        raise HTTPException(status_code=502, detail="upstream model is unreachable") from exc
+
+    if response.status_code != 200:
+        # Forward the upstream's own error verbatim: the client asked a
+        # question the model refused, and inventing a different error would
+        # hide the reason.
+        error_body = await response.aread()
+        await response.aclose()
+        await client.aclose()
+        return Response(
+            content=error_body,
+            status_code=response.status_code,
+            media_type="application/json",
+        )
+
+    relay = AnthropicRelay(auditor, ctx, divergence_enabled=divergence_enabled)
+
+    if wants_json:
+        async def collect():
+            try:
+                return await collect_message(relay, iter_sse_events(response.aiter_lines()))
+            finally:
+                await response.aclose()
+                await client.aclose()
+
+        message = await collect()
+        return Response(
+            content=json.dumps(message, separators=(",", ":")),
+            media_type="application/json",
+        )
+
+    async def stream():
+        try:
+            async for chunk in relay_sse(relay, response):
+                yield chunk
+        finally:
+            await response.aclose()
+            await client.aclose()
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
