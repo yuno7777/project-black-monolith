@@ -254,6 +254,73 @@ with an empty credential, so every event dead-letters.
 
 ---
 
+## The agent-gateway review
+
+The thirteen commits on `feature/agent-gateway` were reviewed adversarially
+and came back with **eleven findings — two HIGH, nine MEDIUM**. Every one was
+re-verified by running the code, not by reading it; two candidate findings
+were dropped in the write-up (one had no reachable trigger, one's harm claim
+did not survive a 300-seed fuzz) and one older claim was retracted.
+
+All eleven are fixed on `fix/gateway-review-fixes`. Each row names the commit
+that fixes it, and each fix carries a test that fails against the code before
+it.
+
+The two HIGH findings are the same failure mode seen from two ends: a
+credential that should have stayed inside one process reached a process that
+had no business holding it. The shield's HMAC key and the ledger's ingest
+token reached every MCP server the launcher started, and a credential split
+across a content block boundary reached the client whole.
+
+| # | Severity | Finding | Fixed by |
+| --- | --- | --- | --- |
+| 1 | **high** | A credential split across a `content_block_stop` boundary was never scanned. The relay released the PII look-behind at every block boundary, and releasing it wiped the window: a key split across the boundary was let out in two halves, and neither half matched a pattern or a literal. The same key in one block was redacted; the same key in two blocks reached the client whole. | `cd42177` |
+| 2 | **high** | Every third-party MCP server inherited the shield's own credentials. Only `PBM_SECRET_*` was stripped from the child's environment, so `MCP_SHIELD_KEY` (the HMAC key a schema fingerprint is signed with) and `MONOLITH_EVENT_TOKEN` (the credential that writes into the incident ledger) reached the server the shield exists to defend the agent against. | `84c2314` |
+| 3 | medium | `citations_delta` was relayed verbatim. Only the delta kinds whose payload is a string field were audited, and a citation's quoted passage sits inside a nested object — so it was the one piece of model-authored text in the answer path that was never scanned. | `b5513f3` |
+| 4 | medium | No detector for an Anthropic key. The pattern `sk-[A-Za-z0-9]{20,}` stops at the first hyphen, so `sk-ant-…` never matched. | `0cbdbd9` |
+| 5 | medium | The divergence refusal left a content block open. The terminated branch returned without draining the queue, so the client was holding a block it never saw closed, and the refusal then opened a second one. | `545b530` |
+| 6 | medium | The session report merged two agents. It correlated on tenant + session, while the correlation boundary everywhere else is tenant + agent + session. The harm claim did not survive fuzzing, so this is a correctness fix: the report is what an operator reads to answer "what did this run trip". | `ac1b5f8` |
+| 7 | medium | The divergence gate could never be armed. The gate compares the model a baseline was captured from against the model answering, and nothing ever wrote the baseline's `model` key — so it was off in every shipped configuration. This is §1 above, found independently; fixed once, there. | `6041854` |
+| 8 | medium | The revocation gate was skipped when the session id was absent. The MCP server omitted the header when the variable was unset and the retriever skipped the check when the id was empty, so a retrieval that could not be attributed to a session could not be revoked. | `6f51f59` |
+| 9 | medium | The agent inherited the operator's exported credentials. The launcher handed the agent a copy of the whole process environment, including `MONOLITH_OPERATOR_TOKEN` and `MCP_SHIELD_KEY` — the thing the system defends against held the operator's keys. | `577908c` |
+| 10 | medium | The plan printer missed three secret flags. The flag list was a substring list, so `--pat`, `--bearer` and `--pw` were printed verbatim, while the file on disk kept them. | `d40cf05` |
+| 11 | medium | The operator's token ceiling was skipped when `max_tokens` was omitted. The ceiling was validated only when the request named a token count, so the upstream's own default applied and the operator's limit was not the limit. | `087a1e6` |
+
+### Residuals
+
+Recorded rather than hidden. None of them is a new hole; each is a limit of
+the fix that was landed, and each is stated so the next reader does not have
+to rediscover it.
+
+- **The remote-bridge token is deliberately not stripped.** In `--remote-url`
+  mode the child is the shield's own bridge and is configured entirely through
+  `MCP_SHIELD_REMOTE_TOKEN`, `MCP_SHIELD_PROTOCOL_VERSION` and
+  `MCP_SHIELD_REMOTE_TIMEOUT_SECS`, so removing them would stop that mode
+  from starting. The token therefore still travels into whatever the remote
+  bridge spawns, and that is a property of the remote deployment rather than
+  of the local spawn.
+- **The document path and the streaming path disagree about citations.** The
+  streaming path audits the passage a citation quotes and relays it with the
+  credential replaced; `collect_message` drops `citations_delta` entirely, so
+  a client that asked for one JSON document gets no citation at all. The
+  disagreement is recorded here and not fixed — the two paths are separate
+  code and a fix belongs with whoever next touches the document path.
+- **The plan redactor covers flags, not commands.** It redacts the `env`
+  block and the argument list, so a secret inside a `command` string —
+  `"command": "sh -c 'TOKEN=… run'"` — is printed as it is.
+- **The session id is still client-supplied.** The fix makes the sanctioned
+  path always attributable and makes a missing identity refuse, so the
+  circuit breaker can act. It does not make the session id unforgeable: a
+  caller that wants to escape the revocation check can still send a different
+  one. That needs a module-issued token, which is a larger change.
+- **A credential truncated by the end of the answer is released as its visible
+  prefix.** The scanner cannot match an incomplete key, and the look-behind
+  is released at EOF, so the first half of a key that the answer cut in half
+  is delivered. A credential that is cut is not a credential, but it is a
+  prefix of one.
+
+---
+
 ## Test gaps
 
 These are paths the code takes that no test exercises. Each is a place a
@@ -261,7 +328,7 @@ regression would be invisible.
 
 | # | Gap | Where | Effort |
 | --- | --- | --- | --- |
-| 1 | The divergence gate is never tested in its **armed** state. | `trace-audit/tests/test_anthropic_gateway.py` | medium |
+| 1 | The divergence gate is never tested in its **armed** state. | `trace-audit/tests/test_anthropic_gateway.py` | **closed** — `6041854` |
 | 2 | The entire triage write path is untested: validation, state change, audit trail. | `dashboard/app/api/triage/**` | medium |
 | 3 | The incident-queue read path is untested: filter parsing, keyset pagination, counts. | `dashboard/lib/incident-store.ts` | medium |
 | 4 | The detector-reset path is untested end to end, on both sides of the wire. | `vector-anchor`, `dashboard` | medium |

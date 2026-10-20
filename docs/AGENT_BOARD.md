@@ -34,7 +34,7 @@ Read it before starting work. Write to it while you work.
 
 | Agent | Branch | Working on | State |
 | --- | --- | --- | --- |
-| gateway-review | `fix/gateway-review-fixes` | the eleven findings from the agent-gateway review: credential containment in the shield and the launcher, the reasoning layer's answer path, the memory layer's attribution rule, the dashboard's session report | in progress; worktree `C:/Users/Abhi/Desktop/monolith-wt/gateway-fixes`; branched off `fix/credential-redaction-success-path` so the credential-redaction work is included |
+| gateway-review | `fix/gateway-review-fixes` | the eleven findings from the agent-gateway review: credential containment in the shield and the launcher, the reasoning layer's answer path, the memory layer's attribution rule, the dashboard's session report | all eleven fixed, one commit each; the findings are recorded in `FINDINGS.md` with the commit that fixes each and the residuals. Worktree `C:/Users/Abhi/Desktop/monolith-wt/gateway-fixes`; branched off `fix/credential-redaction-success-path` so the credential-redaction work is included. Awaiting a rebase onto `origin/main` and a merge |
 | security | `fix/security-hardening` | retention scoping, evidence verification, fail-closed admin, DLP coverage, breaker batching, baseline locking | merged into `main` (`3634d23`); branch kept until cleanup |
 | security | `feature/video-explainer` | the AEOS Guard explainer, rescued off a branch that was about to be deleted | pushed, 1 commit |
 | integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI green on `b19513b` |
@@ -92,12 +92,13 @@ to `main` by ref. Use a dedicated worktree for every branch.
 | `vector-anchor/src/mcp_server.py`, `vector-anchor/src/retriever_proxy.py` | gateway-review | session attribution on the retrieve path |
 | `vector-anchor/tests/**`, `vector-anchor/fixtures/run_demo.sh`, `scripts/verify_recovery.sh`, `evaluation/real_models.py`, `docs/IDENTITY_AND_ACCESS.md` | gateway-review | the call sites that retrieve without naming a session, and the tests that exercise the retriever directly |
 | `dashboard/lib/session-report.ts`, `dashboard/app/api/sessions/[sessionId]/route.ts` | gateway-review | taken over from `add-agent-onboarding`, which offered it; the peer recorded it as "owned by peer session" and does not touch it |
-| `docs/FINDINGS.md` | gateway-review | the eleven findings land here, each with the commit that fixes it |
+| `docs/FINDINGS.md` | gateway-review | the eleven findings land here, each with the commit that fixes it — done, plus the residuals |
+| `contracts/openapi.yaml` | gateway-review | overlapped with `security`'s claim (merged): `/admin/reload-baseline` gained a `model` request field and a `baseline_model` response field |
 | `mcp-shield/src/**` | security | through the 2026-10-20 review batch |
 | `dashboard/lib/incident-store.ts`, `dashboard/app/api/ingest/**` | security | circuit breaker and ingest path |
 | `dashboard/lib/login-rate-limit.ts`, `dashboard/scripts/dispatch-alerts.mjs` | security | rate limiting and alert delivery |
 | `supabase/migrations/**` | security | retention scoping migration |
-| `contracts/openapi.yaml` | security | corrected the revocation snapshot wording |
+| `contracts/openapi.yaml` | security | corrected the revocation snapshot wording — that branch is merged; `gateway-review` has since touched the same file, so the two rows are both live |
 | `main` | integrator | Merges and verification only; branch work happens in a worktree. |
 
 Free to claim: `vector-anchor/**` (apart from the two files above),
@@ -115,12 +116,19 @@ reader's lead, not yet checked). The items below are the board's own list.
 
 | # | Item | Where | Priority |
 | --- | --- | --- | --- |
-| 1 | The reasoning layer's KL divergence is off in every shipped configuration: nothing ever writes the baseline's `model` key, so the gate can never open. | `trace-audit/src/main.py` | **high** — see `FINDINGS.md` §1 |
+| 1 | ~~The reasoning layer's KL divergence is off in every shipped configuration: nothing ever writes the baseline's `model` key, so the gate can never open.~~ | `trace-audit/src/main.py` | **done** — `6041854`, see `FINDINGS.md` §1 |
 | 2 | A notification failure rolls back the evidence it was raised for: the alert-job row shares the security event's transaction. | `dashboard/lib/event-store.ts` | **high** — see `FINDINGS.md` §2 |
 | 3 | Every revocation snapshot is truncated at 64 KiB, so past ~1,700 live revocations the modules keep a stale set forever and the breaker fails open. | `dashboard/app/api/ingest/route.ts`, `python-common`, `mcp-shield` | **high** — see `FINDINGS.md` §3 |
 | 4 | The MCP-Shield status listener falls back to the module's ingest token as its admin credential. | `mcp-shield/src/main.rs` | medium — see `FINDINGS.md` §4 |
 | 5 | The ingest response carries the tenant's whole revocation set on every request, so the payload grows with the total number of quarantines. The fix needs the dashboard *and* `python-common` to agree on snapshot-versus-delta. | `dashboard/app/api/ingest/route.ts`, `python-common/monolith_events/events.py` | low — contract change |
 | 6 | The AWS secret access key has no detector. Deliberately: 40 characters of base64 has a false-positive rate that would hard-block ordinary calls. Needs a shape-aware detector, not a regex. | `mcp-shield/src/sanitizer.rs` | low |
+
+The eleven findings from the agent-gateway review are all fixed and recorded in
+[`FINDINGS.md`](FINDINGS.md) under *The agent-gateway review*, with the commit
+that fixes each and the residuals left open. Two of them were HIGH and are
+worth reading twice: the shield's own credentials reached every MCP server it
+started (`84c2314`), and a credential split across a content block boundary
+reached the client whole (`cd42177`).
 
 Done: the module dead-letter replay is now scoped to one tenant across the
 dashboard, both module endpoints, the shared Python outbox and the Rust spool
