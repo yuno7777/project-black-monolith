@@ -167,6 +167,10 @@ RLS permits access only to that one row. Session creation uses the already
 authenticated operator tenant.
 
 This database boundary protects the control plane. The agent-facing
-`/retrieve` and `/generate` services are still intended to sit on a trusted
-service network; their caller identity headers are attribution metadata, not a
-general-purpose end-user authentication system.
+`/retrieve`, `/generate` and `POST /v1/messages` services are still intended
+to sit on a trusted service network; their caller identity headers are
+attribution metadata, not a general-purpose end-user authentication system.
+See the scope notes in [SECURITY.md](../SECURITY.md) for what that leaves
+open — a forged tenant claim is stopped at ingest by the per-tenant module
+credential, while a forged session claim inside the module's own tenant is
+attribution the module believes.

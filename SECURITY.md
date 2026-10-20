@@ -36,9 +36,25 @@ research project there is no formal SLA, but reports are taken seriously.
   privilege PostgreSQL role. Every store operation binds a transaction-local
   tenant context; RLS independently checks it in addition to the application's
   explicit tenant predicates.
-- VectorAnchor `/retrieve` and TraceAudit `/generate` are service-to-service
-  interfaces intended for a trusted network. Their `X-Monolith-*` headers
-  provide attribution, not end-user authentication.
+- VectorAnchor `/retrieve`, TraceAudit `/generate` and the Anthropic gateway
+  `POST /v1/messages` are service-to-service interfaces intended for a trusted
+  network. Their `X-Monolith-*` headers provide attribution, not end-user
+  authentication.
+- What that means concretely, on those three endpoints:
+  - A forged **tenant** claim does not reach the ledger. Module ingest
+    credentials are bound to one tenant and one module, so an event carrying
+    a tenant the credential is not scoped to is rejected with a 401 and
+    dead-lettered.
+  - A forged **session** claim inside the module's own tenant is not
+    rejected. It requires the session id, which the agent gateway mints with
+    122 bits of randomness (`monolith-<uuid4>`), so it cannot be guessed off
+    the host; a caller that already knows a session id — the agent knows its
+    own — can still file events into it. The blast radius is one session's
+    report, not the ledger: events cannot be edited or removed by a caller.
+  - The gateway's own forward path is not a claim at all: it *replaces* the
+    client's `X-Monolith-*` headers with the ones it minted, and sends them
+    only to the auditor — never to the model provider — so the agent behind
+    it cannot forge its way into another session or out of its own.
 - The default MCP-Shield HMAC key and the offline mock model backend are for
   local development only; see the module READMEs before any real use.
 

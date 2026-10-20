@@ -150,7 +150,7 @@ run tripped:
 ```
   Session report
   --------------
-  session    monolith-1792499469-77b0
+  session    monolith-9f1c7b52-4a0e-4c1e-9a3d-2b6f8e0d5c41
   events     4
   severity  critical 0   warning 1   info 3
   layers    mcp-shield 1   trace-audit 2   vector-anchor 1
@@ -158,9 +158,13 @@ run tripped:
 ```
 
 The agent's own credential is forwarded upstream untouched, and the gateway
-holds no key of its own. The session id is stamped onto every request by the
-gateway, so a client cannot forge its way into another session's ledger — and
-cannot opt out of its own.
+holds no key of its own. The session id is stamped onto every request the
+gateway sends to the auditor, so a client cannot forge its way into another
+session's ledger — and cannot opt out of its own. It is minted with 122 bits
+of randomness, so anything else on the host cannot guess it either. The
+correlation headers are not forwarded to the model provider: the run is
+attributed at the layer that audits it, and the provider has no business
+knowing which session it is serving.
 
 **What it needs:** the stack up (`docker compose up -d --build`), and
 `cargo build --release` in `mcp-shield/` so the host has the shield binary the
