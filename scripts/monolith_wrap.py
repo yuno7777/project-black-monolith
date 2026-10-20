@@ -217,12 +217,25 @@ PLAN_VISIBLE_ENV = {
 
 # Argument flags whose value is a secret. A secret on the command line is
 # still a secret, and the plan is printed for a human to read.
+#
+# The long markers are matched as a substring, because a flag that contains
+# one of them is a secret flag whatever else it contains: ``--api-key-file``
+# names a key.
 SECRET_ARG_FLAGS = ("key", "token", "secret", "password", "passwd", "credential", "auth")
+
+# The short markers are matched as a *segment* instead. ``--pat`` carries a
+# personal access token and ``--path`` carries a directory, and a substring
+# match cannot tell them apart: adding "pat" to the list above would redact
+# every path the operator configured.
+SECRET_ARG_SEGMENTS = ("pat", "bearer", "pw", "pwd", "pass")
 
 
 def _is_secret_arg_flag(flag: str) -> bool:
-    lowered = flag.lower()
-    return any(marker in lowered for marker in SECRET_ARG_FLAGS)
+    lowered = flag.lower().lstrip("-")
+    if any(marker in lowered for marker in SECRET_ARG_FLAGS):
+        return True
+    segments = lowered.replace("_", "-").split("-")
+    return any(segment in SECRET_ARG_SEGMENTS for segment in segments)
 
 
 def redact_config_secrets(config: dict) -> dict:

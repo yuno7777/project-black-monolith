@@ -369,6 +369,72 @@ class PlanRedactionTests(unittest.TestCase):
             "ghp_live_0000",
         )
 
+    def test_the_short_secret_flags_are_redacted_and_the_path_is_not(self):
+        """A short flag is a secret flag too, and a path is not.
+
+        ``--pat`` carries a personal access token, ``--bearer`` a bearer
+        credential and ``--pw`` a password. None of them contains one of the
+        long markers, so a substring match missed all three — and adding
+        "pat" to that list would have redacted every ``--path`` the operator
+        configured, which is a different thing entirely.
+        """
+        config = build_mcp_config(
+            {
+                "files": {
+                    "command": "npx",
+                    "args": [
+                        "-y",
+                        "server",
+                        "--pat",
+                        "ghp_live_0000",
+                        "--bearer",
+                        "bearer-value-3333",
+                        "--pw",
+                        "hunter2",
+                        "--path",
+                        "/tmp/data",
+                    ],
+                    "env": {},
+                },
+                "inline": {
+                    "command": "server",
+                    "args": ["--pat=ghp_inline_0000"],
+                    "env": {},
+                },
+            },
+            shield=Path("/opt/mcp-shield"),
+            env={"MONOLITH_SESSION_ID": "sess-1"},
+            vector_anchor_url="http://127.0.0.1:8001",
+            python="/usr/bin/python3",
+        )
+        printed = json.dumps(redact_config_secrets(config))
+        self.assertNotIn("ghp_live_0000", printed)
+        self.assertNotIn("bearer-value-3333", printed)
+        self.assertNotIn("hunter2", printed)
+        self.assertNotIn("ghp_inline_0000", printed)
+        # The flag itself is not a secret, and the plan is useless without it.
+        self.assertIn("--pat", printed)
+        self.assertIn("--bearer", printed)
+        self.assertIn("--pw", printed)
+        # A path is not a secret. Redacting it would hide the only part of
+        # the configuration an operator needs to check.
+        self.assertIn("/tmp/data", printed)
+        # And the file on disk keeps the real values: the server needs them.
+        # The wrapped server's own command is the first argument, so the
+        # flags start at the second.
+        self.assertEqual(
+            config["mcpServers"]["files"]["args"][4],
+            "ghp_live_0000",
+        )
+        self.assertEqual(
+            config["mcpServers"]["files"]["args"][6],
+            "bearer-value-3333",
+        )
+        self.assertEqual(
+            config["mcpServers"]["files"]["args"][8],
+            "hunter2",
+        )
+
 
 class SessionIdTests(unittest.TestCase):
     def test_the_session_id_cannot_be_guessed_by_anything_else_on_the_host(self):
