@@ -77,20 +77,49 @@ def test_card_detection_requires_a_valid_luhn_checksum():
 def test_a_literal_credential_is_matched_whatever_its_shape():
     """A credential we hold exactly needs no pattern to be recognised.
 
-    The openai-style pattern stops at the first hyphen, so an Anthropic key
-    passes straight through it. The literal match finds it because it is the
-    exact string, not a shape.
+    The pattern list now knows the Anthropic shape too, but the literal is
+    still the more specific match: it is the exact string, and where the
+    two overlap the literal is the one that is redacted, so the whole
+    credential goes rather than the part the pattern happened to see.
     """
     key = "sk-ant-api03-operator-fallback-key-0123456789"
     text = f"the key is {key} and that is all"
-
-    assert not scan(text), "no pattern should match a hyphenated Anthropic key"
 
     matches = scan(text, [key])
     assert len(matches) == 1
     assert matches[0].label == "anthropic_api_key"
     assert matches[0].value == key
     assert text[matches[0].start : matches[0].end] == key
+
+
+def test_a_hyphenated_anthropic_key_is_matched_without_the_literal():
+    """The shape of an Anthropic key is enough to recognise it.
+
+    The openai-style pattern stops at the first hyphen, so "sk-ant-..."
+    used to pass through every pattern there was. A foreign key — one this
+    process does not hold, and so one no literal can match — would have
+    reached the client in full.
+    """
+    key = "sk-ant-api03-" + "A1b2C3d4" * 5
+    text = f"the key is {key} and that is all"
+
+    matches = [match for match in scan(text) if match.label == "anthropic_api_key"]
+    assert len(matches) == 1
+    assert matches[0].value == key
+    assert text[matches[0].start : matches[0].end] == key
+
+
+def test_the_openai_style_pattern_does_not_swallow_an_anthropic_key():
+    """The two shapes are separate, and the Anthropic one wins.
+
+    The openai-style pattern stops at the first hyphen, so it cannot match
+    the prefix of an Anthropic key. The whole key has to go, not the part
+    that happened to look like something else.
+    """
+    key = "sk-ant-api03-" + "A1b2C3d4" * 5
+    matches = scan(f"value {key} end")
+    assert [match.value for match in matches] == [key]
+    assert {match.label for match in matches} == {"anthropic_api_key"}
 
 
 def test_a_literal_credential_too_short_to_be_one_is_ignored():

@@ -34,6 +34,12 @@ LITERAL_CREDENTIAL_LABEL = "anthropic_api_key"
 _PATTERNS: list[tuple[str, re.Pattern]] = [
     ("aws_access_key_id", re.compile(r"AKIA[0-9A-Z]{16}\b")),
     ("openai_style_api_key", re.compile(r"sk-[A-Za-z0-9]{20,}\b")),
+    # The openai-style pattern stops at the first hyphen, so an Anthropic key
+    # used to pass straight through it. This one is deliberately not
+    # self-delimiting: a key has no end marker, so a match that runs to the
+    # end of the buffer has to be held back for its continuation rather than
+    # released as if it were complete.
+    ("anthropic_api_key", re.compile(r"sk-ant-[A-Za-z0-9_\-]{20,}")),
     ("generic_bearer_token", re.compile(r"\b[A-Za-z0-9_\-]{32,}\.[A-Za-z0-9_\-]{6,}\b")),
     ("email_address", re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")),
     ("us_ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
@@ -113,8 +119,8 @@ def _literal_matches(
 
     The pattern list is written for the *shapes* of credentials. A key we
     hold needs no shape: it is matched as itself, whatever it looks like.
-    The openai-style pattern stops at the first hyphen, so an Anthropic key
-    ("sk-ant-...") passes straight through it.
+    A pattern can only recognise the shapes it was written for, and a
+    rotated or differently-prefixed key has a shape nobody wrote down.
     """
     matches: list[PiiMatch] = []
     seen: set[tuple[str, int, int]] = set()

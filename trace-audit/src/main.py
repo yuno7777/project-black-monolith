@@ -896,10 +896,9 @@ def _redact_upstream_error(
 
     The scanner finds the *shapes* it was written for, and the exact
     credentials this gateway holds — the operator's fallback key and the
-    client's own — whatever shape they happen to have: Anthropic keys are
-    hyphenated ("sk-ant-..."), and the openai-style pattern stops at the
-    first hyphen, so a pattern-only pass would let the operator's own key
-    straight through to the client that never had it.
+    client's own — whatever shape they happen to have. The shape-based
+    patterns are not a substitute for that: a rotated or differently
+    prefixed key has a shape nobody wrote a pattern for.
     """
     text = error_body.decode("utf-8", errors="replace")
     matches = scan(text, secrets)
