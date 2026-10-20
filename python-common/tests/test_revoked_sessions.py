@@ -13,9 +13,13 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from monolith_events.events import (
+    DEFAULT_POLL_INTERVAL_MS,
+    MIN_POLL_INTERVAL_MS,
     RevokedSessionPoller,
     RevokedSessionRegistry,
+    _poll_interval_ms,
     is_session_revoked,
+    make_emitter,
     revocation_poll_url,
     revoked_session_registry,
     update_revoked_sessions_from_ingest,
@@ -61,6 +65,63 @@ def test_poll_url_is_only_derived_from_the_ingest_endpoint():
         == "https://dashboard.example/api/sessions/revoked"
     )
     assert revocation_poll_url("https://dashboard.example/events") is None
+
+
+def test_a_mistyped_poll_interval_falls_back_to_the_default(monkeypatch, capsys):
+    """A cadence the module cannot read must not switch the poll off.
+
+    The poll is the only way an idle module learns that its session was
+    revoked, so an unreadable value falls back to the default cadence and
+    says so, rather than stopping the poll.
+    """
+    monkeypatch.setenv("MONOLITH_SESSION_POLL_MS", "500")
+    assert _poll_interval_ms() == DEFAULT_POLL_INTERVAL_MS
+    assert "MONOLITH_SESSION_POLL_MS" in capsys.readouterr().err
+
+    monkeypatch.setenv("MONOLITH_SESSION_POLL_MS", "not-a-number")
+    assert _poll_interval_ms() == DEFAULT_POLL_INTERVAL_MS
+
+    monkeypatch.setenv("MONOLITH_SESSION_POLL_MS", "15000ms")
+    assert _poll_interval_ms() == DEFAULT_POLL_INTERVAL_MS
+
+    monkeypatch.setenv("MONOLITH_SESSION_POLL_MS", "-1")
+    assert _poll_interval_ms() == DEFAULT_POLL_INTERVAL_MS
+
+
+def test_a_readable_poll_interval_is_taken_as_written(monkeypatch):
+    monkeypatch.setenv("MONOLITH_SESSION_POLL_MS", "30000")
+    assert _poll_interval_ms() == 30_000
+
+    monkeypatch.setenv("MONOLITH_SESSION_POLL_MS", str(MIN_POLL_INTERVAL_MS))
+    assert _poll_interval_ms() == MIN_POLL_INTERVAL_MS
+
+
+def test_zero_is_the_only_way_to_switch_the_poll_off(monkeypatch, capsys):
+    monkeypatch.setenv("MONOLITH_SESSION_POLL_MS", "0")
+    assert _poll_interval_ms() == 0
+    assert "disabled" in capsys.readouterr().err
+
+
+def test_the_emitter_keeps_polling_when_the_cadence_cannot_be_read(monkeypatch, tmp_path):
+    """The fallback has to reach the emitter, not just the helper.
+
+    This is the difference between a default cadence and a control that is
+    off with nothing to show for it.
+    """
+    monkeypatch.setenv("MONOLITH_SESSION_POLL_MS", "not-a-number")
+    emitter = make_emitter(
+        "vector-anchor",
+        "https://dashboard.invalid/api/ingest",
+        "test-token-value",
+        str(tmp_path / "outbox.db"),
+    )
+    try:
+        assert emitter.revocation_poller is not None, (
+            "an unreadable cadence must not switch the revocation poll off"
+        )
+    finally:
+        if emitter.outbox is not None:
+            emitter.outbox.close()
 
 
 class _RevocationHandler(BaseHTTPRequestHandler):
