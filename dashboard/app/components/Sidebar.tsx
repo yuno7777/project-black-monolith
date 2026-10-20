@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { MonolithEvent } from "@/lib/types";
 import { KNOWN_MODULES, MODULE_ACCENT, MODULE_LABELS, MODULE_LAYER } from "@/lib/types";
-import { Logo, ModuleGlyph, IconActivity, IconGrid, IconLedger, IconGauge, IconGear } from "./Icons";
+import { Logo, ModuleGlyph, IconActivity, IconGrid, IconLedger, IconGauge, IconGear, IconPlug } from "./Icons";
 
 /** The narrow icon rail. Settings does not exist yet, so it is not presented
  *  as if it does. */
@@ -41,6 +41,15 @@ export function Rail() {
         <IconGauge />
       </Link>
       <div className="rail-foot">
+        <Link
+          href="/onboarding"
+          className={`rail-btn${path === "/onboarding" ? " on" : ""}`}
+          aria-label="Connect your agent"
+          aria-current={path === "/onboarding" ? "page" : undefined}
+          title="Connect your agent"
+        >
+          <IconPlug />
+        </Link>
         <Link
           href="/operations"
           className={`rail-btn${path === "/operations" ? " on" : ""}`}

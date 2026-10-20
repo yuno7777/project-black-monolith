@@ -219,6 +219,28 @@ export function IconGear({ size = 18, className }: IconProps) {
   );
 }
 
+// Rail: onboarding — a plug reaching for the agent's own machine.
+export function IconPlug({ size = 18, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className} aria-hidden>
+      <path d="M9 2.8v3.4" />
+      <path d="M15 2.8v3.4" />
+      <path d="M6.4 6.2h11.2v2.9a5.6 5.6 0 01-5.6 5.6 5.6 5.6 0 01-5.6-5.6V6.2z" />
+      <path d="M12 14.7v6.5" />
+    </svg>
+  );
+}
+
+// A dismiss control: the small cross on the first-run pointer.
+export function IconX({ size = 15, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className} aria-hidden>
+      <path d="M6.5 6.5l11 11" />
+      <path d="M17.5 6.5l-11 11" />
+    </svg>
+  );
+}
+
 // Triage: acknowledged — seen and taken, not yet closed.
 export function IconEye({ size = 15, className }: IconProps) {
   return (

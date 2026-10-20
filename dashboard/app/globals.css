@@ -26,9 +26,11 @@
 
   --line: rgba(255, 255, 255, 0.09);
   --line-soft: rgba(255, 255, 255, 0.055);
+  --line-strong: rgba(255, 255, 255, 0.18);
 
   --ink: #f2f3f6;
   --ink-dim: #9aa1ad;
+  --ink-muted: #9aa1ad;
   /* Measured, not eyeballed: the labels this paints (KPI keys, timestamps,
      card meta) are 10-11.5px, so they are "small text" and need 4.5:1. The
      previous #666c78 sat at ~3.7:1 on the card surfaces. */
@@ -89,6 +91,7 @@
 
   --line: rgba(17, 18, 20, 0.1);
   --line-soft: rgba(17, 18, 20, 0.06);
+  --line-strong: rgba(17, 18, 20, 0.2);
 
   --ink: #16171b;
   /* Light mode needs materially darker muted text than dark mode does: the old
@@ -97,6 +100,7 @@
      offender was every timestamp and card subtitle on the page. Both steps move
      down together so the ink hierarchy stays ordered. */
   --ink-dim: #4a4f59;
+  --ink-muted: #4a4f59;
   --ink-faint: #656a74;
 
   /* Light mode inverts: the selected surface is the near-black slab, which is
@@ -759,6 +763,11 @@ option {
 
 /* Operations ------------------------------------------------------------- */
 .operations-scroll { display: flex; flex-direction: column; gap: 14px; }
+/* The sections keep their natural height and the container scrolls. Left to
+   the default flex-shrink, a section that is taller than the remaining space
+   is compressed and its content is clipped by .card's overflow: hidden — the
+   page then silently loses the bottom of a card instead of scrolling to it. */
+.operations-scroll > * { flex: none; }
 .ops-error { border: 1px solid color-mix(in srgb, var(--sev-critical) 45%, var(--line)); border-radius: var(--r-sm); padding: 10px 12px; color: var(--sev-critical); font-size: 12px; }
 .ops-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; padding: 22px 24px; border: 1px solid var(--line); border-radius: var(--r); background: linear-gradient(130deg, color-mix(in srgb, var(--mod-mcp) 8%, var(--card)), var(--card)); }
 .ops-eyebrow { color: var(--ink-faint); font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
@@ -799,3 +808,94 @@ option {
   margin-top: 11px; font-size: 11px; line-height: 1.55;
   color: var(--ink-faint); max-width: 78ch;
 }
+
+/* Onboarding --------------------------------------------------------------
+   A checklist, not a form: each step states whether it is satisfied, why it
+   is not, and the one thing to do about it. The state colour is the only
+   place a step is allowed to shout. */
+.onb-steps { display: flex; flex-direction: column; gap: 9px; }
+.onb-step {
+  display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 13px;
+  padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--card); border-left-width: 3px;
+}
+.onb-step-n {
+  width: 26px; height: 26px; display: grid; place-items: center;
+  border-radius: 8px; font-size: 11px; font-weight: 700;
+  color: var(--ink-faint); background: var(--card-inset);
+}
+.onb-step-main { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.onb-step-head { display: flex; align-items: center; gap: 10px; }
+.onb-step-head strong { color: var(--ink); font-size: 13px; }
+.onb-step-state {
+  padding: 2px 8px; border-radius: 999px; font-size: 9.5px; font-weight: 700;
+  letter-spacing: .07em; text-transform: uppercase;
+  color: var(--ink-faint); background: var(--card-inset); border: 1px solid var(--line);
+}
+.onb-step-detail { color: var(--ink-dim); font-size: 12px; line-height: 1.5; }
+.onb-ready { border-left-color: var(--ok); }
+.onb-ready .onb-step-state { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
+.onb-ready .onb-step-n { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.onb-todo { border-left-color: var(--sev-warning); }
+.onb-todo .onb-step-state { color: var(--sev-warning); border-color: color-mix(in srgb, var(--sev-warning) 40%, var(--line)); }
+.onb-todo .onb-step-n { color: var(--sev-warning); background: color-mix(in srgb, var(--sev-warning) 12%, transparent); }
+.onb-blocked { border-left-color: var(--sev-critical); }
+.onb-blocked .onb-step-state { color: var(--sev-critical); border-color: color-mix(in srgb, var(--sev-critical) 40%, var(--line)); }
+.onb-blocked .onb-step-n { color: var(--sev-critical); background: color-mix(in srgb, var(--sev-critical) 12%, transparent); }
+.onb-unknown { border-left-color: var(--line-strong); }
+.onb-btn { align-self: flex-start; margin-top: 3px; }
+.onb-cmd-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.onb-cmd {
+  flex: 1; min-width: 0; overflow-x: auto; white-space: pre;
+  padding: 8px 11px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--card-inset); color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
+}
+.onb-link { color: var(--ink-dim); font-size: 12px; text-decoration: none; }
+.onb-link:hover { color: var(--ink); text-decoration: underline; }
+.onb-note { margin: 8px 0 0; color: var(--ink-dim); font-size: 11.5px; line-height: 1.6; max-width: 82ch; }
+.onb-note code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; color: var(--ink); }
+.onb-card { display: flex; flex-direction: column; gap: 10px; }
+.onb-prompts { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 11px; }
+.onb-prompt {
+  display: flex; flex-direction: column; gap: 8px; padding: 13px 14px;
+  border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--card-inset);
+}
+.onb-prompt-head { display: flex; flex-direction: column; gap: 5px; }
+.onb-prompt-head strong { color: var(--ink); font-size: 12.5px; }
+.onb-prompt-layer {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--ink-faint); font-size: 9.5px; font-weight: 700;
+  letter-spacing: .09em; text-transform: uppercase;
+}
+.onb-prompt-body {
+  margin: 0; padding: 10px 11px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--canvas); color: var(--ink-dim); overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.55;
+}
+.onb-sessions { display: flex; flex-direction: column; }
+.onb-session {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 14px;
+  padding: 11px 16px; border-top: 1px solid var(--line-soft);
+}
+.onb-session-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.onb-session-meta { color: var(--ink-faint); font-size: 10.5px; }
+.onb-session-modules { display: flex; flex-wrap: wrap; gap: 5px; justify-content: flex-end; }
+.onb-session-modules .chip { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; }
+@media (max-width: 720px) {
+  .onb-session { grid-template-columns: minmax(0, 1fr); gap: 7px; }
+  .onb-session-modules { justify-content: flex-start; }
+}
+
+/* First-run prompt on the overview -------------------------------------- */
+.onb-firstrun {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  flex: none; margin: 0 0 12px; padding: 13px 16px;
+  border: 1px solid color-mix(in srgb, var(--mod-mcp) 34%, var(--line));
+  border-radius: var(--r-sm);
+  background: linear-gradient(120deg, color-mix(in srgb, var(--mod-mcp) 9%, var(--card)), var(--card));
+}
+.onb-firstrun-text { flex: 1; min-width: 220px; display: flex; flex-direction: column; gap: 2px; }
+.onb-firstrun-text strong { color: var(--ink); font-size: 12.5px; }
+.onb-firstrun-text span { color: var(--ink-dim); font-size: 11.5px; }
+.onb-firstrun .ghost-btn { flex: none; }

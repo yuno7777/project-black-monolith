@@ -170,6 +170,24 @@ knowing which session it is serving.
 `cargo build --release` in `mcp-shield/` so the host has the shield binary the
 MCP servers are started through.
 
+### Or set it up from the dashboard
+
+If you would rather not assemble the commands yourself, open
+<http://localhost:3000/onboarding> once the stack is up. The page checks each
+layer and tells you the one thing to do next:
+
+- whether the three layers are answering;
+- whether the memory layer has anything to retrieve — and a button that loads
+  the demo corpus, so there is no fixture script to run by hand;
+- whether the tool layer is built on *your* machine, and the command if it is
+  not;
+- which sessions the ledger has seen, so you can tell at a glance that your
+  agent is connected.
+
+It also carries three ready-made prompts, one per layer, so you know what to
+type into the agent to make it show up on the dashboard. No secret is ever
+rendered into the page: the launcher reads the repository's own `.env`.
+
 To watch the whole chain work with no API key and no credits:
 
 ```bash

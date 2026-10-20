@@ -10,7 +10,10 @@ import ModuleBars from "./components/ModuleBars";
 import SeverityDonut from "./components/SeverityDonut";
 import ThemeToggle from "./components/ThemeToggle";
 import OperatorBadge from "./components/OperatorBadge";
-import { IconIntercept, IconActivity, IconAlert, IconBolt, IconSearch, IconLedger } from "./components/Icons";
+import { IconIntercept, IconActivity, IconAlert, IconBolt, IconSearch, IconLedger, IconX } from "./components/Icons";
+
+/** Key for the "you have seen the pointer" flag. */
+const FIRST_RUN_KEY = "monolith.onboarding.dismissed";
 
 // End-to-end latency, as reported by the detectors: this averages
 // `details.detection_latency_ms`, which is wall-clock time INSIDE the detector
@@ -55,6 +58,10 @@ export default function Page() {
   const [now, setNow] = useState<string>("");
   const [openIncidents, setOpenIncidents] = useState<number | null>(null);
   const [triageByEvent, setTriageByEvent] = useState<Map<string, IncidentStatus>>(new Map());
+  // "unknown" until the session list has been read, so the pointer never
+  // flashes on top of a console that is already working.
+  const [hasSessions, setHasSessions] = useState<boolean | null>(null);
+  const [pointerDismissed, setPointerDismissed] = useState(true);
   const seen = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -121,6 +128,47 @@ export default function Page() {
       clearInterval(t);
     };
   }, []);
+
+  // A console with no agent behind it is empty and says nothing about why.
+  // This asks the one question the ledger can answer — has any session ever
+  // been filed — and points at the onboarding page when the answer is no.
+  // A fixture run also produces events but no session, so the pointer waits
+  // for the live feed to be empty too: an operator who is already generating
+  // traffic does not need to be told to connect an agent.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch("/api/sessions?limit=1", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        setHasSessions((data.sessions ?? []).length > 0);
+        let dismissed = true;
+        try {
+          dismissed = window.localStorage.getItem(FIRST_RUN_KEY) === "1";
+        } catch {
+          /* a browser that refuses storage still gets the pointer */
+        }
+        setPointerDismissed(dismissed);
+      } catch {
+        /* cannot tell; leave the pointer off rather than nag */
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const dismissPointer = () => {
+    setPointerDismissed(true);
+    try {
+      window.localStorage.setItem(FIRST_RUN_KEY, "1");
+    } catch {
+      /* nothing to do: the pointer is gone for this render anyway */
+    }
+  };
 
   const byModule = useMemo(() => {
     const map: Record<string, MonolithEvent[]> = {};
@@ -226,6 +274,29 @@ export default function Page() {
               <ThemeToggle />
             </div>
           </div>
+
+          {hasSessions === false && !pointerDismissed && events.length === 0 ? (
+            <div className="onb-firstrun">
+              <div className="onb-firstrun-text">
+                <strong>No agent is behind Black Monolith yet</strong>
+                <span>
+                  The stack is up, but nothing has been filed. The onboarding page
+                  checks each layer and tells you the one thing to do next.
+                </span>
+              </div>
+              <Link className="ghost-btn" href="/onboarding">
+                Open onboarding
+              </Link>
+              <button
+                className="iconbtn"
+                onClick={dismissPointer}
+                title="Dismiss"
+                aria-label="Dismiss the onboarding pointer"
+              >
+                <IconX />
+              </button>
+            </div>
+          ) : null}
 
           <div className="kpis">
             {kpis.map((c) => {

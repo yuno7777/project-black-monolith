@@ -35,6 +35,45 @@ When a URL or token is absent, the page says **Not configured**. A failed or
 timed-out probe says **Unavailable**. Neither state is silently presented as a
 healthy zero.
 
+## Onboarding a new agent
+
+`/onboarding` is the operator's route from "the stack is up" to "my agent is
+behind it and the dashboard shows what it tripped". It reads the same signals
+the `/operations` page reads, plus the host-side facts that only the machine
+running the agent can answer.
+
+`GET /api/onboarding` (viewer) returns one object:
+
+| Field | Meaning |
+| --- | --- |
+| `stack.modules[]` | Per-layer reachability from the dashboard |
+| `corpus` | Document and quarantine counts read from VectorAnchor `/stats` |
+| `shield_binary` | Where the tool layer's binary is, or that the dashboard cannot see the host |
+| `sessions[]` | Recent agent sessions, newest first |
+| `steps[]` | The checklist, each `ready` / `todo` / `blocked` / `unknown` |
+
+`POST /api/onboarding` (admin) takes
+`{"action": "seed-corpus" | "seed-bait" | "reset-detection"}` and performs the
+setup step server-side against VectorAnchor. An unknown action is a 422, and
+nothing is called before the action has been validated.
+
+`GET /api/sessions?limit=` (viewer) is the discovery side of the ledger.
+`/api/sessions/<id>` answers 200 with zero events for a session that never
+happened, so it cannot answer "is my agent connected yet?"; the list route can.
+A `limit` outside 1-100 is a 422.
+
+### What the page will not do
+
+- It never renders a credential. The launcher reads the repository's own
+  `.env`, so the command the page renders carries no secret, and the module
+  admin token stays on the server.
+- It does not start the agent or build the tool layer. Those happen on the
+  machine that runs the agent, so the page renders the command rather than
+  pretending to have run it.
+- The tool-layer check reports **not checked** when the dashboard runs in a
+  container: that host is not this filesystem, and saying *missing* would be
+  wrong.
+
 ## Incident evidence export
 
 Any viewer can download `/api/incidents/<event-id>/export`. The versioned
