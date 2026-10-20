@@ -1,4 +1,4 @@
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { withTenantDb } from "@/lib/db";
 import { getMemoryEventsForTenant } from "@/lib/event-store";
 import type {
@@ -95,6 +95,39 @@ function memoryAuditMap(): Map<string, AuditEntry[]> {
 
 function sessionKey(tenantId: string, agentId: string, sessionId: string): string {
   return `${tenantId}\u0000${agentId}\u0000${sessionId}`;
+}
+
+/**
+ * Upper bound on the in-memory session stores.
+ *
+ * The keys are derived from `agent_id` and `session_id`, which come from
+ * module events — that is, from the agent under defence. An agent that opens
+ * many sessions would otherwise grow the dashboard's heap without limit, on
+ * the ingest hot path. The bound is generous compared with the number of
+ * sessions a real deployment has live at once.
+ */
+const MAX_MEMORY_SESSIONS = 5_000;
+
+/** Drop the oldest session entries until the stores are back under the bound. */
+function enforceMemorySessionBound(): void {
+  const revoked = revokedSessionMap();
+  const modules = sessionModulesMap();
+  const restored = sessionRestoredAtMap();
+  if (revoked.size <= MAX_MEMORY_SESSIONS && modules.size <= MAX_MEMORY_SESSIONS) return;
+  for (const key of [...revoked.keys()]) {
+    if (revoked.size <= MAX_MEMORY_SESSIONS) break;
+    revoked.delete(key);
+    modules.delete(key);
+    restored.delete(key);
+  }
+  for (const key of [...modules.keys()]) {
+    if (modules.size <= MAX_MEMORY_SESSIONS) break;
+    modules.delete(key);
+  }
+  for (const key of [...restored.keys()]) {
+    if (restored.size <= MAX_MEMORY_SESSIONS) break;
+    restored.delete(key);
+  }
 }
 
 export function clearMemoryRevocations(): void {
@@ -461,7 +494,12 @@ export async function revokeSession(
   }
   const normalizedLayers = Array.from(new Set(layers.filter((l) => KNOWN_MODULES.has(l)))).sort();
   const key = sessionKey(cleanTenant, cleanAgent, cleanSession);
-  const existing = revokedSessionMap().get(key);
+  // The in-memory stores are the fallback for a deployment without a
+  // database. When the database holds the state, writing to them as well
+  // only grew the process heap on the ingest hot path, keyed by identifiers
+  // the agent under defence controls.
+  const memoryOnly = !process.env.DATABASE_URL;
+  const existing = memoryOnly ? revokedSessionMap().get(key) : undefined;
   const mergedLayers = normalizedLayers.length
     ? normalizedLayers
     : (existing?.layers ?? []);
@@ -475,12 +513,15 @@ export async function revokeSession(
     triggered_by: cleanTrigger,
     layers: mergedLayers,
   };
-  revokedSessionMap().set(key, entry);
-  // A revocation supersedes any earlier restore: the session is live again and
-  // any new detection, including this one, counts from here on.
-  sessionRestoredAtMap().delete(key);
+  if (memoryOnly) {
+    revokedSessionMap().set(key, entry);
+    // A revocation supersedes any earlier restore: the session is live again and
+    // any new detection, including this one, counts from here on.
+    sessionRestoredAtMap().delete(key);
+    enforceMemorySessionBound();
+  }
 
-  if (!process.env.DATABASE_URL) {
+  if (memoryOnly) {
     return entry;
   }
 
@@ -490,13 +531,32 @@ export async function revokeSession(
          (tenant_id, agent_id, session_id, reason, triggered_by, layers, revoked_at)
        values ($1, $2, $3, $4, $5, $6::text[], now())
        on conflict (tenant_id, agent_id, session_id) do update set
-         reason = excluded.reason,
-         triggered_by = excluded.triggered_by,
+         -- An active revocation keeps the record that created it. A manual
+         -- quarantine recorded as "confirmed exfiltration" must not be
+         -- overwritten by the auto-breaker's wording, and the original
+         -- detection time is what an incident review needs.
+         reason = case
+           when monolith.revoked_sessions.restored_at is null
+             then monolith.revoked_sessions.reason
+           else excluded.reason
+         end,
+         triggered_by = case
+           when monolith.revoked_sessions.restored_at is null
+             then monolith.revoked_sessions.triggered_by
+           else excluded.triggered_by
+         end,
          layers = case
-           when coalesce(array_length(excluded.layers, 1), 0) > 0 then excluded.layers
+           when monolith.revoked_sessions.restored_at is null
+             then monolith.revoked_sessions.layers
+           when coalesce(array_length(excluded.layers, 1), 0) > 0
+             then excluded.layers
            else monolith.revoked_sessions.layers
          end,
-         revoked_at = now(),
+         revoked_at = case
+           when monolith.revoked_sessions.restored_at is null
+             then monolith.revoked_sessions.revoked_at
+           else now()
+         end,
          -- Re-revoking a previously restored session re-arms the breaker; its
          -- earlier history is judged afresh only by what lands from now on.
          restored_at = null
@@ -504,7 +564,6 @@ export async function revokeSession(
       [cleanTenant, cleanAgent, cleanSession, cleanReason, cleanTrigger, mergedLayers],
     );
     const saved = toSessionRevocation(result.rows[0]);
-    revokedSessionMap().set(key, saved);
     return saved;
   });
 }
@@ -521,13 +580,17 @@ export async function restoreSession(
     throw new IncidentInputError("tenant_id, agent_id, and session_id are required");
   }
   const key = sessionKey(cleanTenant, cleanAgent, cleanSession);
-  const hadMemory = revokedSessionMap().delete(key);
-  sessionModulesMap().delete(key);
-  // The restore is a watermark, not a deletion: the ledger keeps the evidence
-  // that tripped the breaker, so only events after this instant may re-trip it.
-  sessionRestoredAtMap().set(key, Date.now());
+  // The restore watermark lives in the database when there is one.
+  const memoryOnly = !process.env.DATABASE_URL;
+  const hadMemory = memoryOnly ? revokedSessionMap().delete(key) : false;
+  if (memoryOnly) {
+    sessionModulesMap().delete(key);
+    // The restore is a watermark, not a deletion: the ledger keeps the evidence
+    // that tripped the breaker, so only events after this instant may re-trip it.
+    sessionRestoredAtMap().set(key, Date.now());
+  }
 
-  if (!process.env.DATABASE_URL) {
+  if (memoryOnly) {
     return hadMemory;
   }
 
@@ -557,18 +620,24 @@ export async function evaluateSessionCircuitBreaker(
     if (!event.agent_id || !event.session_id) continue;
     const key = sessionKey(tenantId, event.agent_id, event.session_id);
     candidates.set(key, { agentId: event.agent_id, sessionId: event.session_id });
-    if (
-      severities.has(String(event.severity) as Severity)
-      && KNOWN_MODULES.has(event.module)
-      && event.event_type !== "session_quarantined"
-    ) {
+  }
+
+  if (!process.env.DATABASE_URL) {
+    for (const event of events) {
+      if (!event.agent_id || !event.session_id) continue;
+      if (
+        !severities.has(String(event.severity) as Severity)
+        || !KNOWN_MODULES.has(event.module)
+        || event.event_type === "session_quarantined"
+      ) {
+        continue;
+      }
+      const key = sessionKey(tenantId, event.agent_id, event.session_id);
       const set = sessionModulesMap().get(key) ?? new Set<string>();
       set.add(event.module);
       sessionModulesMap().set(key, set);
     }
-  }
-
-  if (!process.env.DATABASE_URL) {
+    enforceMemorySessionBound();
     for (const [key, { agentId, sessionId }] of candidates) {
       const modules = new Set<string>(sessionModulesMap().get(key) ?? []);
       // An analyst restore settles everything received before it. Without the
@@ -641,6 +710,15 @@ export async function evaluateSessionCircuitBreaker(
   const revoked = await listRevokedSessions(tenantId);
   return Array.from(new Set(revoked.map((r) => r.session_id)));
 }
+
+/**
+ * The sessions this call newly revoked.
+ *
+ * The ingest response carries the tenant's whole revocation set, because the
+ * emitters treat it as a snapshot they replace their local mirror with, not
+ * as a delta they merge. Returning only what this batch changed would
+ * silently narrow what an emitter believes is quarantined.
+ */
 
 /**
  * What else happened in this event's agent session.
@@ -791,10 +869,10 @@ export function computeEvidenceIntegrity(
 ): EvidenceIntegrity {
   const canonical = canonicalizeJson(bundleWithoutIntegrity);
   const canonicalSha256 = createHash("sha256").update(canonical, "utf8").digest("hex");
-  const secret =
-    env.MONOLITH_EVIDENCE_SIGNING_SECRET?.trim()
-    || env.MONOLITH_ALERT_WEBHOOK_SECRET?.trim()
-    || "";
+  // Only a dedicated evidence key signs a bundle. Falling back to the alert
+  // webhook secret would reuse one key for two unrelated purposes, so a
+  // compromise of the webhook signing path would also forge evidence.
+  const secret = env.MONOLITH_EVIDENCE_SIGNING_SECRET?.trim() || "";
   if (secret.length >= 32 && !/[\r\n\0]/.test(secret)) {
     const signature = createHmac("sha256", secret).update(canonical, "utf8").digest("hex");
     return {
@@ -808,6 +886,66 @@ export function computeEvidenceIntegrity(
     canonical_sha256: canonicalSha256,
     signature: null,
   };
+}
+
+export interface EvidenceVerification {
+  /** The bundle body is byte-for-byte the one that was signed. */
+  intact: boolean;
+  /** The bundle carries a signature, and it matches the configured key. */
+  authenticated: boolean;
+  /** Why verification did not succeed, in words a reader can act on. */
+  reason: string;
+}
+
+/**
+ * Check an evidence bundle against the configured signing key.
+ *
+ * Without this, nothing in the product could tell a forged bundle from a
+ * genuine one: the exporter computed a signature and nothing ever checked
+ * it. `intact` says the body still hashes to the recorded digest;
+ * `authenticated` says the signature verifies under the evidence key. A
+ * bundle exported without a signing key is intact but not authenticated, and
+ * a consumer must be able to tell those apart.
+ */
+export function verifyEvidenceIntegrity(
+  bundle: EvidenceBundle,
+  env: NodeJS.ProcessEnv = process.env,
+): EvidenceVerification {
+  const { integrity, ...body } = bundle;
+  if (!integrity || typeof integrity !== "object") {
+    return { intact: false, authenticated: false, reason: "the bundle carries no integrity block" };
+  }
+  const canonical = canonicalizeJson(body);
+  const canonicalSha256 = createHash("sha256").update(canonical, "utf8").digest("hex");
+  if (canonicalSha256 !== integrity.canonical_sha256) {
+    return {
+      intact: false,
+      authenticated: false,
+      reason: "the bundle contents do not match the recorded digest",
+    };
+  }
+  if (!integrity.signature) {
+    return {
+      intact: true,
+      authenticated: false,
+      reason: "the bundle was exported without a signing key, so it is not authenticated",
+    };
+  }
+  const secret = env.MONOLITH_EVIDENCE_SIGNING_SECRET?.trim() || "";
+  if (secret.length < 32 || /[\r\n\0]/.test(secret)) {
+    return {
+      intact: true,
+      authenticated: false,
+      reason: "no usable evidence signing key is configured, so the signature cannot be checked",
+    };
+  }
+  const expected = createHmac("sha256", secret).update(canonical, "utf8").digest("hex");
+  const matches =
+    expected.length === integrity.signature.length
+    && timingSafeEqual(Buffer.from(expected, "utf8"), Buffer.from(integrity.signature, "utf8"));
+  return matches
+    ? { intact: true, authenticated: true, reason: "the bundle is intact and its signature verifies" }
+    : { intact: true, authenticated: false, reason: "the signature does not match the bundle contents" };
 }
 
 export async function exportIncidentEvidence(
