@@ -1,27 +1,103 @@
+# Every image builds from the repository root (see the `context: .` lines in
+# docker-compose.yml), so this file — not any per-module file — is what
+# decides what enters an image. The patterns mirror .gitignore, so a file
+# that is not in the repository is also not in the image.
+#
+# scripts/check_dockerignore.py keeps the two in step.
+
+# ── Version control and CI ──────────────────────────────────────────────
 .git
 .github
-**/node_modules
-**/.next
-**/target
-**/__pycache__
-**/.pytest_cache
-**/chroma_store
-**/*.pyc
+
+# ── Secrets / environment ───────────────────────────────────────────────
 .env
 .env.*
 !*.env.example
-# Local event outboxes and detector state must never enter a build context.
-# Names are listed explicitly: a wildcard here would swallow outbox.rs.
+# Private keys and certificates must never enter an image, even when one is
+# lying in the tree uncommitted.
+*.pem
+*.key
+*.p12
+*.pfx
+
+# ── Rust (mcp-shield, crates/pbm-secret-boundary) ───────────────────────
+**/target
+**/baseline_hashes.json
+# The lock file serializing read-modify-write cycles on that store.
+**/*.json.lock
+
+# ── Python (vector-anchor, trace-audit, python-common) ──────────────────
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/*.egg-info
+**/.venv
+**/.venv-next
+**/venv
+**/build
+**/dist
+
+# ── Node / Next.js (dashboard) ──────────────────────────────────────────
+**/node_modules
+**/.next
+**/next-env.d.ts
+**/*.tsbuildinfo
+**/.eslintcache
+**/npm-debug.log*
+
+# ── Runtime-generated data / models ─────────────────────────────────────
+**/chroma_store
+**/baseline_distribution.json
+# Detector state plus its .tmp / .unreadable / .unreadable.N siblings.
+**/detector_state.json*
+**/.ollama
+**/.agent-state
+**/.monolith
+**/.native-pg-*
+
+# ── Durable event outboxes (hold event payloads; never ship them) ───────
+# The names are listed explicitly: a wildcard here would swallow outbox.rs.
+# The extension is part of the pattern for the same reason — `**/*outbox*`
+# would match the Rust source file outbox.rs.
 **/outbox.jsonl
 **/outbox.dead
 **/outbox.lock
 **/outbox.tmp
+**/*outbox.jsonl
+**/*outbox.dead
+**/*outbox.lock
+**/*outbox.tmp
 **/*outbox.db*
-**/detector_state.json*
-**/baseline_distribution.json
-**/baseline_hashes.json
-# Local runtime artifacts
-.native-pg-*
-dist
-evaluation/results
-*.log
+
+# ── Local-only material (not part of the codebase) ──────────────────────
+CLAUDE.md
+docker-compose.override.yml
+**/output
+**/video
+**/evaluation/results
+**/fixtures/benchmark_results.json
+*.pdf
+build_aeos_*.py
+build_five_project_explanations.py
+_aeos_p*.png
+o.json
+r.json
+
+# ── Editor / OS / patch dirties ─────────────────────────────────────────
+**/.DS_Store
+**/desktop.ini
+**/Thumbs.db
+**/ehthumbs.db
+**/.idea
+**/.vscode
+**/*.swp
+**/*.orig
+**/*.rej
+**/*~
+**/*.bak
+
+# ── Logs and temporary files ────────────────────────────────────────────
+**/*.log
+**/*.tmp

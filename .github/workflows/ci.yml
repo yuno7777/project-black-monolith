@@ -50,6 +50,11 @@ jobs:
         run: pip install -r contracts/requirements.txt
       - name: Validate schemas, fixtures, and correlation headers
         run: python contracts/check_contracts.py
+      - name: Check the build context against .gitignore
+        # Every image builds from the repository root, so a pattern missing
+        # from .dockerignore puts a file that is not in the repository into
+        # the image. The check is stdlib-only, so it needs no pinned install.
+        run: python scripts/check_dockerignore.py
 
   mcp-shield:
     name: MCP-Shield (Rust build + test)
@@ -284,6 +289,15 @@ jobs:
   integration:
     name: Integration (ingest contract + outage recovery)
     runs-on: ubuntu-latest
+    # This job builds five images and then runs eight verification scripts
+    # against a live stack. It normally finishes in about six minutes. Without
+    # a ceiling, a hung step — a container that never becomes healthy, a
+    # script that waits on an event that will not arrive — holds a runner for
+    # the six hours GitHub allows and blocks every pull request behind it,
+    # because this job gates the merge. Thirty minutes is more than five
+    # times the observed runtime, so a timeout here means a real hang rather
+    # than a slow day.
+    timeout-minutes: 30
     # The unit suites are cheap and catch most breakage; only pay for the
     # 5-image stack build once they are green.
     needs: [contracts, mcp-shield, secret-boundary, python-common, vector-anchor, trace-audit, dashboard]
