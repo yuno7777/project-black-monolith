@@ -1,6 +1,10 @@
 -- Durable, tenant-isolated outbound alert delivery. Critical evidence is
 -- committed together with its webhook job; a separate runtime worker handles
 -- network delivery so collector availability never depends on the receiver.
+-- The job is written on a savepoint inside the detection's transaction, so
+-- the two still commit as one when both succeed, and a notification that
+-- cannot be written delays the notification instead of destroying the
+-- detection it was raised for.
 
 create table if not exists monolith.alert_outbox (
   event_id uuid primary key references monolith.security_events(event_id) on delete cascade,
