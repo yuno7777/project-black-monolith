@@ -252,8 +252,8 @@ regression would be invisible.
 | # | Gap | Where | Effort |
 | --- | --- | --- | --- |
 | 1 | The divergence gate is never tested in its **armed** state. | `trace-audit/tests/test_anthropic_gateway.py` | medium |
-| 2 | The entire triage write path is untested: validation, state change, audit trail. | `dashboard/app/api/triage/**` | medium |
-| 3 | The incident-queue read path is untested: filter parsing, keyset pagination, counts. | `dashboard/lib/incident-store.ts` | medium |
+| 2 | ~~The entire triage write path is untested: validation, state change, audit trail.~~ **closed** | `dashboard/app/api/incidents/route.ts` | medium |
+| 3 | ~~The incident-queue read path is untested: filter parsing, keyset pagination, counts.~~ **closed** | `dashboard/lib/incident-store.ts` | medium |
 | 4 | The detector-reset path is untested end to end, on both sides of the wire. | `vector-anchor`, `dashboard` | medium |
 | 5 | The rule deciding whether a credential may travel over plain HTTP to the upstream model is neither present nor tested. | `trace-audit/src/anthropic_gateway.py` | medium |
 | 6 | TraceAudit's prompt projection drops every non-text content block, and is never tested against one. | `trace-audit/src/anthropic_gateway.py` | medium |
@@ -261,6 +261,60 @@ regression would be invisible.
 | 8 | The production Postgres branch of the session list is never executed by any test. | `dashboard/app/api/sessions/route.ts` | medium |
 | 9 | The benchmark ledger's write and read paths are untested, route included. | `dashboard/lib/benchmark-store.ts` | small |
 | 10 | The two functions the memory-layer detector's hot path depends on are untested; the one that is tested is not on the hot path. | `vector-anchor/src/frequency_tracker.py` | small |
+
+(The cited path for gap 2 was wrong: there is no `dashboard/app/api/triage/`. The
+triage write path is `dashboard/app/api/incidents/route.ts`, and the state it
+writes is in `dashboard/lib/incident-store.ts`.)
+
+---
+
+## Closed test gaps
+
+### The triage write path (gap 2)
+
+`dashboard/test/incident-triage.test.ts` — sixteen tests over the whole write
+path: what a transition may say, what it may not, who it is attributed to, and
+what it leaves behind.
+
+Four things were uncovered, and each is a way the incident queue could record
+a decision that never happened:
+
+- **The actor comes from the credential, not the body.** A caller that names
+  itself in the payload is not evidence of who did something. The trail is
+  written with the operator's identity.
+- **The state change and the trail entry share one transaction.** A trail that
+  cannot be written takes the state change with it; an incident is never
+  "resolved" with nothing to show for it.
+- **The event has to exist, in the caller's tenant.** An event in another
+  tenant is answered exactly as one that never happened, so the queue cannot
+  be used to probe another tenant's ledger.
+- **Resolving requires a verdict.** An incident cannot be resolved without
+  one, nor verdicted without being resolved.
+
+### The incident-queue read path (gap 3)
+
+`dashboard/test/incident-queue.test.ts` — fifteen tests over what the operator
+is shown and in what order:
+
+- **Worst-first.** The queue opens on the critical detection, not on the most
+  recent one; a critical event behind a stream of informational ones is a
+  detection nobody reads.
+- **The page is a keyset.** The cursor names the last row of the page it came
+  from, and the next page starts strictly after it. An offset would shift
+  under an event that arrived in between, and the operator would see one row
+  twice and another not at all.
+- **The page is bounded by the limit,** and one extra row is the signal that
+  there is more — so the store knows there is another page without a count
+  query.
+- **The counts are per tenant and derived,** so `open` and `all` cannot drift
+  from the numbers they are made of.
+- **A cursor is untrusted input.** A malformed one is refused with a `422`
+  rather than obeyed.
+
+Both files are proved by mutation: reversing the ordering, dropping the keyset
+predicate, dropping the extra row, unscoping the counts and narrowing the
+search each break exactly the test that claims to hold the guarantee, and each
+was reverted.
 
 ---
 
@@ -327,6 +381,13 @@ up.
   cadence falls back to the default and says so. The *unset* defaults are
   unchanged: only the default is in question, and a typo is not an answer to
   that question.
+- **The triage write path and the incident-queue read path had no tests at
+  all** (test gaps 2 and 3). The queue an analyst works from — who may
+  transition an incident, in what order the queue opens, how a page is cut,
+  what the counts beside it mean — was entirely unexercised, so a regression
+  in any of it would have been invisible. Fixed in PR #69: thirty-one tests
+  over the write path and the read path, each proved by mutating the
+  behaviour back and watching the test that claims to hold it fail.
 - **The tool layer's fail-open path discarded enforcement it had already
   computed** (§5 above). A failed baseline write aborted the whole analysis
   with a `?`, so the server's original bytes — the poisoned schema — were
