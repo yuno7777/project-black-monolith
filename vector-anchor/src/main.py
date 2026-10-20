@@ -8,16 +8,18 @@ drive it through POST /retrieve.
 
 from __future__ import annotations
 
+import inspect
 import logging
 from contextlib import asynccontextmanager
 from secrets import compare_digest
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .config import MODULE_NAME, load_config
 from .detector_state import DetectorStateStore
-from .events import context_from_headers, make_emitter, replay_dead_letters
+from .events import context_from_headers, make_emitter, replay_dead_letters, tenant_scope
 from .frequency_tracker import FrequencyTracker
 from .quarantine import Quarantine
 from .retriever_proxy import RetrieverProxy
@@ -297,14 +299,59 @@ def reset_detection(request: Request) -> dict:
     return {"status": "reset"}
 
 
+def _replay_through(target: Any, tenant: str | None) -> int:
+    """Requeue dead letters through whatever object provides them.
+
+    A scope the target cannot honour is refused rather than dropped:
+    replaying the whole spool on behalf of one tenant is exactly the mistake
+    the scope exists to prevent.
+    """
+    if target is None:
+        return 0
+    replay = getattr(target, "replay_dead_letters", None)
+    if not callable(replay):
+        raise HTTPException(
+            status_code=409,
+            detail="this outbox cannot scope a replay to one tenant",
+        )
+    if tenant is None:
+        return replay_dead_letters(target)
+    try:
+        parameters = inspect.signature(replay).parameters
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=409,
+            detail="this outbox cannot scope a replay to one tenant",
+        ) from None
+    if "tenant_id" not in parameters and not any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="this outbox cannot scope a replay to one tenant",
+        )
+    return replay_dead_letters(target, tenant_id=tenant)
+
+
 @app.post("/admin/replay-dead-letters")
 def admin_replay_dead_letters(request: Request) -> dict:
-    """Reset dead-lettered outbox events back to pending for immediate retry."""
+    """Reset dead-lettered outbox events back to pending for immediate retry.
+
+    `?tenant=` narrows the replay to one tenant. The outbox is shared by every
+    tenant this module serves, so an unscoped replay requeues another tenant's
+    evidence too. A tenant that cannot be read is refused rather than ignored:
+    a typo must never widen the replay to the whole spool.
+    """
     _require_admin_token(request)
+    try:
+        tenant = tenant_scope(request.query_params.get("tenant"))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     proxy: RetrieverProxy = app.state.proxy
     target = (
         getattr(getattr(proxy, "emit", None), "outbox", None)
         or getattr(proxy, "outbox", None)
         or getattr(proxy, "emit", None)
     )
-    return {"replayed": replay_dead_letters(target)}
+    return {"replayed": _replay_through(target, tenant)}

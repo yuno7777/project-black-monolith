@@ -23,6 +23,7 @@ try:
         make_emitter,
         now_ms,
         revoked_session_registry,
+        tenant_scope,
     )
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python-common"))
@@ -43,6 +44,7 @@ except ModuleNotFoundError:
         make_emitter,
         now_ms,
         revoked_session_registry,
+        tenant_scope,
     )
 
 __all__ = [
@@ -62,4 +64,5 @@ __all__ = [
     "make_emitter",
     "now_ms",
     "revoked_session_registry",
+    "tenant_scope",
 ]

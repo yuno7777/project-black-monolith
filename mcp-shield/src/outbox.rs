@@ -323,10 +323,15 @@ impl Outbox {
         append_record_bounded(&self.path, &record, MAX_SPOOL_RECORDS, MAX_SPOOL_BYTES)
     }
 
-    /// Move all records from `outbox.dead` back into `outbox.jsonl` with
+    /// Move records from `outbox.dead` back into `outbox.jsonl` with
     /// `attempts: 0` and `next_attempt_ms: 0` under the file and process locks.
     /// Returns the number of dead-letter records replayed.
-    pub fn replay_dead_letters(&self) -> io::Result<usize> {
+    ///
+    /// A tenant-scoped replay (`Some(tenant)`) moves only that tenant's
+    /// records. The spool is shared, and an operator for one tenant has no
+    /// authority over another tenant's evidence, so the records that belong
+    /// to somebody else stay dead rather than being handed to whoever asked.
+    pub fn replay_dead_letters(&self, tenant: Option<&str>) -> io::Result<usize> {
         let _guard = self.file_lock.lock().unwrap_or_else(|e| e.into_inner());
         let _process_guard = self.acquire_process_lock()?;
 
@@ -334,17 +339,26 @@ impl Outbox {
         if dead_records.is_empty() {
             return Ok(0);
         }
-        let replayed = dead_records.len();
+        let (selected, left_behind): (Vec<SpoolRecord>, Vec<SpoolRecord>) = match tenant {
+            Some(scope) => dead_records
+                .into_iter()
+                .partition(|record| record_tenant(record).as_deref() == Some(scope)),
+            None => (dead_records, Vec::new()),
+        };
+        if selected.is_empty() {
+            return Ok(0);
+        }
+        let replayed = selected.len();
         let mut pending = read_records(&self.path)?;
         // Refuse rather than silently discard. The spool bound drops the
         // oldest records from the front and the replayed dead letters are
         // appended at the end, so replaying into a full spool destroys
         // undelivered evidence — and the operator is told only that N
         // records were replayed.
-        let projected_records = pending.len() + dead_records.len();
+        let projected_records = pending.len() + selected.len();
         let projected_bytes: usize = pending
             .iter()
-            .chain(dead_records.iter())
+            .chain(selected.iter())
             .map(|record| {
                 serde_json::to_string(record)
                     .map(|s| s.len() + 1)
@@ -359,7 +373,7 @@ impl Outbox {
             )));
         }
         let now = now_ms();
-        for mut record in dead_records {
+        for mut record in selected {
             record.attempts = 0;
             record.next_attempt_ms = 0;
             record.last_error = None;
@@ -376,7 +390,9 @@ impl Outbox {
             );
         }
         write_records_atomically(&self.path, &pending)?;
-        write_records_atomically(&self.dead_path, &[])?;
+        // The dead file is rewritten with what is left, not emptied: the
+        // records that belong to another tenant are still evidence.
+        write_records_atomically(&self.dead_path, &left_behind)?;
         Ok(replayed)
     }
 
@@ -580,6 +596,25 @@ fn record_created_ms(record: &SpoolRecord) -> Option<u128> {
         return Some(record.next_attempt_ms);
     }
     None
+}
+
+/// The tenant a spooled record belongs to, read from the event payload.
+///
+/// The payload is the event envelope, so the tenant is in it. Reading it back
+/// is what lets a record be attributed to a tenant without a second source of
+/// truth that could disagree with what actually gets delivered. A record that
+/// cannot be read is attributed to nobody, which means a tenant-scoped replay
+/// leaves it alone rather than handing it to the wrong tenant.
+fn record_tenant(record: &SpoolRecord) -> Option<String> {
+    let value: Value = serde_json::from_str(&record.payload).ok()?;
+    let tenant = value.get("tenant_id")?.as_str()?.trim();
+    if tenant.is_empty() || tenant.len() > 128 {
+        return None;
+    }
+    if tenant.chars().any(|character| character.is_control()) {
+        return None;
+    }
+    Some(tenant.to_string())
 }
 
 pub(crate) fn enforce_spool_bounds(
@@ -914,6 +949,71 @@ fn write_http_json_response(
     stream.flush()
 }
 
+/// Decode `%XX` escapes and `+` in a query-string value.
+fn percent_decode(value: &str) -> Result<String, String> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' => {
+                if index + 2 >= bytes.len() {
+                    return Err("the query string is malformed".to_string());
+                }
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3])
+                    .map_err(|_| "the query string is malformed".to_string())?;
+                let byte = u8::from_str_radix(hex, 16)
+                    .map_err(|_| "the query string is malformed".to_string())?;
+                out.push(byte);
+                index += 3;
+            }
+            b'+' => {
+                out.push(b' ');
+                index += 1;
+            }
+            other => {
+                out.push(other);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(out).map_err(|_| "the query string is malformed".to_string())
+}
+
+/// The `tenant` query parameter of an admin request.
+///
+/// `Ok(None)` means the request asked for no scope and `Ok(Some(id))` names
+/// the tenant to scope to. `Err` means the parameter was there but could not
+/// be read: a scope nobody can read is refused rather than ignored, because a
+/// typo must never widen a replay to the whole spool.
+fn query_tenant(raw_target: &str) -> Result<Option<String>, String> {
+    let Some((_, query)) = raw_target.split_once('?') else {
+        return Ok(None);
+    };
+    let mut found = None;
+    for pair in query.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (name, value) = pair
+            .split_once('=')
+            .ok_or_else(|| "the query string is malformed".to_string())?;
+        if name != "tenant" {
+            continue;
+        }
+        let decoded = percent_decode(value)?;
+        let trimmed = decoded.trim();
+        if trimmed.is_empty()
+            || trimmed.len() > 128
+            || trimmed.chars().any(|character| character.is_control())
+        {
+            return Err("tenant must be 1-128 printable characters".to_string());
+        }
+        found = Some(trimmed.to_string());
+    }
+    Ok(found)
+}
+
 /// Handle a single HTTP connection on the status listener (`/health`, `/stats`,
 /// and `POST /admin/replay-dead-letters`).
 pub fn handle_status_connection(
@@ -991,7 +1091,20 @@ pub fn handle_status_connection(
             if auth != AdminAuth::Authorized {
                 return refuse_admin(stream, auth);
             }
-            match outbox.replay_dead_letters() {
+            // A tenant that cannot be read is refused rather than ignored: an
+            // unreadable scope must never fall back to the whole spool.
+            let tenant = match query_tenant(raw_target) {
+                Ok(tenant) => tenant,
+                Err(reason) => {
+                    return write_http_json_response(
+                        stream,
+                        422,
+                        "Unprocessable Entity",
+                        &json!({ "error": reason }),
+                    )
+                }
+            };
+            match outbox.replay_dead_letters(tenant.as_deref()) {
                 Ok(replayed) => {
                     write_http_json_response(stream, 200, "OK", &json!({ "replayed": replayed }))
                 }
@@ -1055,6 +1168,18 @@ mod tests {
             last_error: None,
             created_ms: now_ms(),
         }
+    }
+
+    /// A record whose payload carries the tenant it belongs to, the way a
+    /// real event envelope does.
+    fn record_for_tenant(id: &str, tenant: &str) -> SpoolRecord {
+        let mut record = record(id);
+        record.payload = format!(
+            r#"{{"event_id":"{id}","tenant_id":"{tenant}"}}"#,
+            id = id,
+            tenant = tenant
+        );
+        record
     }
 
     #[test]
@@ -1259,7 +1384,7 @@ mod tests {
         .unwrap();
 
         let error = outbox
-            .replay_dead_letters()
+            .replay_dead_letters(None)
             .expect_err("a full spool must refuse the replay");
         assert!(
             error.to_string().contains("at its bound"),
@@ -1310,7 +1435,7 @@ mod tests {
         assert_eq!(stats_before.outbox_dead_letter, 2);
         assert!(stats_before.oldest_pending_age_seconds >= 5);
 
-        let replayed = outbox.replay_dead_letters().unwrap();
+        let replayed = outbox.replay_dead_letters(None).unwrap();
         assert_eq!(replayed, 2);
         assert!(!outbox.dead_letter_path().exists());
 
@@ -1324,6 +1449,114 @@ mod tests {
         assert_eq!(pending_records[1].attempts, 0);
         assert_eq!(pending_records[1].next_attempt_ms, 0);
         assert!(pending_records[1].last_error.is_none());
+    }
+
+    #[test]
+    fn a_tenant_scoped_replay_leaves_another_tenants_dead_letters_alone() {
+        let dir = temp_dir("replay-tenant-scope");
+        let outbox = Outbox::for_path(dir.join("outbox.jsonl")).unwrap();
+
+        let mut mine = record_for_tenant("dead-acme", "acme");
+        mine.attempts = 10;
+        let mut theirs = record_for_tenant("dead-other", "other");
+        theirs.attempts = 10;
+        append_dead_records_bounded(
+            outbox.dead_letter_path(),
+            &[mine, theirs],
+            MAX_SPOOL_RECORDS,
+            MAX_SPOOL_BYTES,
+        )
+        .unwrap();
+
+        // An operator for one tenant has no authority over another tenant's
+        // evidence, and the count they are given is their own.
+        let replayed = outbox.replay_dead_letters(Some("acme")).unwrap();
+        assert_eq!(replayed, 1);
+
+        let pending = read_records(outbox.spool_path()).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].event_id, "dead-acme");
+
+        // The other tenant's dead letter is still evidence, and it is still
+        // dead: it was not replayed, and it was not discarded either.
+        let dead = read_records(outbox.dead_letter_path()).unwrap();
+        assert_eq!(dead.len(), 1);
+        assert_eq!(dead[0].event_id, "dead-other");
+    }
+
+    #[test]
+    fn a_tenant_scoped_replay_will_not_hand_over_a_record_it_cannot_attribute() {
+        let dir = temp_dir("replay-unattributable");
+        let outbox = Outbox::for_path(dir.join("outbox.jsonl")).unwrap();
+
+        let mut orphan = record("dead-orphan");
+        orphan.attempts = 10;
+        append_dead_records_bounded(
+            outbox.dead_letter_path(),
+            &[orphan],
+            MAX_SPOOL_RECORDS,
+            MAX_SPOOL_BYTES,
+        )
+        .unwrap();
+
+        // The payload says nothing about a tenant, so it cannot be given to
+        // one. Leaving it dead is the only answer that cannot be wrong.
+        let replayed = outbox.replay_dead_letters(Some("acme")).unwrap();
+        assert_eq!(replayed, 0);
+        assert_eq!(read_records(outbox.spool_path()).unwrap().len(), 0);
+        assert_eq!(read_records(outbox.dead_letter_path()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_status_listener_replays_only_the_tenant_it_was_asked_for() {
+        let dir = temp_dir("status-http-tenant");
+        let outbox = Arc::new(Outbox::for_path(dir.join("outbox.jsonl")).unwrap());
+        let mut mine = record_for_tenant("dead-acme", "acme");
+        mine.attempts = 10;
+        let mut theirs = record_for_tenant("dead-other", "other");
+        theirs.attempts = 10;
+        append_dead_records_bounded(
+            outbox.dead_letter_path(),
+            &[mine, theirs],
+            MAX_SPOOL_RECORDS,
+            MAX_SPOOL_BYTES,
+        )
+        .unwrap();
+
+        let token = "super-secret-admin-token-123456";
+        let addr =
+            spawn_status_listener("127.0.0.1:0", Arc::clone(&outbox), Some(token.to_string()))
+                .unwrap();
+
+        let send_raw = |raw_req: &str| -> String {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream.write_all(raw_req.as_bytes()).unwrap();
+            stream.flush().unwrap();
+            let mut resp = String::new();
+            stream.read_to_string(&mut resp).unwrap();
+            resp
+        };
+
+        let replay_resp = send_raw(&format!(
+            "POST /admin/replay-dead-letters?tenant=acme HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n"
+        ));
+        assert!(replay_resp.starts_with("HTTP/1.1 200 OK"));
+        let replay_body: Value =
+            serde_json::from_str(replay_resp.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(replay_body["replayed"], 1);
+        assert_eq!(outbox.stats().outbox_pending, 1);
+        assert_eq!(outbox.stats().outbox_dead_letter, 1);
+
+        // A tenant that cannot be read is refused rather than ignored: an
+        // unreadable scope must never fall back to the whole spool.
+        let refused = send_raw(&format!(
+            "POST /admin/replay-dead-letters?tenant= HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n"
+        ));
+        assert!(
+            refused.starts_with("HTTP/1.1 422 Unprocessable Entity"),
+            "an unreadable tenant must be refused: {refused}"
+        );
+        assert_eq!(outbox.stats().outbox_dead_letter, 1);
     }
 
     #[test]

@@ -20,11 +20,17 @@ from src.quarantine import Quarantine, QuarantinedDoc
 from src.retriever_proxy import RetrieverProxy
 
 
-def request(authorization: str = "") -> Request:
+def request(authorization: str = "", query_string: str = "") -> Request:
     headers = []
     if authorization:
         headers.append((b"authorization", authorization.encode()))
-    return Request({"type": "http", "headers": headers})
+    return Request(
+        {
+            "type": "http",
+            "headers": headers,
+            "query_string": query_string.encode(),
+        }
+    )
 
 
 def test_admin_auth_fails_closed_without_configuration():
@@ -124,4 +130,60 @@ def test_admin_replay_dead_letters_route(tmp_path):
     assert result == {"replayed": 1}
     assert outbox.stats()["pending"] == 1
     assert outbox.stats()["dead"] == 0
+    outbox.close()
+
+
+def test_admin_replay_dead_letters_route_is_scoped_to_one_tenant(tmp_path):
+    outbox = EventOutbox(
+        str(tmp_path / "outbox.db"),
+        "https://dashboard.invalid/api/ingest",
+        "test-token-value",
+        start_worker=False,
+    )
+    outbox._post = lambda _payload: (422, "http 422")  # type: ignore[method-assign]
+    outbox.enqueue("dead-acme", b'{"event_id":"dead-acme","tenant_id":"acme"}')
+    outbox.enqueue("dead-other", b'{"event_id":"dead-other","tenant_id":"other"}')
+    outbox.flush_once()
+    assert outbox.stats()["dead"] == 2
+
+    app.state.proxy = SimpleNamespace(
+        cfg=SimpleNamespace(admin_token="correct-token-0000"),
+        emit=SimpleNamespace(outbox=outbox),
+    )
+
+    # An operator for one tenant has no authority over another tenant's
+    # evidence, and the count they are given is their own.
+    result = admin_replay_dead_letters(
+        request("Bearer correct-token-0000", "tenant=acme")
+    )
+    assert result == {"replayed": 1}
+    assert outbox.stats()["pending"] == 1
+    assert outbox.stats()["dead"] == 1
+    outbox.close()
+
+
+def test_admin_replay_dead_letters_route_refuses_a_tenant_it_cannot_read(tmp_path):
+    outbox = EventOutbox(
+        str(tmp_path / "outbox.db"),
+        "https://dashboard.invalid/api/ingest",
+        "test-token-value",
+        start_worker=False,
+    )
+    outbox._post = lambda _payload: (422, "http 422")  # type: ignore[method-assign]
+    outbox.enqueue("dead-acme", b'{"event_id":"dead-acme","tenant_id":"acme"}')
+    outbox.flush_once()
+
+    app.state.proxy = SimpleNamespace(
+        cfg=SimpleNamespace(admin_token="correct-token-0000"),
+        emit=SimpleNamespace(outbox=outbox),
+    )
+
+    # A tenant nobody can read must not fall back to the whole spool: the
+    # event stays dead rather than being handed to a tenant nobody asked
+    # about.
+    with pytest.raises(HTTPException) as refused:
+        admin_replay_dead_letters(request("Bearer correct-token-0000", "tenant="))
+    assert refused.value.status_code == 422
+    assert outbox.stats()["dead"] == 1
+    assert outbox.stats()["pending"] == 0
     outbox.close()

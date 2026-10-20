@@ -462,6 +462,81 @@ def test_admin_replay_dead_letters_endpoint(tmp_path):
     assert resp2.json() == {"replayed": 4}
 
 
+def test_admin_replay_dead_letters_endpoint_is_scoped_to_one_tenant(tmp_path):
+    _setup_app_state(tmp_path)
+    client = TestClient(app, raise_server_exceptions=True)
+
+    seen: list[str | None] = []
+
+    def replay(tenant_id=None):
+        seen.append(tenant_id)
+        return 4
+
+    app.state.emit.outbox = SimpleNamespace(replay_dead_letters=replay)
+
+    # The outbox is shared by every tenant this module serves, so a replay
+    # that named no tenant would requeue another tenant's evidence too.
+    resp = client.post(
+        "/admin/replay-dead-letters?tenant=acme",
+        headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"replayed": 4}
+    assert seen == ["acme"]
+
+
+def test_admin_replay_dead_letters_endpoint_scopes_the_emitter_path(tmp_path):
+    _setup_app_state(tmp_path)
+    client = TestClient(app, raise_server_exceptions=True)
+
+    seen: list[str | None] = []
+
+    def replay(tenant_id=None):
+        seen.append(tenant_id)
+        return 3
+
+    # The production emitter carries the replay helper itself, so the endpoint
+    # takes that path rather than reaching into the outbox beneath it. The
+    # scope has to survive that hop too.
+    app.state.emit.replay_dead_letters = replay
+
+    resp = client.post(
+        "/admin/replay-dead-letters?tenant=acme",
+        headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"replayed": 3}
+    assert seen == ["acme"]
+
+
+def test_admin_replay_dead_letters_endpoint_refuses_an_unreadable_tenant(tmp_path):
+    _setup_app_state(tmp_path)
+    client = TestClient(app, raise_server_exceptions=True)
+    app.state.emit.outbox = SimpleNamespace(replay_dead_letters=lambda: 4)
+
+    # A tenant nobody can read must not fall back to the whole spool.
+    resp = client.post(
+        "/admin/replay-dead-letters?tenant=",
+        headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
+    )
+    assert resp.status_code == 422
+
+
+def test_admin_replay_dead_letters_endpoint_refuses_a_scope_it_cannot_honour(tmp_path):
+    _setup_app_state(tmp_path)
+    client = TestClient(app, raise_server_exceptions=True)
+    app.state.emit.outbox = SimpleNamespace(replay_dead_letters=lambda: 4)
+
+    # This outbox cannot be scoped. Replaying anyway would hand a tenant
+    # somebody else's evidence, which is the mistake the scope exists to
+    # prevent — so the request is refused instead.
+    resp = client.post(
+        "/admin/replay-dead-letters?tenant=acme",
+        headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
+    )
+    assert resp.status_code == 409
+
+
 def test_baseline_capture_idempotency_force_and_fallback(tmp_path, monkeypatch):
     baseline_file = tmp_path / "baseline_distribution.json"
     monkeypatch.setenv("MONOLITH_BASELINE_PATH", str(baseline_file))

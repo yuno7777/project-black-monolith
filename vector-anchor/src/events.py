@@ -24,6 +24,7 @@ try:
         now_ms,
         replay_dead_letters,
         revoked_session_registry,
+        tenant_scope,
     )
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python-common"))
@@ -45,6 +46,7 @@ except ModuleNotFoundError:
         now_ms,
         replay_dead_letters,
         revoked_session_registry,
+        tenant_scope,
     )
 
 __all__ = [
@@ -65,4 +67,5 @@ __all__ = [
     "now_ms",
     "replay_dead_letters",
     "revoked_session_registry",
+    "tenant_scope",
 ]

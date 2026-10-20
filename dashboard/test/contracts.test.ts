@@ -1784,7 +1784,7 @@ test("operations store probes MCP_SHIELD_INTERNAL_URL and replays dead letters",
         { status: 200, headers: { "content-type": "application/json" } },
       );
     }
-    if (url.endsWith("/admin/replay-dead-letters")) {
+    if (url.includes("/admin/replay-dead-letters")) {
       return new Response(JSON.stringify({ replayed: 2 }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -1803,7 +1803,49 @@ test("operations store probes MCP_SHIELD_INTERNAL_URL and replays dead letters",
 
     const replay = await replayDeadLetters("tenant-cb");
     assert.equal(replay.total_replayed, 6);
-    assert.ok(seenUrls.some((u) => u === "POST http://127.0.0.1:8003/admin/replay-dead-letters"));
+    assert.ok(
+      seenUrls.some(
+        (u) => u === "POST http://127.0.0.1:8003/admin/replay-dead-letters?tenant=tenant-cb",
+      ),
+      `the replay must name the tenant it is scoped to: ${JSON.stringify(seenUrls)}`,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    delete process.env.MCP_SHIELD_INTERNAL_URL;
+    delete process.env.VECTOR_ANCHOR_INTERNAL_URL;
+    delete process.env.TRACE_AUDIT_INTERNAL_URL;
+  }
+});
+
+test("the dead-letter replay is scoped to the tenant that asked for it", async () => {
+  const { replayDeadLetters } = await import("../lib/operations-store");
+
+  const originalFetch = globalThis.fetch;
+  process.env.MCP_SHIELD_INTERNAL_URL = "http://127.0.0.1:8003";
+  process.env.VECTOR_ANCHOR_INTERNAL_URL = "http://127.0.0.1:8001";
+  process.env.TRACE_AUDIT_INTERNAL_URL = "http://127.0.0.1:8002";
+  process.env.MONOLITH_MODULE_ADMIN_TOKEN = "admin-token-0000000000";
+
+  const seenUrls: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    seenUrls.push(input.toString());
+    return new Response(JSON.stringify({ replayed: 1 }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  try {
+    const replay = await replayDeadLetters("tenant acme/one");
+    assert.equal(replay.tenant_id, "tenant acme/one");
+    // Every module is asked for that tenant's dead letters and nobody else's.
+    // The tenant is encoded, so a name with a separator cannot smuggle a
+    // second parameter into the module's query string.
+    assert.equal(seenUrls.length, 3);
+    for (const url of seenUrls) {
+      assert.match(url, /\?tenant=tenant%20acme%2Fone$/);
+      assert.equal(url.split("tenant=").length, 2);
+    }
   } finally {
     globalThis.fetch = originalFetch;
     delete process.env.MCP_SHIELD_INTERNAL_URL;

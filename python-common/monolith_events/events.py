@@ -67,6 +67,38 @@ def _clean_id(value: Any) -> str | None:
     return trimmed
 
 
+def _tenant_of_payload(payload: bytes) -> str | None:
+    """The tenant a stored event belongs to, or None when it says nothing.
+
+    The payload is the event envelope, so the tenant is in it. Reading it
+    back is what lets a spooled row be attributed to a tenant without a
+    second source of truth that could disagree with what gets delivered.
+    """
+    try:
+        decoded = json.loads(payload)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    return _clean_id(decoded.get("tenant_id"))
+
+
+def tenant_scope(value: str | None) -> str | None:
+    """The tenant a scoped operation applies to.
+
+    `None` means no scope was asked for. A value that cannot be a tenant id
+    raises `ValueError` rather than returning `None`, because the two mean
+    different things: no scope replays everything, and a scope nobody can
+    read must be rejected instead of quietly becoming everything.
+    """
+    if value is None:
+        return None
+    cleaned = _clean_id(value)
+    if not cleaned:
+        raise ValueError("tenant must be 1-128 printable characters")
+    return cleaned
+
+
 def _safe_delivery_url(value: str, *, allow_insecure_http: bool = False) -> bool:
     try:
         parsed = urllib.parse.urlsplit(value)
@@ -341,7 +373,8 @@ class EventOutbox:
                 status text not null default 'pending',
                 last_error text,
                 created_ms integer not null,
-                updated_ms integer not null
+                updated_ms integer not null,
+                tenant_id text
             )"""
         )
         self._migrate_legacy_table()
@@ -350,6 +383,9 @@ class EventOutbox:
         )
         self._connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_event_outbox_status_updated ON event_outbox (status, updated_ms)"
+        )
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_event_outbox_tenant_status ON event_outbox (tenant_id, status)"
         )
 
     def _migrate_legacy_table(self) -> None:
@@ -362,8 +398,30 @@ class EventOutbox:
                     f"update event_outbox set {name} = ? where {name} is null",
                     (timestamp,),
                 )
+        if "tenant_id" not in columns:
+            self._connection.execute("alter table event_outbox add column tenant_id text")
+            self._backfill_tenant_ids()
 
-    def enqueue(self, event_id: str, payload: bytes) -> None:
+    def _backfill_tenant_ids(self) -> None:
+        """Give every row already in the spool the tenant it belongs to.
+
+        The tenant lives inside the stored payload, so a row that predates the
+        column can still be attributed. Leaving it unattributed would be the
+        one way to lose evidence: a tenant-scoped replay skips rows it cannot
+        place, and the skipped rows are the ones an operator asked about.
+        """
+        rows = self._connection.execute(
+            "select event_id, payload from event_outbox where tenant_id is null"
+        ).fetchall()
+        for event_id, payload in rows:
+            tenant = _tenant_of_payload(payload)
+            if tenant:
+                self._connection.execute(
+                    "update event_outbox set tenant_id = ? where event_id = ?",
+                    (tenant, event_id),
+                )
+
+    def enqueue(self, event_id: str, payload: bytes, tenant_id: str | None = None) -> None:
         if (
             not event_id
             or len(event_id.encode("utf-8")) > MAX_ID_LENGTH
@@ -372,13 +430,16 @@ class EventOutbox:
             raise ValueError(f"event_id must be 1-{MAX_ID_LENGTH} printable characters")
         if not payload or len(payload) > MAX_EVENT_PAYLOAD_BYTES:
             raise ValueError(f"event payload must be 1-{MAX_EVENT_PAYLOAD_BYTES} bytes")
+        clean_tenant = _clean_id(tenant_id) if tenant_id is not None else None
+        if clean_tenant is None:
+            clean_tenant = _tenant_of_payload(payload)
         timestamp = now_ms()
         with self._lock, self._connection:
             self._connection.execute(
                 """insert or ignore into event_outbox
-                   (event_id, payload, next_attempt_ms, created_ms, updated_ms)
-                   values (?, ?, ?, ?, ?)""",
-                (event_id, payload, timestamp, timestamp, timestamp),
+                   (event_id, payload, tenant_id, next_attempt_ms, created_ms, updated_ms)
+                   values (?, ?, ?, ?, ?, ?)""",
+                (event_id, payload, clean_tenant, timestamp, timestamp, timestamp),
             )
             self._enforce_limits_locked(timestamp)
         self._wake.set()
@@ -505,19 +566,44 @@ class EventOutbox:
             "worker_error": self._worker_error,
         }
 
-    def replay_dead_letters(self) -> int:
+    def replay_dead_letters(self, tenant_id: str | None = None) -> int:
+        """Move dead-lettered events back to pending so they are retried.
+
+        A tenant-scoped replay touches only that tenant's events. The outbox
+        is shared by every tenant a module serves, so an unscoped replay
+        requeues another tenant's evidence and reports it in a count the
+        operator then reads as their own.
+        """
         timestamp = now_ms()
+        clean_tenant: str | None = None
+        if tenant_id is not None:
+            clean_tenant = _clean_id(tenant_id)
+            if clean_tenant is None:
+                # A scope that cannot be read must never widen to "everything".
+                raise ValueError("tenant must be 1-128 printable characters")
         with self._lock, self._connection:
-            cursor = self._connection.execute(
-                """update event_outbox
-                   set status = 'pending',
-                       attempts = 0,
-                       next_attempt_ms = 0,
-                       last_error = null,
-                       updated_ms = ?
-                   where status = 'dead'""",
-                (timestamp,),
-            )
+            if clean_tenant is not None:
+                cursor = self._connection.execute(
+                    """update event_outbox
+                       set status = 'pending',
+                           attempts = 0,
+                           next_attempt_ms = 0,
+                           last_error = null,
+                           updated_ms = ?
+                       where status = 'dead' and tenant_id = ?""",
+                    (timestamp, clean_tenant),
+                )
+            else:
+                cursor = self._connection.execute(
+                    """update event_outbox
+                       set status = 'pending',
+                           attempts = 0,
+                           next_attempt_ms = 0,
+                           last_error = null,
+                           updated_ms = ?
+                       where status = 'dead'""",
+                    (timestamp,),
+                )
             replayed = int(
                 cursor.rowcount
                 if cursor.rowcount is not None and cursor.rowcount >= 0
@@ -630,7 +716,11 @@ class EventEmitter:
         print(line, file=sys.stderr, flush=True)
         if self.outbox:
             try:
-                self.outbox.enqueue(event["event_id"], line.encode("utf-8"))
+                self.outbox.enqueue(
+                    event["event_id"],
+                    line.encode("utf-8"),
+                    tenant_id=event["tenant_id"],
+                )
             except sqlite3.Error as error:
                 print(
                     f"event outbox enqueue failed: {type(error).__name__}",
@@ -649,16 +739,19 @@ class EventEmitter:
             return {"pending": 0, "dead": 0, "worker_alive": False, "worker_error": None}
         return self.outbox.stats()
 
-    def replay_dead_letters(self) -> int:
+    def replay_dead_letters(self, tenant_id: str | None = None) -> int:
         if not self.outbox:
             return 0
-        return self.outbox.replay_dead_letters()
+        return self.outbox.replay_dead_letters(tenant_id=tenant_id)
 
 
-def replay_dead_letters(outbox: EventOutbox | EventEmitter | None = None) -> int:
+def replay_dead_letters(
+    outbox: EventOutbox | EventEmitter | None = None,
+    tenant_id: str | None = None,
+) -> int:
     if outbox is None:
         return 0
-    return outbox.replay_dead_letters()
+    return outbox.replay_dead_letters(tenant_id=tenant_id)
 
 
 def make_emitter(
