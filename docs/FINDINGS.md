@@ -385,7 +385,7 @@ up.
   all** (test gaps 2 and 3). The queue an analyst works from — who may
   transition an incident, in what order the queue opens, how a page is cut,
   what the counts beside it mean — was entirely unexercised, so a regression
-  in any of it would have been invisible. Fixed in PR #69: thirty-one tests
+  in any of it would have been invisible. Fixed in PR #68: thirty-one tests
   over the write path and the read path, each proved by mutating the
   behaviour back and watching the test that claims to hold it fail.
 - **The tool layer's fail-open path discarded enforcement it had already
