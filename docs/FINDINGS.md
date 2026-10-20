@@ -258,7 +258,7 @@ regression would be invisible.
 | 5 | The rule deciding whether a credential may travel over plain HTTP to the upstream model is neither present nor tested. | `trace-audit/src/anthropic_gateway.py` | medium |
 | 6 | TraceAudit's prompt projection drops every non-text content block, and is never tested against one. | `trace-audit/src/anthropic_gateway.py` | medium |
 | 7 | The divergence detector's real-model behaviour is asserted by no committed result. | `trace-audit/fixtures/` | medium |
-| 8 | The production Postgres branch of the session list is never executed by any test. | `dashboard/app/api/sessions/route.ts` | medium |
+| 8 | ~~The production Postgres branch of the session list is never executed by any test.~~ **closed** | `dashboard/app/api/sessions/route.ts` | medium |
 | 9 | ~~The benchmark ledger's write and read paths are untested, route included.~~ **closed** | `dashboard/lib/benchmark-store.ts` | small |
 | 10 | The two functions the memory-layer detector's hot path depends on are untested; the one that is tested is not on the hot path. | `vector-anchor/src/frequency_tracker.py` | small |
 
@@ -357,6 +357,47 @@ the tenant from the body, allowing a detector twice, dropping the percentile
 check, reading the run's detectors without the tenant, unscoping the
 history, dropping the version bound and storing a threshold set that is not
 a map each break exactly the test that claims to hold that guarantee.
+
+### The session list's production path (gap 8)
+
+`dashboard/test/session-list.test.ts` — sixteen tests over the Postgres
+branch, the route, and the agreement between the two halves.
+
+The list answers "is my agent connected yet?". The per-session endpoint
+cannot answer it, because it answers `200` with zero events for a session
+that never happened — which is indistinguishable from a connected-but-silent
+one. So this list is the discovery side of the ledger, and the half that
+production actually runs was the half no test touched.
+
+- **The list is asked for one tenant, and the transaction says so too.** The
+  query filters by tenant *and* the transaction sets the context the
+  row-level security policy reads. Both, or the policy sees nothing and the
+  filter is the only thing standing between one tenant's sessions and
+  another's.
+- **A session is a session and an agent.** The grouping is by session *and*
+  agent, so one session id under two agents is two sessions and not one
+  merged row.
+- **An event with no session is not a session,** and the list is bounded.
+- **The worst severity is a rank, not a string.** Postgres hands back a
+  number: two is critical, one is warning, zero is info. A module the
+  contract does not define is dropped rather than passed on as a null, and
+  the counts and the times are numbers — Postgres hands a `bigint` back as
+  a string, and the console wants a number.
+- **The two halves agree.** The in-memory path and the Postgres path are two
+  implementations of one list, and the in-memory one exists to stand in for
+  the other. A difference between them is a bug in whichever one moved, and
+  the operator is shown whichever one ran. The test runs the same events
+  through both and compares them, including the case the code comments
+  warn about: two groups whose halves would run together if the key did not
+  keep them apart.
+
+Eleven mutations prove it: dropping the tenant filter, dropping the
+transaction's tenant context, grouping by the session alone, counting the
+events that have no session, removing the limit's clamp, flattening the
+worst severity, passing an unknown module through, leaving the bigints
+unparsed, ordering by the wrong time, leaving the count unparsed, and
+running the key's halves together each break exactly the test that claims
+to hold that guarantee.
 
 ---
 
