@@ -34,11 +34,14 @@ Read it before starting work. Write to it while you work.
 
 | Agent | Branch | Working on | State |
 | --- | --- | --- | --- |
-| security | `fix/security-hardening` | retention scoping, evidence verification, fail-closed admin, DLP coverage | 2 commits ahead of `origin/main`, pushed, gates green |
+| security | `fix/security-hardening` | retention scoping, evidence verification, fail-closed admin, DLP coverage, breaker batching, baseline locking | 6 commits ahead of `origin/main`, pushed, gates green — **awaiting merge** |
 | security | `feature/video-explainer` | the AEOS Guard explainer, rescued off a branch that was about to be deleted | pushed, 1 commit |
 | (unassigned) | — | the local `main` tree is 19 commits behind `origin/main` and has an uncommitted file | **needs a `git pull --rebase` before anyone edits `main`** |
 | (unassigned) | — | 5 open Dependabot pull requests, all with green CI | merge the green ones, close the rest |
 | (unassigned) | — | `docs/OPEN_QUESTIONS.md` — 12 open decisions, several stale | write recommendations; a human decides |
+
+The project is moving to user-facing features. The work below is the
+security and operations tail; the board is here so it is not lost.
 
 ## Claims
 
@@ -59,12 +62,13 @@ queue.
 
 | # | Item | Where | Priority |
 | --- | --- | --- | --- |
-| 1 | The breaker runs one `withTenantDb` transaction per candidate, up to 100 per ingest batch. Batch the layer lookup into a single query. | `dashboard/lib/incident-store.ts` | medium |
-| 2 | Module dead-letter replay is global while the database half of the same function is tenant-scoped, so a tenant admin replays other tenants' dead letters. | `dashboard/lib/operations-store.ts` | medium |
-| 3 | The live baseline reload reads the file and writes it back with no cross-process lock, so an operator's out-of-band `--approve`/`--revoke` can be reverted by the running proxy. | `mcp-shield/src/fingerprint.rs` | medium |
-| 4 | The ingest response carries the tenant's whole revocation set on every request, so the payload grows with the total number of quarantines. The fix needs the dashboard *and* `python-common` to agree on snapshot-versus-delta. | `dashboard/app/api/ingest/route.ts`, `python-common/monolith_events/events.py` | low — contract change |
-| 5 | `docs/OPEN_QUESTIONS.md` — refresh against what has landed. | `docs/OPEN_QUESTIONS.md` | medium |
-| 6 | The AWS secret access key has no detector. Deliberately: 40 characters of base64 has a false-positive rate that would hard-block ordinary calls. Needs a shape-aware detector, not a regex. | `mcp-shield/src/sanitizer.rs` | low |
+| 1 | Module dead-letter replay is global while the database half of the same function is tenant-scoped, so a tenant admin replays other tenants' dead letters. | `dashboard/lib/operations-store.ts` | medium |
+| 2 | The ingest response carries the tenant's whole revocation set on every request, so the payload grows with the total number of quarantines. The fix needs the dashboard *and* `python-common` to agree on snapshot-versus-delta. | `dashboard/app/api/ingest/route.ts`, `python-common/monolith_events/events.py` | low — contract change |
+| 3 | `docs/OPEN_QUESTIONS.md` — refresh against what has landed. | `docs/OPEN_QUESTIONS.md` | medium |
+| 4 | The AWS secret access key has no detector. Deliberately: 40 characters of base64 has a false-positive rate that would hard-block ordinary calls. Needs a shape-aware detector, not a regex. | `mcp-shield/src/sanitizer.rs` | low |
+
+Done: the breaker's per-candidate query is now one query for the whole
+batch, and the baseline is locked across its read-modify-write cycle.
 
 ## Verification
 
