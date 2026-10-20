@@ -1,4 +1,5 @@
 import json
+import socket
 import sys
 import tempfile
 import unittest
@@ -32,6 +33,10 @@ class _Recorder(BaseHTTPRequestHandler):
                 "path": self.path,
                 "body": body,
                 "headers": {k.lower(): v for k, v in self.headers.items()},
+                # The raw list, in the order it arrived: a dict of the same
+                # headers would hide a duplicate that a server reading the
+                # first occurrence would pick up.
+                "header_list": list(self.headers.items()),
             }
         )
         payload = type(self).body
@@ -241,6 +246,60 @@ class InjectorTests(unittest.TestCase):
         # The client's own credential is forwarded, never replaced.
         self.assertEqual(sent["headers"]["x-api-key"], "client-secret-key")
         self.assertEqual(sent["headers"]["authorization"], "Bearer client-token")
+
+    def test_a_client_cannot_forge_the_session_it_is_stamped_with(self):
+        # The launcher promises that the session id on every request is the
+        # one it minted, whatever the client sent. A client that could choose
+        # its own would file its findings in another session's ledger, and one
+        # that could blank the header would opt out of its own session. Both
+        # are attempted here, in every casing the header can arrive in, and
+        # with a duplicate that a server reading the first occurrence would
+        # pick up.
+        body = json.dumps({"model": "claude-sonnet-5", "messages": [{"role": "user", "content": "hi"}]})
+        raw = (
+            "POST /v1/messages HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{self.injector.port}\r\n"
+            "Content-Type: application/json\r\n"
+            "x-monolith-session-id: forged-session\r\n"
+            "X-Monolith-Session-Id: forged-session-again\r\n"
+            "X-MONOLITH-TENANT-ID: forged-tenant\r\n"
+            "x-monolith-agent-id: \r\n"
+            f"Content-Length: {len(body)}\r\n"
+            "\r\n"
+            f"{body}"
+        )
+        with socket.create_connection(("127.0.0.1", self.injector.port), timeout=15) as connection:
+            connection.sendall(raw.encode("utf-8"))
+            connection.settimeout(10)
+            # The injector answers with a chunked stream and keeps the
+            # connection open, so read until the terminating chunk rather
+            # than until the socket closes. The auditor records the request
+            # before it answers, so the response is proof it was recorded.
+            received = b""
+            while b"0\r\n\r\n" not in received:
+                try:
+                    chunk = connection.recv(65536)
+                except socket.timeout:
+                    break
+                if not chunk:
+                    break
+                received += chunk
+
+        self.assertEqual(len(self.trace_audit.received), 1)
+        sent = self.trace_audit.received[0]
+        names = [name.lower() for name, _ in sent["header_list"]]
+        # One of each, not two: a duplicate is what a server reading the
+        # first occurrence would act on.
+        self.assertEqual(names.count("x-monolith-session-id"), 1)
+        self.assertEqual(names.count("x-monolith-tenant-id"), 1)
+        self.assertEqual(names.count("x-monolith-agent-id"), 1)
+        # And the one that is there is the launcher's, not the client's.
+        self.assertEqual(sent["headers"]["x-monolith-session-id"], "sess-wrap")
+        self.assertEqual(sent["headers"]["x-monolith-tenant-id"], "tenant-wrap")
+        self.assertEqual(sent["headers"]["x-monolith-agent-id"], "agent-wrap")
+        # Nothing the client sent survives under any casing.
+        for _, value in sent["header_list"]:
+            self.assertNotIn("forged", value)
 
     def test_everything_else_goes_straight_to_the_upstream(self):
         request = urllib.request.Request(self.injector.base_url + "/v1/models", method="GET")
