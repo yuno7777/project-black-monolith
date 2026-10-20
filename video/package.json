@@ -1,0 +1,21 @@
+{
+  "name": "aeos-guard-video",
+  "version": "1.0.0",
+  "private": true,
+  "description": "60s Remotion explainer for AEOS Guard",
+  "scripts": {
+    "start": "remotion studio",
+    "render": "remotion render Explainer out/aeos-guard.mp4 --concurrency=4",
+    "still": "remotion still Explainer out/frame.png"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.404",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "remotion": "4.0.404"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.0",
+    "typescript": "5.9.2"
+  }
+}
