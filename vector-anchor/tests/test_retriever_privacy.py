@@ -3,8 +3,14 @@
 import hashlib
 from types import SimpleNamespace
 
+from src.events import EventContext
 from src.quarantine import Quarantine, QuarantinedDoc
 from src.retriever_proxy import RetrieverProxy
+
+# Every retrieval names the session it belongs to: a retrieval that cannot
+# be attributed to a session is refused, because the cross-layer circuit
+# breaker revokes sessions and cannot act on one it cannot name.
+SESSION = EventContext(session_id="privacy-test-session")
 
 
 class Collection:
@@ -67,7 +73,7 @@ def proxy(document: str, anomalous: bool, events: list, **cfg_overrides):
 def test_retrieval_event_fingerprints_instead_of_logging_query():
     events = []
     secret_query = "find records for private-user@example.com"
-    response = proxy("safe document", False, events).retrieve(secret_query)
+    response = proxy("safe document", False, events).retrieve(secret_query, None, SESSION)
 
     assert response["query"] == secret_query, "the direct caller still receives its query"
     details = events[-1][2]
@@ -82,7 +88,7 @@ def test_quarantine_event_keeps_corpus_preview_out_of_telemetry():
     events = []
     secret_document = "poison bait containing sk-abcdefghijklmnopqrstuvwxyz"
     instance = proxy(secret_document, True, events)
-    instance.retrieve("ordinary query")
+    instance.retrieve("ordinary query", None, SESSION)
 
     quarantine_event = next(event for event in events if event[0] == "corpus_poison_quarantine")
     details = quarantine_event[2]
@@ -98,14 +104,14 @@ def test_log_clean_retrievals_false_suppresses_only_clean_retrieval_events():
     clean_instance = proxy(
         "safe document", False, clean_events, log_clean_retrievals=False
     )
-    clean_instance.retrieve("ordinary query")
+    clean_instance.retrieve("ordinary query", None, SESSION)
     assert clean_events == []
 
     filtered_events = []
     filtered_instance = proxy(
         "poison document", True, filtered_events, log_clean_retrievals=False
     )
-    filtered_instance.retrieve("ordinary query")
+    filtered_instance.retrieve("ordinary query", None, SESSION)
     event_types = [event[0] for event in filtered_events]
     assert "corpus_poison_quarantine" in event_types
     assert "retrieval" in event_types
@@ -147,7 +153,7 @@ def test_dynamic_candidate_expansion_prevents_quarantine_starvation():
         ),
         emit=lambda *_args, **_kwargs: None,
     )
-    response = instance.retrieve("topic query")
+    response = instance.retrieve("topic query", None, SESSION)
 
     assert collection.requested_n == [3 + 5 + 10]
     assert [r["id"] for r in response["results"]] == ["clean-1", "clean-2", "clean-3"]
@@ -179,23 +185,23 @@ def test_debounced_state_persistence_flushes_immediately_on_quarantine_and_shutd
     )
 
     # First retrieval triggers initial flush since _last_state_flush_ms starts at 0.
-    instance.retrieve("query-1")
+    instance.retrieve("query-1", None, SESSION)
     assert len(saves) == 1
 
     # Second clean retrieval within the debounce window skips disk I/O.
-    instance.retrieve("query-2")
+    instance.retrieve("query-2", None, SESSION)
     assert len(saves) == 1
     assert instance._state_dirty is True
 
     # Newly quarantined document forces immediate persistence even inside interval.
     instance.tracker.anomalous = True  # type: ignore[attr-defined]
-    instance.retrieve("query-3")
+    instance.retrieve("query-3", None, SESSION)
     assert len(saves) == 2
     assert saves[-1] == 1
     assert instance._state_dirty is False
 
     # Subsequent retrieval marks dirty; explicit flush_state() persists immediately.
-    instance.retrieve("query-4")
+    instance.retrieve("query-4", None, SESSION)
     assert len(saves) == 2
     assert instance.flush_state() is True
     assert len(saves) == 3

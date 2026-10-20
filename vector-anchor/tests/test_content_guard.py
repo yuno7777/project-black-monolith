@@ -1,5 +1,6 @@
 import pytest
 from src.content_guard import inspect_document
+from src.events import EventContext
 
 
 @pytest.mark.parametrize(
@@ -69,7 +70,9 @@ def test_targeted_document_is_withheld_on_first_retrieval(numpy_embedding):
         cfg=SimpleNamespace(top_k=1, candidate_buffer=1, top_rank_threshold=1),
         emit=lambda *args, **kwargs: events.append((args, kwargs)),
     )
-    result = proxy.retrieve("Tomato gardening")
+    result = proxy.retrieve(
+        "Tomato gardening", None, EventContext(session_id="content-guard-test-session")
+    )
     assert [r["id"] for r in result["results"]] == ["clean"]
     assert result["withheld"][0]["id"] == "poison"
     event = next(args for args, _ in events if args[0] == "corpus_poison_quarantine")

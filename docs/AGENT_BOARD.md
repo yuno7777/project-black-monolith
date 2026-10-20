@@ -90,6 +90,7 @@ to `main` by ref. Use a dedicated worktree for every branch.
 | `scripts/monolith_wrap.py` | gateway-review | the launcher's child environment and the plan redactor |
 | `trace-audit/src/anthropic_gateway.py`, `trace-audit/src/stream_proxy.py`, `trace-audit/src/pii_scanner.py`, `trace-audit/src/main.py` | gateway-review | the answer path: the cross-block credential leak, the citation delta, the Anthropic key pattern, the refusal stream, the baseline model, the token ceiling |
 | `vector-anchor/src/mcp_server.py`, `vector-anchor/src/retriever_proxy.py` | gateway-review | session attribution on the retrieve path |
+| `vector-anchor/tests/**`, `vector-anchor/fixtures/run_demo.sh`, `scripts/verify_recovery.sh`, `evaluation/real_models.py`, `docs/IDENTITY_AND_ACCESS.md` | gateway-review | the call sites that retrieve without naming a session, and the tests that exercise the retriever directly |
 | `dashboard/lib/session-report.ts`, `dashboard/app/api/sessions/[sessionId]/route.ts` | gateway-review | taken over from `add-agent-onboarding`, which offered it; the peer recorded it as "owned by peer session" and does not touch it |
 | `docs/FINDINGS.md` | gateway-review | the eleven findings land here, each with the commit that fixes it |
 | `mcp-shield/src/**` | security | through the 2026-10-20 review batch |
