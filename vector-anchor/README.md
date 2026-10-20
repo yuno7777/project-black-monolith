@@ -43,7 +43,48 @@ it and serves the next-best clean result instead.
   exponential backoff, so a dashboard outage delays delivery rather than
   losing the detection. Permanent rejections (401/422/…) are dead-lettered
   instead of retried forever.
+- `src/mcp_server.py` — the memory layer as an MCP server over stdio, so an
+  agent can call `retrieve` directly (see below).
 - `src/main.py` — FastAPI app.
+
+## The MCP server (`src/mcp_server.py`)
+
+An agent talks to its memory through MCP, not HTTP. This module speaks the
+MCP stdio protocol and exposes one tool, `retrieve`, which is forwarded to the
+running service.
+
+Two deliberate choices:
+
+- **It is a bridge, not a second copy of the service.** The FastAPI service
+  owns the single ChromaDB client; a second `PersistentClient` on the same
+  path contends on ChromaDB's SQLite store. Talking to the service over HTTP
+  keeps exactly one owner of the corpus and of the detector state.
+- **It is standard library only.** The process is started by the agent's
+  host, not by the container, and it has to run wherever the agent runs —
+  with no virtualenv to prepare. The service it calls carries the heavy
+  dependencies.
+
+The answer it renders says how many documents were withheld:
+
+> 3 passage(s) matched:
+> [1] …
+> 1 document(s) were withheld by the corpus-poisoning filter and are not shown here.
+
+An agent that can see that a document was filtered knows its context is
+incomplete, which is the difference between a defense the agent can work
+around and one it silently routes around.
+
+| Variable                     | Default                  | Purpose                                  |
+| ---------------------------- | ------------------------ | ---------------------------------------- |
+| `MONOLITH_VECTOR_ANCHOR_URL` | `http://127.0.0.1:8001`  | the service to forward `retrieve` to      |
+| `MONOLITH_TENANT_ID`         | *(unset)*                | tenant stamped onto every request        |
+| `MONOLITH_AGENT_ID`          | *(unset)*                | the agent                                |
+| `MONOLITH_SESSION_ID`        | *(unset)*                | the session                              |
+| `MONOLITH_REQUEST_TIMEOUT_S` | `15`                     | per-request timeout                      |
+
+`scripts/monolith_wrap.py` sets all of these when it starts the server, which
+is what makes a retrieval attributable to the same session as the tool calls
+and the model traffic around it.
 
 ## Design decisions (noted for the reviewer)
 

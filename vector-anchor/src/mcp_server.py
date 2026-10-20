@@ -1,0 +1,289 @@
+#!/usr/bin/env python3
+"""VectorAnchor as an MCP server, over stdio.
+
+This is the memory layer's door into an agent. An MCP client (Claude Code,
+or anything else that speaks MCP) starts this as a child process and calls
+``retrieve``; the retrieval itself is served by the running VectorAnchor
+service, so the poisoned-document detector, the quarantine list and the
+corpus all stay in one place.
+
+Two deliberate choices:
+
+* **It is a bridge, not a second copy of the service.** The FastAPI service
+  owns the single ChromaDB client; a second ``PersistentClient`` on the same
+  path contends on ChromaDB's SQLite store. Talking to the service over
+  HTTP keeps exactly one owner of the corpus and of the detector state.
+* **It is standard library only.** The process is started by the agent's
+  host, not by the container, and it has to run wherever the agent runs —
+  with no virtualenv to prepare. The service it calls carries the heavy
+  dependencies.
+
+Correlation: the session, agent and tenant ids come from the environment,
+which is how the launcher that wraps an agent session stamps them. Every
+retrieval is therefore attributed to the same session as the tool calls and
+the model traffic around it, which is what makes the cross-layer circuit
+breaker able to see them together.
+
+Environment:
+
+  MONOLITH_VECTOR_ANCHOR_URL   service base URL (default http://127.0.0.1:8001)
+  MONOLITH_TENANT_ID           tenant the session belongs to
+  MONOLITH_AGENT_ID            the agent
+  MONOLITH_SESSION_ID          the session
+  MONOLITH_REQUEST_TIMEOUT_S   per-request timeout (default 15)
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+SERVER_NAME = "vector-anchor"
+SERVER_VERSION = "0.1.0"
+PROTOCOL_VERSION = "2024-11-05"
+SUPPORTED_PROTOCOL_VERSIONS = {"2024-11-05", "2025-03-26", "2025-06-18"}
+
+MAX_QUERY_LENGTH = 16_384
+MAX_K = 20
+
+TOOL_SCHEMA = {
+    "name": "retrieve",
+    "description": (
+        "Search the project knowledge base for passages relevant to a question. "
+        "Documents that the corpus-poisoning detector has flagged are withheld "
+        "before they reach you, and the result says how many were withheld, so "
+        "a short answer is not necessarily a complete one."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The question or topic to look up.",
+                "minLength": 1,
+                "maxLength": MAX_QUERY_LENGTH,
+            },
+            "k": {
+                "type": "integer",
+                "description": (
+                    "How many passages to return. Fewer than the default when "
+                    "the answer only needs a couple of them."
+                ),
+                "minimum": 1,
+                "maximum": MAX_K,
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+
+def _log(message: str) -> None:
+    """Everything but the protocol goes to stderr. stdout is the wire."""
+    print(f"[vector-anchor-mcp] {message}", file=sys.stderr, flush=True)
+
+
+def _send(payload: dict) -> None:
+    sys.stdout.write(json.dumps(payload) + "\n")
+    sys.stdout.flush()
+
+
+def _error(request_id, code: int, message: str) -> None:
+    _send({"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}})
+
+
+def _result(request_id, result: dict) -> None:
+    _send({"jsonrpc": "2.0", "id": request_id, "result": result})
+
+
+def _result_text(request_id, text: str, *, is_error: bool = False) -> None:
+    _result(
+        request_id,
+        {
+            "content": [{"type": "text", "text": text}],
+            "isError": is_error,
+        },
+    )
+
+
+def _service_url() -> str:
+    base = os.environ.get("MONOLITH_VECTOR_ANCHOR_URL", "http://127.0.0.1:8001").rstrip("/")
+    return base
+
+
+def _timeout_seconds() -> float:
+    raw = os.environ.get("MONOLITH_REQUEST_TIMEOUT_S", "15")
+    try:
+        value = float(raw)
+    except ValueError:
+        return 15.0
+    return value if value > 0 else 15.0
+
+
+def _correlation_headers() -> dict[str, str]:
+    headers = {"content-type": "application/json"}
+    for env_name, header in (
+        ("MONOLITH_TENANT_ID", "X-Monolith-Tenant-Id"),
+        ("MONOLITH_AGENT_ID", "X-Monolith-Agent-Id"),
+        ("MONOLITH_SESSION_ID", "X-Monolith-Session-Id"),
+    ):
+        value = (os.environ.get(env_name) or "").strip()
+        if value:
+            headers[header] = value
+    return headers
+
+
+def _call_service(payload: dict) -> dict:
+    request = urllib.request.Request(
+        _service_url() + "/retrieve",
+        data=json.dumps(payload).encode("utf-8"),
+        headers=_correlation_headers(),
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=_timeout_seconds()) as response:
+            body = response.read()
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")[:400]
+        raise RuntimeError(f"VectorAnchor returned HTTP {error.code}: {detail}") from error
+    except urllib.error.URLError as error:
+        raise RuntimeError(
+            f"VectorAnchor is unreachable at {_service_url()}: {error.reason}. "
+            "Is the service running?"
+        ) from error
+    try:
+        decoded = json.loads(body)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("VectorAnchor returned a response that is not JSON") from error
+    if not isinstance(decoded, dict):
+        raise RuntimeError("VectorAnchor returned a response that is not an object")
+    return decoded
+
+
+def _render(payload: dict) -> str:
+    """The answer the agent reads.
+
+    It says how many passages were withheld. An agent that can see that a
+    document was filtered knows its context is incomplete, which is the
+    difference between a defense the agent can work around and one it
+    silently routes around.
+    """
+    results = payload.get("results")
+    if not isinstance(results, list):
+        results = []
+    withheld = payload.get("withheld")
+    if not isinstance(withheld, list):
+        withheld = []
+
+    if payload.get("session_quarantined"):
+        return (
+            "This session has been revoked by the corpus-poisoning circuit breaker, "
+            "so nothing was retrieved."
+        )
+
+    lines: list[str] = []
+    if not results:
+        lines.append("No passages matched that query.")
+    else:
+        lines.append(f"{len(results)} passage(s) matched:")
+        for position, item in enumerate(results, start=1):
+            document = item.get("document") if isinstance(item, dict) else None
+            identifier = item.get("id") if isinstance(item, dict) else None
+            header = f"[{position}]"
+            if identifier:
+                header += f" {identifier}"
+            lines.append(header)
+            lines.append((document or "").strip())
+            lines.append("")
+    if withheld:
+        lines.append(
+            f"{len(withheld)} document(s) were withheld by the corpus-poisoning "
+            "filter and are not shown here."
+        )
+    return "\n".join(lines).strip()
+
+
+def _handle_call(request_id, params: dict) -> None:
+    name = params.get("name")
+    if name != TOOL_SCHEMA["name"]:
+        _error(request_id, -32602, f"unknown tool: {name}")
+        return
+    arguments = params.get("arguments")
+    if not isinstance(arguments, dict):
+        arguments = {}
+    query = arguments.get("query")
+    if not isinstance(query, str) or not query.strip():
+        _result_text(request_id, "The query must be a non-empty string.", is_error=True)
+        return
+    if len(query) > MAX_QUERY_LENGTH:
+        _result_text(request_id, "The query is too long.", is_error=True)
+        return
+    payload: dict = {"query": query}
+    k = arguments.get("k")
+    if isinstance(k, int) and not isinstance(k, bool) and 1 <= k <= MAX_K:
+        payload["k"] = k
+    try:
+        response = _call_service(payload)
+    except RuntimeError as error:
+        _result_text(request_id, str(error), is_error=True)
+        return
+    _result_text(request_id, _render(response))
+
+
+def main() -> int:
+    _log(f"starting; service {_service_url()}")
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            _error(None, -32700, "parse error")
+            continue
+        if not isinstance(message, dict):
+            _error(None, -32600, "invalid request")
+            continue
+        method = message.get("method")
+        request_id = message.get("id")
+        params = message.get("params")
+        if not isinstance(params, dict):
+            params = {}
+
+        if method == "initialize":
+            requested = params.get("protocolVersion")
+            version = (
+                requested
+                if isinstance(requested, str) and requested in SUPPORTED_PROTOCOL_VERSIONS
+                else PROTOCOL_VERSION
+            )
+            _result(
+                request_id,
+                {
+                    "protocolVersion": version,
+                    "capabilities": {"tools": {"listChanged": False}},
+                    "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+                },
+            )
+        elif method in ("notifications/initialized", "initialized"):
+            # A notification: no id, no response.
+            continue
+        elif method == "ping":
+            _result(request_id, {})
+        elif method == "tools/list":
+            _result(request_id, {"tools": [TOOL_SCHEMA]})
+        elif method == "tools/call":
+            if request_id is None:
+                continue
+            _handle_call(request_id, params)
+        elif request_id is not None:
+            _error(request_id, -32601, f"method not found: {method}")
+    _log("stdin closed; exiting")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
