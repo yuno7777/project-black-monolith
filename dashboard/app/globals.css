@@ -455,9 +455,11 @@ html, body {
 .filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-bottom: 13px; flex: none; }
 
 /* With no incident selected the queue takes the full width; the panel column
-   only exists when there is something in it. */
+   only exists when there is something in it. 420px, not 400: the incident
+   header carries a UUID and two controls, and the narrower column left them
+   a hair too wide, so the export control's label broke across two lines. */
 .content.content-wide { grid-template-columns: 1fr; }
-.content:not(.content-wide) { grid-template-columns: 1fr 400px; }
+.content:not(.content-wide) { grid-template-columns: 1fr 420px; }
 @media (max-width: 1240px) { .content:not(.content-wide) { grid-template-columns: 1fr; } }
 
 /* The analyst-name field. Deliberately understated: it is an attribution
@@ -525,6 +527,16 @@ html, body {
 
 .panel-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .panel-head-actions { display: flex; align-items: center; gap: 7px; }
+/* The incident header carries a UUID and two controls, which is a hair wider
+   than the panel column. Rather than squeezing the controls until their
+   labels break, they keep their natural width and drop to their own row when
+   they no longer fit. The event id gives way last: it is the correlation key
+   an operator pastes into a ledger query, so it is truncated with an
+   ellipsis only once even a row of its own will not hold it. */
+.panel-card .card-head { flex-wrap: wrap; }
+.panel-card .card-head .panel-head-actions { flex: none; margin-left: auto; }
+.panel-card .card-head > :first-child { min-width: 0; }
+.panel-card .card-head .mono-id { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .act-group { display: inline-flex; align-items: stretch; gap: 6px; }
 .act {
   display: inline-flex; align-items: center; gap: 6px; padding: 8px 13px; border-radius: 999px;
@@ -554,6 +566,10 @@ option {
   border: 1px solid var(--line); background: transparent; color: var(--ink-dim);
   border-radius: 999px; padding: 5px 11px; font-family: inherit; font-size: 11.5px; cursor: pointer;
   transition: all 0.14s ease;
+  /* The export control is an <a>, so without these it rendered as a link:
+     underlined, and squeezed by the flex row until its label broke onto a
+     second line inside the pill. */
+  display: inline-flex; align-items: center; text-decoration: none; white-space: nowrap;
 }
 .ghost-btn:hover { color: var(--ink); background: var(--card-2); }
 

@@ -253,13 +253,50 @@ export function hasRole(identity: OperatorIdentity, minimum: OperatorRole): bool
   return ROLE_RANK[identity.role] >= ROLE_RANK[minimum];
 }
 
+/**
+ * The value the proxy nearest this process wrote.
+ *
+ * `X-Forwarded-*` headers are appended to rather than replaced by the usual
+ * proxy idiom, so the leftmost value in the list is the one the client sent
+ * and the rightmost is the one the closest proxy added. This project already
+ * reads X-Forwarded-For that way — see `login-rate-limit.ts`, which takes the
+ * rightmost hop because the leftmost is client-controlled. A header that
+ * decides the request's origin has to follow the same rule, or a client that
+ * prepends a value chooses the origin for us.
+ */
+export function lastForwardedValue(raw: string | null): string | undefined {
+  if (!raw) return undefined;
+  const values = raw
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+  return values.length > 0 ? values[values.length - 1] : undefined;
+}
+
+/**
+ * The transport the request actually arrived on.
+ *
+ * Shared by the cookie's Secure flag and by the same-origin check so the two
+ * cannot drift apart: a request the origin check believes is HTTPS has to be
+ * the same request the session cookie was marked Secure for.
+ */
+export function requestScheme(req: Request): "http" | "https" {
+  if (process.env.OPERATOR_TRUST_PROXY_HEADERS === "true") {
+    const forwarded = lastForwardedValue(req.headers.get("x-forwarded-proto"));
+    if (forwarded?.toLowerCase() === "https") return "https";
+  }
+  try {
+    if (new URL(req.url).protocol === "https:") return "https";
+  } catch {
+    // A request URL we cannot parse is treated as plain HTTP below.
+  }
+  return "http";
+}
+
 function requestUsesTls(req: Request): boolean {
   if (process.env.OPERATOR_COOKIE_SECURE === "true") return true;
   if (process.env.OPERATOR_COOKIE_SECURE === "false") return false;
-  const forwarded = process.env.OPERATOR_TRUST_PROXY_HEADERS === "true"
-    ? req.headers.get("x-forwarded-proto")?.split(",", 1)[0]?.trim()
-    : undefined;
-  return forwarded === "https" || new URL(req.url).protocol === "https:";
+  return requestScheme(req) === "https";
 }
 
 export function operatorCookie(req: Request, token: string, maxAge: number): string {

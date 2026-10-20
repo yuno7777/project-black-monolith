@@ -15,8 +15,11 @@ import { decodeIncidentCursor, IncidentInputError } from "../lib/incident-store"
 import { normalizeEvent } from "../lib/event-store";
 import { authenticateIngest } from "../lib/ingest-auth";
 import { authenticateOperatorToken, operatorCookie } from "../lib/operator-auth";
-import { requireOperator } from "../lib/route-auth";
-import { requireSameOrigin } from "../lib/route-auth";
+import { requireOperator, requireSameOrigin, requestOrigin } from "../lib/route-auth";
+import {
+  DELETE as deleteOperatorSession,
+  POST as createOperatorSession,
+} from "../app/api/auth/session/route";
 import { JsonBodyError, readJsonBody } from "../lib/request-body";
 import { parseEventNotification } from "../lib/live-event-listener";
 import { operatorRateLimitKey } from "../lib/login-rate-limit";
@@ -28,6 +31,33 @@ import {
 import { normalizeModuleLedgerHealth } from "../lib/operations-store";
 import { alertConfigStatus } from "../lib/alert-config";
 import { moduleStatsUrl } from "../app/api/operations/route";
+
+/**
+ * Run a body with environment variables set, then put them back.
+ *
+ * The suite reads process.env directly and several tests flip the proxy-trust
+ * flag, so without this a test would inherit whatever the previous one left
+ * behind and the order of the file would decide the result.
+ */
+async function withEnv(
+  vars: Record<string, string | undefined>,
+  body: () => void | Promise<void>,
+): Promise<void> {
+  const saved: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(vars)) {
+    saved[key] = process.env[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    await body();
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
 
 function detector(overrides: Record<string, unknown> = {}) {
   return {
@@ -360,29 +390,33 @@ test("role hierarchy denies viewer writes and admits analyst writes", async () =
   if (!(analyst instanceof Response)) assert.equal(analyst.role, "analyst");
 });
 
-test("operator cookie security follows the actual request transport", () => {
-  process.env.OPERATOR_COOKIE_SECURE = "";
-  const local = operatorCookie(new Request("http://localhost/api/auth/session"), "opaque", 300);
-  process.env.OPERATOR_TRUST_PROXY_HEADERS = "false";
-  const untrustedProxy = operatorCookie(
-    new Request("http://dashboard/api/auth/session", {
-      headers: { "x-forwarded-proto": "https" },
-    }),
-    "opaque",
-    300,
+test("operator cookie security follows the actual request transport", async () => {
+  await withEnv(
+    { OPERATOR_COOKIE_SECURE: "", OPERATOR_TRUST_PROXY_HEADERS: "false" },
+    () => {
+      const local = operatorCookie(new Request("http://localhost/api/auth/session"), "opaque", 300);
+      const untrustedProxy = operatorCookie(
+        new Request("http://dashboard/api/auth/session", {
+          headers: { "x-forwarded-proto": "https" },
+        }),
+        "opaque",
+        300,
+      );
+      assert.doesNotMatch(local, /; Secure/);
+      assert.doesNotMatch(untrustedProxy, /; Secure/);
+      assert.match(local, /HttpOnly; SameSite=Strict/);
+
+      process.env.OPERATOR_TRUST_PROXY_HEADERS = "true";
+      const trustedProxy = operatorCookie(
+        new Request("http://dashboard/api/auth/session", {
+          headers: { "x-forwarded-proto": "https" },
+        }),
+        "opaque",
+        300,
+      );
+      assert.match(trustedProxy, /; Secure/);
+    },
   );
-  process.env.OPERATOR_TRUST_PROXY_HEADERS = "true";
-  const trustedProxy = operatorCookie(
-    new Request("http://dashboard/api/auth/session", {
-      headers: { "x-forwarded-proto": "https" },
-    }),
-    "opaque",
-    300,
-  );
-  assert.doesNotMatch(local, /; Secure/);
-  assert.doesNotMatch(untrustedProxy, /; Secure/);
-  assert.match(trustedProxy, /; Secure/);
-  assert.match(local, /HttpOnly; SameSite=Strict/);
 });
 
 test("browser mutations require a same-origin request", () => {
@@ -414,6 +448,346 @@ test("browser mutations require a same-origin request", () => {
     })),
     null,
   );
+});
+
+test("the same-origin check uses the host the client addressed", () => {
+  // Inside the Compose stack Next.js builds the request URL from the server's
+  // own HOSTNAME, so req.url says http://0.0.0.0:3000 while the browser says
+  // http://localhost:3000. Comparing against req.url rejected every browser
+  // mutation, which locked operators out of the console entirely.
+  assert.equal(
+    requireSameOrigin(new Request("http://0.0.0.0:3000/api/auth/session", {
+      method: "POST",
+      headers: { origin: "http://localhost:3000", host: "localhost:3000" },
+    })),
+    null,
+  );
+  // A foreign host is still a foreign origin.
+  assert.equal(
+    requireSameOrigin(new Request("http://0.0.0.0:3000/api/auth/session", {
+      method: "POST",
+      headers: { origin: "http://attacker.example", host: "localhost:3000" },
+    }))?.status,
+    403,
+  );
+  // The same host over a different scheme is a different origin.
+  assert.equal(
+    requireSameOrigin(new Request("http://0.0.0.0:3000/api/auth/session", {
+      method: "POST",
+      headers: { origin: "https://localhost:3000", host: "localhost:3000" },
+    }))?.status,
+    403,
+  );
+  // A host that merely starts with the real one is not the same origin.
+  assert.equal(
+    requireSameOrigin(new Request("http://0.0.0.0:3000/api/auth/session", {
+      method: "POST",
+      headers: { origin: "http://localhost:3000.attacker.example", host: "localhost:3000" },
+    }))?.status,
+    403,
+  );
+});
+
+test("a trusted proxy's forwarded host decides the origin", () => {
+  const original = process.env.OPERATOR_TRUST_PROXY_HEADERS;
+  process.env.OPERATOR_TRUST_PROXY_HEADERS = "true";
+  try {
+    assert.equal(
+      requireSameOrigin(new Request("http://dashboard:3000/api/auth/session", {
+        method: "POST",
+        headers: {
+          origin: "https://console.example",
+          host: "dashboard:3000",
+          "x-forwarded-host": "console.example",
+          "x-forwarded-proto": "https",
+        },
+      })),
+      null,
+    );
+    // The forwarded host is the only one that counts, so a request that
+    // disagrees with it is still foreign.
+    assert.equal(
+      requireSameOrigin(new Request("http://dashboard:3000/api/auth/session", {
+        method: "POST",
+        headers: {
+          origin: "http://dashboard:3000",
+          host: "dashboard:3000",
+          "x-forwarded-host": "console.example",
+          "x-forwarded-proto": "https",
+        },
+      }))?.status,
+      403,
+    );
+  } finally {
+    if (original === undefined) delete process.env.OPERATOR_TRUST_PROXY_HEADERS;
+    else process.env.OPERATOR_TRUST_PROXY_HEADERS = original;
+  }
+});
+
+test("an untrusted proxy's forwarded host is ignored", () => {
+  const original = process.env.OPERATOR_TRUST_PROXY_HEADERS;
+  process.env.OPERATOR_TRUST_PROXY_HEADERS = "false";
+  try {
+    assert.equal(
+      requireSameOrigin(new Request("http://dashboard:3000/api/auth/session", {
+        method: "POST",
+        headers: {
+          origin: "http://dashboard:3000",
+          host: "dashboard:3000",
+          "x-forwarded-host": "attacker.example",
+          "x-forwarded-proto": "https",
+        },
+      })),
+      null,
+    );
+    assert.equal(
+      requireSameOrigin(new Request("http://dashboard:3000/api/auth/session", {
+        method: "POST",
+        headers: {
+          origin: "http://attacker.example",
+          host: "dashboard:3000",
+          "x-forwarded-host": "attacker.example",
+        },
+      }))?.status,
+      403,
+    );
+    // The Host header decides, so a request the proxy forwarded under a
+    // different name is still judged against the host the client addressed.
+    assert.equal(
+      requireSameOrigin(new Request("http://0.0.0.0:3000/api/incidents", {
+        method: "POST",
+        headers: {
+          origin: "http://console.example",
+          host: "console.example",
+          "x-forwarded-host": "attacker.example",
+          "x-forwarded-proto": "https",
+        },
+      })),
+      null,
+    );
+  } finally {
+    if (original === undefined) delete process.env.OPERATOR_TRUST_PROXY_HEADERS;
+    else process.env.OPERATOR_TRUST_PROXY_HEADERS = original;
+  }
+});
+
+test("a trusted proxy's forwarded host is the one the closest proxy wrote", async () => {
+  await withEnv({ OPERATOR_TRUST_PROXY_HEADERS: "true" }, () => {
+    // Proxies append to X-Forwarded-Host, so a client that prepends a value
+    // must not be able to choose the origin.
+    assert.equal(
+      requireSameOrigin(new Request("http://dashboard:3000/api/auth/session", {
+        method: "POST",
+        headers: {
+          origin: "https://evil.example",
+          host: "dashboard:3000",
+          "x-forwarded-host": "evil.example, console.example",
+          "x-forwarded-proto": "https",
+        },
+      }))?.status,
+      403,
+    );
+    // The value the closest proxy wrote is the one that counts.
+    assert.equal(
+      requireSameOrigin(new Request("http://dashboard:3000/api/auth/session", {
+        method: "POST",
+        headers: {
+          origin: "https://console.example",
+          host: "dashboard:3000",
+          "x-forwarded-host": "evil.example, console.example",
+          "x-forwarded-proto": "https",
+        },
+      })),
+      null,
+    );
+    // The same rule decides the scheme.
+    assert.equal(
+      requireSameOrigin(new Request("http://dashboard:3000/api/auth/session", {
+        method: "POST",
+        headers: {
+          origin: "https://console.example",
+          host: "dashboard:3000",
+          "x-forwarded-host": "console.example",
+          "x-forwarded-proto": "http, https",
+        },
+      })),
+      null,
+    );
+  });
+});
+
+test("the same-origin check normalises the host it compares", async () => {
+  await withEnv({ OPERATOR_TRUST_PROXY_HEADERS: "false" }, () => {
+    // A proxy that forwards the authority with the default port included.
+    assert.equal(
+      requireSameOrigin(new Request("https://console.example/api/incidents", {
+        method: "POST",
+        headers: { origin: "https://console.example", host: "console.example:443" },
+      })),
+      null,
+    );
+    // Host names are case-insensitive.
+    assert.equal(
+      requireSameOrigin(new Request("https://console.example/api/incidents", {
+        method: "POST",
+        headers: { origin: "https://console.example", host: "Console.Example" },
+      })),
+      null,
+    );
+    // A different port is a different origin.
+    assert.equal(
+      requireSameOrigin(new Request("https://console.example/api/incidents", {
+        method: "POST",
+        headers: { origin: "https://console.example", host: "console.example:444" },
+      }))?.status,
+      403,
+    );
+  });
+});
+
+test("a request with no host header falls back to the request URL", async () => {
+  await withEnv({ OPERATOR_TRUST_PROXY_HEADERS: "false" }, () => {
+    assert.equal(
+      requireSameOrigin(new Request("https://console.example/api/incidents", {
+        method: "POST",
+        headers: { origin: "https://console.example" },
+      })),
+      null,
+    );
+    assert.equal(
+      requireSameOrigin(new Request("https://console.example/api/incidents", {
+        method: "POST",
+        headers: { origin: "https://attacker.example" },
+      }))?.status,
+      403,
+    );
+  });
+});
+
+test("a host header cannot smuggle a different origin past the check", async () => {
+  await withEnv({ OPERATOR_TRUST_PROXY_HEADERS: "false" }, () => {
+    // "console.example@evil.example" parses as a URL whose credentials are
+    // "console.example" and whose host is "evil.example", so a Host header of
+    // that shape must not decide the origin.
+    assert.equal(
+      requireSameOrigin(new Request("https://console.example/api/incidents", {
+        method: "POST",
+        headers: { origin: "https://evil.example", host: "console.example@evil.example" },
+      }))?.status,
+      403,
+    );
+    // A Host header is an authority, so a path in it is malformed. The
+    // request must be refused rather than quietly trimmed down to the host
+    // part, which is the origin the client just used.
+    assert.equal(
+      requireSameOrigin(new Request("https://console.example/api/incidents", {
+        method: "POST",
+        headers: { origin: "https://console.example", host: "console.example/path" },
+      }))?.status,
+      403,
+    );
+    // An Origin header is a serialised origin and never carries credentials.
+    // Reading one as its host would let it pass as the origin it names.
+    assert.equal(
+      requireSameOrigin(new Request("https://evil.example/api/incidents", {
+        method: "POST",
+        headers: { origin: "https://console.example@evil.example", host: "evil.example" },
+      }))?.status,
+      403,
+    );
+  });
+});
+
+test("the origin check and the session cookie agree about the transport", async () => {
+  await withEnv(
+    { OPERATOR_TRUST_PROXY_HEADERS: "true", OPERATOR_COOKIE_SECURE: undefined },
+    () => {
+      const req = new Request("http://dashboard:3000/api/auth/session", {
+        headers: { host: "dashboard:3000", "x-forwarded-proto": "http, https" },
+      });
+      assert.match(operatorCookie(req, "opaque", 300), /; Secure/);
+      assert.equal(requestOrigin(req), "https://dashboard:3000");
+    },
+  );
+});
+
+test("a session-authenticated mutation is refused when it is cross-site", async () => {
+  await withEnv(
+    { MONOLITH_DISABLE_AUTH: "false", OPERATOR_TRUST_PROXY_HEADERS: "false" },
+    async () => {
+      const session = {
+        actor: "analyst",
+        role: "analyst" as const,
+        tenant_id: "tenant-a",
+        auth_type: "session" as const,
+      };
+      const crossSite = await requireOperator(
+        new Request("http://0.0.0.0:3000/api/incidents", {
+          method: "POST",
+          headers: { origin: "http://attacker.example", host: "localhost:3000" },
+        }),
+        "analyst",
+        async () => session,
+      );
+      assert.ok(crossSite instanceof Response);
+      assert.equal(crossSite.status, 403);
+
+      const sameSite = await requireOperator(
+        new Request("http://0.0.0.0:3000/api/incidents", {
+          method: "POST",
+          headers: { origin: "http://localhost:3000", host: "localhost:3000" },
+        }),
+        "analyst",
+        async () => session,
+      );
+      assert.ok(!(sameSite instanceof Response));
+      if (!(sameSite instanceof Response)) assert.equal(sameSite.auth_type, "session");
+    },
+  );
+});
+
+test("a bearer-authenticated mutation is not subject to the browser origin check", async () => {
+  await withEnv(
+    { MONOLITH_DISABLE_AUTH: "false", OPERATOR_TRUST_PROXY_HEADERS: "false" },
+    async () => {
+      const bearer = await requireOperator(
+        new Request("http://0.0.0.0:3000/api/incidents", {
+          method: "POST",
+          headers: { origin: "http://attacker.example", host: "localhost:3000" },
+        }),
+        "analyst",
+        async () => ({
+          actor: "script",
+          role: "analyst" as const,
+          tenant_id: "tenant-a",
+          auth_type: "bearer" as const,
+        }),
+      );
+      assert.ok(!(bearer instanceof Response));
+    },
+  );
+});
+
+test("a cross-site sign-in is refused before any credential is exchanged", async () => {
+  await withEnv({ OPERATOR_TRUST_PROXY_HEADERS: "false" }, async () => {
+    const res = await createOperatorSession(
+      new Request("http://0.0.0.0:3000/api/auth/session", {
+        method: "POST",
+        headers: { origin: "http://attacker.example", host: "localhost:3000" },
+      }),
+    );
+    assert.equal(res.status, 403);
+    // No session was minted, so nothing was exchanged for a credential.
+    assert.equal(res.headers.get("set-cookie"), null);
+
+    const logout = await deleteOperatorSession(
+      new Request("http://0.0.0.0:3000/api/auth/session", {
+        method: "DELETE",
+        headers: { origin: "http://attacker.example", host: "localhost:3000" },
+      }),
+    );
+    assert.equal(logout.status, 403);
+  });
 });
 
 test("dashboard responses declare a restrictive content security policy", () => {

@@ -157,6 +157,25 @@ If `OPERATOR_TOKENS_JSON` is missing or malformed the endpoint returns **503 and
 refuses access**. An authenticator that was never configured must never be
 mistaken for one that passed.
 
+Browser mutations (sign-in, triage, logout) must be same-origin: the `Origin`
+header has to match the origin the browser addressed, and a `Sec-Fetch-Site:
+cross-site` request is refused outright. The expected origin takes its host from
+the `Host` header — a browser will not let a page forge it — and its scheme
+from `X-Forwarded-Proto` or, without a proxy, from the request URL. With
+`OPERATOR_TRUST_PROXY_HEADERS=true` a trusted reverse proxy's
+`X-Forwarded-Host` and `X-Forwarded-Proto` decide instead, so a proxy that
+rewrites `Host` has to forward the public name *and* the scheme, and has to
+overwrite those headers rather than append to them: the rightmost value is the
+one the closest proxy wrote and the leftmost is the client's. Next.js builds
+the request URL's own protocol from `X-Forwarded-Proto` in either mode, so the
+scheme follows that header regardless; the flag governs the host.
+
+The check is for browser sessions. A request that carries no `Origin` header is
+allowed through whatever it authenticates with, and one authenticated with a
+bearer token is never origin-checked, so scripts are unaffected. Sign-in and
+logout are checked for every caller, because they mint and revoke the session
+cookie itself.
+
 > [!IMPORTANT]
 > Tenant scoping is enforced twice: explicit authenticated application queries,
 > plus transaction-local Postgres context checked by RLS. Missing context
