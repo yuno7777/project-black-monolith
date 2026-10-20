@@ -34,9 +34,10 @@ An autonomous agent has three ways in, and hardening one leaves the other two op
 - Its **reasoning** can drift off-distribution, or expose a secret mid-answer.
 
 Black Monolith puts one independent control on each, plus a dashboard that keeps
-the record of what they found. The modules share no code. They agree only on one
-event format, so a single console can show one agent session being hit from
-three directions at once.
+the record of what they found. Each layer's detection code is its own — no layer
+can read another's evidence, and the tool layer is Rust while the other two are
+Python. What they agree on is one event format, so a single console can show
+one agent session being hit from three directions at once.
 
 > [!NOTE]
 > This is defensive research tooling. Every attack artifact in this repository
@@ -266,10 +267,14 @@ Compose stack is already up, use `MONOLITH_VA_PORT=8011` and
 
 ## How it works
 
-Four parts, no shared library. They talk over HTTP and stdio, and they agree on
-one event format: the same JSON envelope, written to disk first and delivered
-over an authenticated connection. The dashboard persists an event before
-publishing it, so what you triage is what was actually captured.
+Four parts that share no detection code. They talk over HTTP and stdio, and they
+agree on one event format: the same JSON envelope, written to disk first and
+delivered over an authenticated connection. The two Python layers do share one
+small package — the event emitter and its durable outbox — because a contract
+enforced in two places is a contract enforced in neither; the tool layer is
+Rust and re-implements the same contract against the same schema, so what binds
+the four together is the contract, not an import. The dashboard persists an
+event before publishing it, so what you triage is what was actually captured.
 
 The dashboard is at <http://localhost:3000>. Sign in with the
 `MONOLITH_OPERATOR_TOKEN` value from your `.env`. It has four pages: the
