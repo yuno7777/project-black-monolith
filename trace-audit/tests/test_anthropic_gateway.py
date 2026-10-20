@@ -33,6 +33,7 @@ from src.divergence_monitor import build_distribution  # noqa: E402
 from src.events import revoked_session_registry  # noqa: E402
 from src.main import _read_capped_body, app  # noqa: E402
 from src.stream_proxy import (  # noqa: E402
+    DIVERGENT_TOKENS,
     NORMAL_TOKENS,
     SAFE_REFUSAL,
     StreamAuditor,
@@ -945,7 +946,7 @@ def test_the_body_is_refused_before_the_whole_body_is_read():
     assert caught.value.detail == "request body is too large"
 
 
-def _relay_and_events(frames, **kwargs):
+def _relay_and_events(frames, *, divergence_enabled=False, **kwargs):
     """Run the relay and hand back the relay itself, so a test can ask it
     for the refusal it would frame a terminated answer with."""
 
@@ -953,7 +954,9 @@ def _relay_and_events(frames, **kwargs):
         cfg = _cfg(_tmp_path())
         counts = build_distribution(NORMAL_TOKENS * 5)
         auditor = StreamAuditor(cfg, counts, lambda *_a, **_k: None)
-        relay = AnthropicRelay(auditor, None, divergence_enabled=False, **kwargs)
+        relay = AnthropicRelay(
+            auditor, None, divergence_enabled=divergence_enabled, **kwargs
+        )
         return relay, [event async for event in relay.run(frames)]
 
     return asyncio.run(run())
@@ -1125,6 +1128,89 @@ def test_an_auditor_failure_drains_the_queue_before_the_refusal():
     # The refusal opens a fresh block: the client already saw block 0
     # closed, and re-opening it would be a malformed stream.
     assert _refusal_starts(relay.refusal_events("upstream_stream_error")) == [1]
+
+
+def _client_stream(relay, events):
+    """The events a client actually receives, in order.
+
+    The relay's own events, minus the marker that says "a refusal follows",
+    plus the refusal the relay frames. This is the stream the client sees.
+    """
+    stream = [event for event in events if event.get("kind") != "terminated"]
+    terminated = [event for event in events if event.get("kind") == "terminated"]
+    if terminated:
+        stream += relay.refusal_events(terminated[0].get("reason", "terminated"))
+    return stream
+
+
+def _block_lifecycle(stream):
+    """The blocks a client was told about, and whether each one was closed."""
+    opened: list[int] = []
+    closed: list[int] = []
+    for event in stream:
+        if event.get("kind") != "passthrough":
+            continue
+        data = event.get("data", {})
+        if data.get("type") == "content_block_start":
+            opened.append(data["index"])
+        elif data.get("type") == "content_block_stop":
+            closed.append(data["index"])
+    return opened, closed
+
+
+def test_the_divergence_refusal_closes_every_block_it_announced():
+    """A refused answer still has to be a well-formed message.
+
+    The divergence fires in the middle of an answer, so the block that was
+    open when it fired is open on the client — and its stop event is sitting
+    in the relay's queue, waiting for the text before it to be released. The
+    terminated path did not release the queue, so the stop never reached the
+    client: the client was left holding a block it never saw the end of, and
+    the refusal opened a second block for an answer it could not assemble.
+
+    The gate is armed here for the first time: a baseline of ordinary
+    reasoning tokens, and a stream that leaves that distribution.
+    """
+    frames = _frames(
+        ("message_start", {"type": "message_start", "message": {"id": "msg_1"}}),
+        _block_start(0),
+        *[_block_delta(0, token) for token in NORMAL_TOKENS[:15]],
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        _block_start(1),
+        *[_block_delta(1, token) for token in DIVERGENT_TOKENS[:12]],
+        ("content_block_stop", {"type": "content_block_stop", "index": 1}),
+        ("message_stop", {"type": "message_stop"}),
+    )
+
+    relay, events = _relay_and_events(frames, divergence_enabled=True)
+
+    terminated = [event for event in events if event["kind"] == "terminated"]
+    assert terminated, "the divergence did not fire"
+    assert terminated[0]["reason"] == "reasoning_divergence"
+
+    stream = _client_stream(relay, events)
+    opened, closed = _block_lifecycle(stream)
+    assert opened, "the client was given no content block at all"
+    # Every block the client was told about is closed. A block that is
+    # opened and never closed is a malformed stream, and a malformed stream
+    # is a transport failure the agent retries.
+    assert closed == opened
+
+    # And the text of a block arrives before that block's stop: a client
+    # that assembles an answer from the events cannot lose the text of a
+    # block it was told was closed.
+    closed_at: dict[int, int] = {}
+    for position, event in enumerate(stream):
+        if event.get("kind") == "passthrough" and event["data"].get("type") == "content_block_stop":
+            closed_at[event["data"]["index"]] = position
+    for position, event in enumerate(stream):
+        if event.get("kind") != "text":
+            continue
+        index = event["index"]
+        if index in closed_at:
+            assert position < closed_at[index], (
+                f"the text of block {index} arrived after its stop"
+            )
 
 
 def test_a_truncated_stream_is_recorded_in_the_ledger(tmp_path):

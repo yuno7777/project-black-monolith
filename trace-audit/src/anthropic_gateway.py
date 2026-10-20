@@ -397,6 +397,19 @@ class AnthropicRelay:
                     self._note_client_block(queued.data)
                     yield {"kind": "passthrough", "event": queued.name, "data": queued.data}
             elif kind == "terminated":
+                # The queued events are released first, for the same reason
+                # the error path releases them. The divergence fires in the
+                # middle of an answer, so the block that was open when it
+                # fired is still open on the client — and the block's stop
+                # event is sitting in the queue, waiting for the text before
+                # it to be released. Releasing the queue hands the client
+                # the stop it is owed; not releasing it leaves the client
+                # holding a block it never saw the end of, and the refusal
+                # then opens a second block for an answer the client cannot
+                # assemble.
+                for queued in self._release_ready(self._pushes):
+                    self._note_client_block(queued.data)
+                    yield {"kind": "passthrough", "event": queued.name, "data": queued.data}
                 self._terminated = True
                 self._stop_reason = "refusal"
                 yield {"kind": "terminated", "reason": evt.get("reason", "terminated")}
