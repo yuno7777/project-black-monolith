@@ -16,11 +16,14 @@ import threading
 from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "fixtures"))
 
 import fake_anthropic_server  # noqa: E402
+from src import main  # noqa: E402
 from src.anthropic_gateway import (  # noqa: E402
     AnthropicRelay,
     build_upstream_request,
@@ -28,7 +31,7 @@ from src.anthropic_gateway import (  # noqa: E402
 )
 from src.divergence_monitor import build_distribution  # noqa: E402
 from src.events import revoked_session_registry  # noqa: E402
-from src.main import app  # noqa: E402
+from src.main import _read_capped_body, app  # noqa: E402
 from src.stream_proxy import (  # noqa: E402
     NORMAL_TOKENS,
     SAFE_REFUSAL,
@@ -166,9 +169,22 @@ def test_the_relay_keeps_the_event_order_the_client_expects():
         "message_stop",
     ]
     assert [event["text"] for event in events if event["kind"] == "text"] == ["hello ", "world"]
-    # The block's text must not arrive after the block was closed.
-    kinds = [event["kind"] for event in events]
-    assert kinds.index("text") < kinds.index("passthrough") + len(kinds)
+    # The block's text must arrive between the block's start and its stop.
+    # The whole sequence is pinned, because the ordering is the invariant:
+    # a client that receives a block's text after the block was closed
+    # assembles an empty answer, and an assertion that only compares kinds
+    # cannot tell the two orders apart.
+    assert [
+        event["event"] if event["kind"] == "passthrough" else "text" for event in events
+    ] == [
+        "message_start",
+        "content_block_start",
+        "text",
+        "text",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+    ]
 
 
 def test_the_relay_redacts_a_credential_the_model_emitted():
@@ -344,6 +360,7 @@ def test_the_gateway_redacts_a_credential_before_the_client_sees_it(tmp_path):
         client = TestClient(app, raise_server_exceptions=True)
         response = client.post(
             "/v1/messages",
+            headers={"x-api-key": "client-key"},
             json={
                 "model": "stub-model",
                 "max_tokens": 1024,
@@ -365,7 +382,10 @@ def test_a_revoked_session_gets_a_well_formed_refusal(tmp_path):
             client = TestClient(app, raise_server_exceptions=True)
             response = client.post(
                 "/v1/messages",
-                headers={"X-Monolith-Session-Id": "gateway-revoked-session"},
+                headers={
+                    "x-api-key": "client-key",
+                    "X-Monolith-Session-Id": "gateway-revoked-session",
+                },
                 json={
                     "model": "stub-model",
                     "max_tokens": 1024,
@@ -389,6 +409,44 @@ def test_a_revoked_session_gets_a_well_formed_refusal(tmp_path):
     assert text == SAFE_REFUSAL
 
 
+def test_a_revoked_session_gets_a_document_when_the_client_asked_for_one(tmp_path):
+    """A client that asked for one JSON document must not get an event stream.
+
+    An event stream is not a document: a client that cannot parse the body
+    reads it as a transport failure and retries, which is the wrong reaction
+    to a session the circuit breaker has already revoked.
+    """
+    with _Stub("clean") as stub:
+        _setup(tmp_path, anthropic_base_url=f"http://127.0.0.1:{stub.port}")
+        revoked_session_registry().replace(["gateway-revoked-document"])
+        try:
+            client = TestClient(app, raise_server_exceptions=True)
+            response = client.post(
+                "/v1/messages",
+                headers={
+                    "x-api-key": "client-key",
+                    "X-Monolith-Session-Id": "gateway-revoked-document",
+                },
+                json={
+                    "model": "stub-model",
+                    "max_tokens": 1024,
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "stream": False,
+                },
+            )
+        finally:
+            revoked_session_registry().replace([])
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    body = response.json()
+    assert body["type"] == "message"
+    assert body["role"] == "assistant"
+    assert body["stop_reason"] == "refusal"
+    assert body["content"][0]["type"] == "text"
+    assert body["content"][0]["text"] == SAFE_REFUSAL
+
+
 def test_a_baseline_from_another_model_disables_divergence(tmp_path):
     with _Stub("clean") as stub:
         _setup(tmp_path, anthropic_base_url=f"http://127.0.0.1:{stub.port}")
@@ -396,6 +454,7 @@ def test_a_baseline_from_another_model_disables_divergence(tmp_path):
         client = TestClient(app, raise_server_exceptions=True)
         response = client.post(
             "/v1/messages",
+            headers={"x-api-key": "client-key"},
             json={
                 "model": "stub-model",
                 "max_tokens": 1024,
@@ -436,6 +495,7 @@ def test_a_non_streaming_request_gets_one_json_document(tmp_path):
         client = TestClient(app, raise_server_exceptions=True)
         response = client.post(
             "/v1/messages",
+            headers={"x-api-key": "client-key"},
             json={
                 "model": "stub-model",
                 "max_tokens": 1024,
@@ -449,6 +509,140 @@ def test_a_non_streaming_request_gets_one_json_document(tmp_path):
     assert body["type"] == "message"
     assert body["content"][0]["type"] == "text"
     assert "invisible" in body["content"][0]["text"]
+
+
+def test_a_request_with_no_credential_is_refused(tmp_path):
+    """The gateway holds no key of its own, so a request that carries no
+    credential would leave it unauthenticated. It is rejected here rather
+    than sent."""
+    with _Stub("clean") as stub:
+        _setup(tmp_path, anthropic_base_url=f"http://127.0.0.1:{stub.port}")
+        client = TestClient(app, raise_server_exceptions=True)
+        response = client.post(
+            "/v1/messages",
+            json={
+                "model": "stub-model",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 401
+    assert "credential" in response.json()["detail"]
+
+
+def test_the_operator_fallback_credential_is_used_when_the_client_has_none(tmp_path):
+    # The stub records the last credential it saw, and it is a class
+    # attribute: a value left over from an earlier test would satisfy the
+    # assertion below without this request ever reaching the upstream.
+    fake_anthropic_server.Handler.last_api_key = None
+    with _Stub("clean") as stub:
+        _setup(
+            tmp_path,
+            anthropic_base_url=f"http://127.0.0.1:{stub.port}",
+            anthropic_api_key="operator-fallback-key",
+        )
+        client = TestClient(app, raise_server_exceptions=True)
+        response = client.post(
+            "/v1/messages",
+            json={
+                "model": "stub-model",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    # The status code alone proves nothing: the request would succeed with
+    # no credential at all if the upstream did not check. The key the
+    # upstream actually received is the assertion.
+    assert fake_anthropic_server.Handler.last_api_key == "operator-fallback-key"
+
+
+def test_a_tool_call_reaches_the_client_with_its_arguments_intact(tmp_path):
+    """A tool_use block's arguments have to arrive as input_json_delta.
+
+    An audited delta is re-framed for the client, and if the re-framing
+    loses the kind the arguments arrive as prose: the client assembles a
+    tool call with no input and calls the tool with nothing.
+    """
+    with _Stub("tool") as stub:
+        _setup(tmp_path, anthropic_base_url=f"http://127.0.0.1:{stub.port}")
+        client = TestClient(app, raise_server_exceptions=True)
+        response = client.post(
+            "/v1/messages",
+            headers={"x-api-key": "client-key"},
+            json={
+                "model": "stub-model",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    payloads = _sse_payloads(response.text)
+    deltas = [p for p in payloads if p["type"] == "content_block_delta"]
+    tool_deltas = [p for p in deltas if p["index"] == 1]
+    assert tool_deltas, "the stub's tool block produced no delta"
+    for delta in tool_deltas:
+        assert delta["delta"]["type"] == "input_json_delta"
+        assert "partial_json" in delta["delta"]
+    assert "".join(d["delta"]["partial_json"] for d in tool_deltas) == '{"path": "README.md"}'
+
+
+def test_a_truncated_upstream_answer_is_not_handed_over_as_a_complete_one(tmp_path):
+    """An upstream that stops mid-answer leaves a stream with no message_stop.
+
+    Returning that partial answer with a 200 would tell the agent it has a
+    complete answer, which it would then act on.
+    """
+
+    class Truncated(fake_anthropic_server.Handler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("content-length") or 0))
+            self.send_response(200)
+            self.send_header("content-type", "text/event-stream")
+            self.end_headers()
+            frame = (
+                'event: message_start\ndata: {"type":"message_start","message":'
+                '{"id":"msg_x","type":"message","role":"assistant","content":[],'
+                '"model":"stub-model","stop_reason":null,"usage":{}}}\n\n'
+                'event: content_block_start\ndata: {"type":"content_block_start",'
+                '"index":0,"content_block":{"type":"text","text":""}}\n\n'
+                'event: content_block_delta\ndata: {"type":"content_block_delta",'
+                '"index":0,"delta":{"type":"text_delta","text":"the answer is 42"}}\n\n'
+            )
+            self.wfile.write(frame.encode("utf-8"))
+            self.wfile.flush()
+            self.close_connection = True
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Truncated)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _setup(tmp_path, anthropic_base_url=f"http://127.0.0.1:{port}")
+        client = TestClient(app, raise_server_exceptions=True)
+        response = client.post(
+            "/v1/messages",
+            headers={"x-api-key": "client-key"},
+            json={
+                "model": "stub-model",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": False,
+            },
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert response.status_code == 502
+    assert "complete" in response.json()["detail"]
 
 
 def test_the_non_streaming_message_keeps_a_tool_block():
@@ -516,3 +710,246 @@ def test_the_non_streaming_message_keeps_a_tool_block():
     assert message["content"][1]["name"] == "read_file"
     assert message["content"][1]["input"] == {"path": "README.md"}
     assert message["stop_reason"] == "tool_use"
+
+
+def test_an_upstream_error_is_redacted_before_it_reaches_the_client(tmp_path):
+    """The success path is audited; the error path was not.
+
+    An upstream error body is upstream-controlled text, and it reached the
+    client verbatim. A provider that echoes a key back in its error message
+    would have handed that key to the agent, through the one path where the
+    auditor was not watching.
+    """
+
+    class ErrorBody(fake_anthropic_server.Handler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("content-length") or 0))
+            payload = json.dumps(
+                {
+                    "type": "error",
+                    "error": {
+                        "type": "invalid_request_error",
+                        "message": f"the key {FICTIONAL_AWS_KEY} is not valid",
+                    },
+                }
+            ).encode("utf-8")
+            self.send_response(400)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), ErrorBody)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _, events = _setup(tmp_path, anthropic_base_url=f"http://127.0.0.1:{port}")
+        client = TestClient(app, raise_server_exceptions=True)
+        response = client.post(
+            "/v1/messages",
+            headers={"x-api-key": "client-key"},
+            json={
+                "model": "stub-model",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            },
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    # The upstream's own error is still relayed: the reason for the refusal
+    # must not be replaced with an invented one.
+    assert response.status_code == 400
+    assert "invalid_request_error" in response.text
+    assert FICTIONAL_AWS_KEY not in response.text
+    assert "[REDACTED:aws_access_key_id]" in response.text
+    # And the ledger says so, exactly as it does for the success path.
+    assert "pii_redacted" in [event[0] for event in events]
+
+
+def test_an_oversized_body_is_refused(tmp_path, monkeypatch):
+    """A body over the cap is refused, and refused while it is being read."""
+    with _Stub("clean") as stub:
+        _setup(tmp_path, anthropic_base_url=f"http://127.0.0.1:{stub.port}")
+        monkeypatch.setattr(main, "MAX_MESSAGES_BODY_BYTES", 128)
+        client = TestClient(app, raise_server_exceptions=True)
+        response = client.post(
+            "/v1/messages",
+            headers={"x-api-key": "client-key"},
+            json={
+                "model": "stub-model",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "x" * 4096}],
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 413
+    assert "too large" in response.json()["detail"]
+
+
+class _CountingRequest:
+    """A request whose body arrives in chunks, counting what was read."""
+
+    def __init__(self, chunks):
+        self._chunks = chunks
+        self.consumed = 0
+
+    async def stream(self):
+        for chunk in self._chunks:
+            self.consumed += len(chunk)
+            yield chunk
+
+
+def test_the_body_is_refused_before_the_whole_body_is_read():
+    """The cap has to hold while the body arrives, not after it has landed.
+
+    ``request.body()`` buffers every chunk with no ceiling of its own, so a
+    size check afterwards measures a body that is already in memory and
+    protects nothing: one oversized request still takes the whole allocation.
+    """
+    chunk = b"x" * 1024
+    chunks = [chunk] * 8192  # 8 MiB
+    request = _CountingRequest(chunks)
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(_read_capped_body(request, 4096))
+
+    assert caught.value.status_code == 413
+    # The reader stopped well short of the whole body.
+    assert request.consumed < len(chunk) * len(chunks)
+    # And it kept nothing.
+    assert caught.value.detail == "request body is too large"
+
+
+def _relay_and_events(frames, **kwargs):
+    """Run the relay and hand back the relay itself, so a test can ask it
+    for the refusal it would frame a terminated answer with."""
+
+    async def run():
+        cfg = _cfg(_tmp_path())
+        counts = build_distribution(NORMAL_TOKENS * 5)
+        auditor = StreamAuditor(cfg, counts, lambda *_a, **_k: None)
+        relay = AnthropicRelay(auditor, None, divergence_enabled=False, **kwargs)
+        return relay, [event async for event in relay.run(frames)]
+
+    return asyncio.run(run())
+
+
+def _block_start(index: int) -> tuple[str, dict]:
+    return (
+        "content_block_start",
+        {
+            "type": "content_block_start",
+            "index": index,
+            "content_block": {"type": "text", "text": ""},
+        },
+    )
+
+
+def _block_delta(index: int, text: str) -> tuple[str, dict]:
+    return (
+        "content_block_delta",
+        {
+            "type": "content_block_delta",
+            "index": index,
+            "delta": {"type": "text_delta", "text": text},
+        },
+    )
+
+
+def _refusal_starts(refusal):
+    return [
+        event["data"]["index"]
+        for event in refusal
+        if event["kind"] == "passthrough" and event["event"] == "content_block_start"
+    ]
+
+
+def test_a_truncated_stream_does_not_reopen_a_block_the_client_already_saw_closed():
+    """A stream that ends without message_stop is a truncated answer.
+
+    The refusal that says so has to be a well-formed message: it must not
+    announce a second content block under an index the client has already
+    been given and closed. A client that tracks blocks by index reads the
+    second start as the beginning of an answer that is already finished.
+    """
+    frames = _frames(
+        ("message_start", {"type": "message_start", "message": {"id": "msg_1"}}),
+        _block_start(0),
+        _block_delta(0, "the answer is 42"),
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        # The upstream died here: no message_stop.
+    )
+
+    relay, events = _relay_and_events(frames)
+
+    terminated = [event for event in events if event["kind"] == "terminated"]
+    assert terminated and terminated[0]["reason"] == "upstream_stream_error"
+
+    # The client was given block 0, and it was closed.
+    delivered = [event["event"] for event in events if event["kind"] == "passthrough"]
+    assert "content_block_start" in delivered
+    assert "content_block_stop" in delivered
+
+    refusal = relay.refusal_events("upstream_stream_error")
+    assert _refusal_starts(refusal) == [1]
+    # And the refusal text arrives in that new block.
+    assert [event["index"] for event in refusal if event["kind"] == "text"] == [1]
+
+
+def test_a_refusal_for_an_open_block_does_not_announce_it_twice():
+    """The block was announced upstream and the client saw the announcement.
+
+    A refusal that writes into that block must not announce it again: the
+    client would be told the same block starts twice, and the second start
+    is a malformed stream that a client reads as a transport failure.
+    """
+    frames = _frames(
+        _block_start(0),
+        _block_delta(0, "the answer is"),
+        # The upstream died mid-block: no stop, no message_stop.
+    )
+
+    relay, events = _relay_and_events(frames)
+
+    delivered = [event["event"] for event in events if event["kind"] == "passthrough"]
+    assert delivered.count("content_block_start") == 1
+
+    refusal = relay.refusal_events("upstream_stream_error")
+    assert _refusal_starts(refusal) == []
+    # The refusal text goes into the block that is still open.
+    assert [event["index"] for event in refusal if event["kind"] == "text"] == [0]
+    # And the block is closed for the client.
+    stops = [
+        event["data"]["index"]
+        for event in refusal
+        if event["kind"] == "passthrough" and event["event"] == "content_block_stop"
+    ]
+    assert stops == [0]
+
+
+def test_the_divergence_notice_cannot_be_flooded(tmp_path):
+    """The requested model is client-controlled.
+
+    A caller that names a fresh model on every request would otherwise
+    write a ledger row per request, because the notice is keyed by the
+    model it is about. The registry that keeps the notices to one per
+    model is bounded, and past the bound the notice stops: the first few
+    hundred already say what it says.
+    """
+    _cfg_out, events = _setup(tmp_path)
+    main._DIVERGENCE_NOTICES.clear()
+    try:
+        for index in range(main.MAX_DIVERGENCE_NOTICES + 5):
+            main._divergence_notice_once(
+                "baseline-model", f"model-{index}", "model-mismatch"
+            )
+        notices = [event for event in events if event[0] == "divergence_disabled"]
+        assert len(notices) == main.MAX_DIVERGENCE_NOTICES
+    finally:
+        main._DIVERGENCE_NOTICES.clear()

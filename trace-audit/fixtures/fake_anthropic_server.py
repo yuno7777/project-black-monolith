@@ -198,11 +198,15 @@ def _frames(mode: str, model: str) -> list[tuple[str, dict]]:
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     mode = "clean"
+    # The credential the last request carried, so a test can check that the
+    # gateway forwarded the one it was given rather than none at all.
+    last_api_key: str | None = None
 
     def log_message(self, fmt, *args):  # noqa: A003 - stdlib signature
         sys.stderr.write("[fake-anthropic] " + (fmt % args) + "\n")
 
     def do_POST(self):  # noqa: N802 - stdlib signature
+        Handler.last_api_key = self.headers.get("x-api-key")
         if not self.path.rstrip("/").endswith("/v1/messages"):
             self.send_error(404, "not found")
             return

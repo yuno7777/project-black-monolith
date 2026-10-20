@@ -26,15 +26,19 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .anthropic_gateway import (
     AnthropicRelay,
+    UpstreamStreamError,
     build_upstream_request,
     collect_message,
     iter_sse_events,
     relay_sse,
+    standalone_refusal_message,
     standalone_refusal_sse,
     upstream_timeout,
 )
 from .config import MODULE_NAME, load_config
 from .events import EventContext, context_from_headers, is_session_revoked, make_emitter, now_ms
+from .pii_scanner import scan
+from .redaction import redact
 from .stream_proxy import POLICY_VERSION, SAFE_REFUSAL, StreamAuditor
 
 # Sessions this process already refused, so the refusal event fires once per
@@ -718,10 +722,56 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
 
 MAX_MESSAGES_BODY_BYTES = 4 * 1024 * 1024
 
+# How much of an oversized body is read and thrown away so the 413 reaches
+# the client instead of a connection torn down mid-upload. The bytes are
+# dropped, never buffered.
+MAX_OVERSIZED_DRAIN_BYTES = 4 * 1024 * 1024
+
+
+async def _read_capped_body(request: Request, limit: int) -> bytes:
+    """Read the request body, never buffering more than `limit` bytes.
+
+    ``request.body()`` accumulates every chunk with no ceiling of its own, so
+    a size check afterwards only measures a body that is already in memory:
+    the guard protects nothing. Counting the bytes as they arrive is what
+    makes the limit real.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    oversized = False
+    discarded = 0
+    async for chunk in request.stream():
+        if oversized:
+            # Keep draining (without keeping the bytes) so the client can
+            # finish its upload and read the 413 we are about to send.
+            discarded += len(chunk)
+            if discarded > MAX_OVERSIZED_DRAIN_BYTES:
+                break
+            continue
+        total += len(chunk)
+        if total > limit:
+            oversized = True
+            chunks.clear()
+            continue
+        chunks.append(chunk)
+    if oversized:
+        raise HTTPException(status_code=413, detail="request body is too large")
+    return b"".join(chunks)
+
 # One notice per (baseline model, requested model) pair, so a busy gateway
 # does not write a ledger row for every request it declines to score.
 _DIVERGENCE_NOTICES: set[tuple[str | None, str]] = set()
 _DIVERGENCE_NOTICE_LOCK = threading.Lock()
+
+# How many distinct (baseline, requested) model pairs to remember.
+#
+# The requested model is client-controlled, so an unauthenticated caller
+# could otherwise grow this set without bound for the life of the
+# container — and, past the cap, could make the gateway write a fresh
+# ledger row for every request by naming a model the registry has not
+# seen. So the cap bounds the notices as well as the memory: past it the
+# notice is dropped, and the first few hundred already say what it says.
+MAX_DIVERGENCE_NOTICES = 256
 
 
 def _divergence_notice_once(
@@ -730,6 +780,11 @@ def _divergence_notice_once(
     key = (baseline_model, requested_model)
     with _DIVERGENCE_NOTICE_LOCK:
         if key in _DIVERGENCE_NOTICES:
+            return
+        if len(_DIVERGENCE_NOTICES) >= MAX_DIVERGENCE_NOTICES:
+            # The registry is full. Emitting anyway would let a caller
+            # choose a fresh model name per request and write a ledger row
+            # every time; the notice is a courtesy, not a control.
             return
         _DIVERGENCE_NOTICES.add(key)
     emit = getattr(app.state, "emit", None)
@@ -754,6 +809,40 @@ def _divergence_notice_once(
     )
 
 
+def _redact_upstream_error(error_body: bytes, ctx: EventContext | None) -> bytes:
+    """Redact credential-shaped spans in an upstream error body.
+
+    The success path is audited, so every byte of a model's answer is scanned
+    before the client sees it. The error path was not: an upstream error body
+    is upstream-controlled text and this was the one place where it reached
+    the client verbatim. A provider that echoes a key back in its error
+    message would hand that key to the agent.
+    """
+    text = error_body.decode("utf-8", errors="replace")
+    matches = scan(text)
+    if not matches:
+        return error_body
+    emit = getattr(app.state, "emit", None)
+    if emit is not None:
+        for match in matches:
+            emit(
+                "pii_redacted",
+                "warning",
+                {
+                    "label": match.label,
+                    "redacted_as": f"[REDACTED:{match.label}]",
+                    "position_tokens": 0,
+                    "source": "upstream_error_body",
+                },
+                ctx,
+                resource_type="reasoning_trace",
+                resource_id=ctx.trace_id if ctx else None,
+                outcome="redacted",
+                policy_version=POLICY_VERSION,
+            )
+    return redact(text, matches).encode("utf-8")
+
+
 @app.post("/v1/messages")
 async def messages(request: Request):
     """The Anthropic Messages API, guarded.
@@ -765,9 +854,7 @@ async def messages(request: Request):
     auditor: StreamAuditor = app.state.auditor
     ctx = context_from_headers(request.headers)
 
-    raw = await request.body()
-    if len(raw) > MAX_MESSAGES_BODY_BYTES:
-        raise HTTPException(status_code=413, detail="request body is too large")
+    raw = await _read_capped_body(request, MAX_MESSAGES_BODY_BYTES)
     try:
         body = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -793,8 +880,29 @@ async def messages(request: Request):
                 ),
             )
 
+    # The gateway holds no credential of its own unless the operator
+    # configured one as a fallback. A request that carries neither a key nor
+    # an authorization header is therefore forwarded with no credential at
+    # all, which is an unauthenticated request to the model API wearing the
+    # gateway's address. Reject it here rather than let it leave.
+    client_key = request.headers.get("x-api-key")
+    client_auth = request.headers.get("authorization")
+    if not client_key and not client_auth and not cfg.anthropic_api_key:
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "no credential: send x-api-key or authorization, or configure "
+                "a gateway fallback key"
+            ),
+        )
+
     effective_model = cfg.anthropic_model or model
-    wants_json = body.get("stream") is False
+    # The Messages API streams only when asked to; the default is one
+    # document. A client that omits the flag asked for a document, and the
+    # upstream would send one — which the auditor cannot read, because it
+    # inspects the answer as it arrives. So the upstream is always asked to
+    # stream, and the document is assembled here when the client wanted one.
+    wants_json = body.get("stream") is not True
     if wants_json:
         # The audit needs the stream: the answer is inspected as it arrives,
         # so the upstream is always asked to stream and the single document
@@ -808,8 +916,20 @@ async def messages(request: Request):
 
     if _session_is_revoked(ctx):
         _report_revoked_session(ctx)
+        message_id = f"msg_{uuid.uuid4().hex[:24]}"
+        if wants_json:
+            # A client that asked for one document gets one document: an
+            # event stream here would be a body it cannot parse, and a
+            # parse failure is read as a transport error and retried.
+            return Response(
+                content=json.dumps(
+                    standalone_refusal_message(effective_model, message_id),
+                    separators=(",", ":"),
+                ),
+                media_type="application/json",
+            )
         return Response(
-            content=standalone_refusal_sse(effective_model, f"msg_{uuid.uuid4().hex[:24]}"),
+            content=standalone_refusal_sse(effective_model, message_id),
             media_type="text/event-stream",
         )
 
@@ -836,14 +956,15 @@ async def messages(request: Request):
         raise HTTPException(status_code=502, detail="upstream model is unreachable") from exc
 
     if response.status_code != 200:
-        # Forward the upstream's own error verbatim: the client asked a
-        # question the model refused, and inventing a different error would
-        # hide the reason.
+        # Forward the upstream's own error: the client asked a question the
+        # model refused, and inventing a different error would hide the
+        # reason. It is still upstream-controlled text, so it gets the same
+        # redaction every byte of the success stream gets.
         error_body = await response.aread()
         await response.aclose()
         await client.aclose()
         return Response(
-            content=error_body,
+            content=_redact_upstream_error(error_body, ctx),
             status_code=response.status_code,
             media_type="application/json",
         )
@@ -858,7 +979,16 @@ async def messages(request: Request):
                 await response.aclose()
                 await client.aclose()
 
-        message = await collect()
+        try:
+            message = await collect()
+        except UpstreamStreamError as exc:
+            # The upstream broke mid-answer. A partial answer delivered as a
+            # complete one is worse than an error: the agent would act on it
+            # and never learn that it was truncated.
+            raise HTTPException(
+                status_code=502,
+                detail="upstream model stream ended before the answer was complete",
+            ) from exc
         return Response(
             content=json.dumps(message, separators=(",", ":")),
             media_type="application/json",

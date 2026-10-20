@@ -47,15 +47,46 @@ POOL_TIMEOUT_SECONDS = 5.0
 # into a tool call has leaked it just as surely as one that writes it into
 # prose. Redacting it may leave that tool call unparseable, which is the
 # intended failure direction — fail closed rather than hand the secret on.
-AUDITED_DELTA_KINDS = ("text_delta", "input_json_delta")
+# Extended thinking is audited for the same reason: it is model-authored
+# text, and it is text the client would otherwise read.
+AUDITED_DELTA_KINDS = ("text_delta", "input_json_delta", "thinking_delta")
+
+# The field each delta kind carries its payload in. An audited delta is
+# re-framed for the client, and its kind has to survive that trip: a
+# tool_use block's arguments delivered as a text_delta is a tool call the
+# client cannot parse, and a thinking block's prose delivered as a text_delta
+# is prose the client attributes to the answer instead of to the reasoning.
+DELTA_PAYLOAD_FIELD = {
+    "text_delta": "text",
+    "input_json_delta": "partial_json",
+    "thinking_delta": "thinking",
+}
+
+# The reason the auditor gives when it cut a stream short because the
+# reasoning diverged. Any other reason is a transport failure, and the two
+# must not be reported the same way: one is the defense working, the other
+# is an answer the client must not mistake for a complete one.
+DIVERGENCE_REASON = "reasoning_divergence"
+
+# What a client is told when the upstream broke rather than refused. It is
+# deliberately not the divergence refusal: telling an agent that its
+# reasoning diverged when the connection dropped sends it looking for an
+# attack that never happened.
+UPSTREAM_FAILURE_REFUSAL = (
+    "[TraceAudit] Response terminated: the model stream ended before the "
+    "answer was complete. No answer was produced."
+)
+
+
+class UpstreamStreamError(RuntimeError):
+    """The upstream stream ended in a failure rather than an answer."""
 
 
 def _delta_text(delta: dict[str, Any]) -> str:
-    for field in ("text", "partial_json"):
-        value = delta.get(field)
-        if isinstance(value, str) and value:
-            return value
-    return ""
+    """The model-authored payload of one delta, whatever kind it is."""
+    field = DELTA_PAYLOAD_FIELD.get(str(delta.get("type")), "text")
+    value = delta.get(field)
+    return value if isinstance(value, str) else ""
 
 
 def _sse_event_name(data: dict[str, Any], fallback: str) -> str:
@@ -147,6 +178,8 @@ class AnthropicRelay:
         self.divergence_enabled = divergence_enabled
         # push index -> the content block that push belonged to
         self._block_of_push: list[int] = []
+        # push index -> the delta kind that push arrived as
+        self._delta_kind_of_push: list[str] = []
         # upstream events still waiting for the text before them
         self._queue: list[_QueuedEvent] = []
         # how many text fragments have been pushed so far
@@ -155,6 +188,14 @@ class AnthropicRelay:
         self._released_pushes = 0
         self._open_blocks: list[int] = []
         self._block_kind: dict[int, str] = {}
+        # The content blocks the client has actually been told about. A
+        # refusal has to open a block the client has not seen closed:
+        # re-opening one is a malformed stream, and a malformed stream is
+        # a transport failure the agent retries.
+        self._client_blocks: set[int] = set()
+        # Every complete answer ends with message_stop. A stream that ends
+        # without one was cut short.
+        self._saw_message_stop = False
         self._redactions: list[str] = []
         self._terminated = False
         self._stop_reason = "end_turn"
@@ -172,7 +213,9 @@ class AnthropicRelay:
         """
         async for name, data in upstream:
             kind = data.get("type") or name
-            if kind == "content_block_start":
+            if kind == "message_stop":
+                self._saw_message_stop = True
+            elif kind == "content_block_start":
                 index = data.get("index")
                 if isinstance(index, int):
                     self._open_blocks.append(index)
@@ -187,6 +230,7 @@ class AnthropicRelay:
                     block_index = index if isinstance(index, int) else 0
                     if text:
                         self._block_of_push.append(block_index)
+                        self._delta_kind_of_push.append(str(delta.get("type")))
                         self._pushes += 1
                         yield text
                     continue
@@ -209,6 +253,13 @@ class AnthropicRelay:
         while self._queue and self._queue[0].pushes_before <= through:
             ready.append(self._queue.pop(0))
         return ready
+
+    def _note_client_block(self, data: dict[str, Any]) -> None:
+        """Remember a content block the client has been told about."""
+        if data.get("type") == "content_block_start":
+            index = data.get("index")
+            if isinstance(index, int):
+                self._client_blocks.add(index)
 
     # -- client side -----------------------------------------------------
 
@@ -233,20 +284,35 @@ class AnthropicRelay:
             kind = evt.get("type")
             if kind == "token":
                 index = self._block_of_push[evt["source_index"]] if evt["source_index"] >= 0 else 0
+                # The kind the fragment arrived as travels with it: the client
+                # has to be able to tell a tool call's arguments from prose.
+                delta_kind = (
+                    self._delta_kind_of_push[evt["source_index"]]
+                    if 0 <= evt["source_index"] < len(self._delta_kind_of_push)
+                    else "text_delta"
+                )
                 # Anything read before this fragment has to reach the client
                 # first, or the block's start event would follow its text.
                 for queued in self._release_ready(evt["source_index"]):
+                    self._note_client_block(queued.data)
                     yield {"kind": "passthrough", "event": queued.name, "data": queued.data}
-                yield {"kind": "text", "index": index, "text": evt["token"]}
+                yield {
+                    "kind": "text",
+                    "index": index,
+                    "text": evt["token"],
+                    "delta_kind": delta_kind,
+                }
             elif kind == "pii":
                 self._redactions.append(evt["label"])
             elif kind == "sync":
                 for queued in self._release_ready(self._released_pushes):
+                    self._note_client_block(queued.data)
                     yield {"kind": "passthrough", "event": queued.name, "data": queued.data}
             elif kind == "flush":
                 # Everything pushed so far is out of the buffer.
                 self._released_pushes = self._pushes
                 for queued in self._release_ready(self._released_pushes):
+                    self._note_client_block(queued.data)
                     yield {"kind": "passthrough", "event": queued.name, "data": queued.data}
             elif kind == "terminated":
                 self._terminated = True
@@ -257,7 +323,27 @@ class AnthropicRelay:
                 self._terminated = True
                 yield {"kind": "terminated", "reason": evt.get("error", "upstream_stream_error")}
                 return
+        if not self._saw_message_stop:
+            # The upstream ended the stream without the message_stop that
+            # every complete answer carries, so the answer is truncated. A
+            # truncated answer handed over as a complete one is worse than
+            # an error: the agent would act on it and never learn that it
+            # was cut short.
+            #
+            # The queued events are released first. The block the client
+            # was given has to be closed before the refusal, or the client
+            # is left with a block it never saw the end of, and the
+            # refusal's own block would reopen an index the client has
+            # already seen finished.
+            for queued in self._release_ready(self._pushes):
+                self._note_client_block(queued.data)
+                yield {"kind": "passthrough", "event": queued.name, "data": queued.data}
+            self._terminated = True
+            self._stop_reason = "upstream_error"
+            yield {"kind": "terminated", "reason": "upstream_stream_error"}
+            return
         for queued in self._release_ready(self._pushes):
+            self._note_client_block(queued.data)
             yield {"kind": "passthrough", "event": queued.name, "data": queued.data}
 
     def refusal_events(self, reason: str) -> list[dict]:
@@ -267,15 +353,46 @@ class AnthropicRelay:
         malformed response treats it as a transport failure and retries,
         which is exactly the wrong reaction to a session the circuit breaker
         has already revoked.
+
+        Well-formed means the content blocks line up. A block the client has
+        already seen closed is never re-opened under the same index — that
+        is a second ``content_block_start`` for one block, and a client that
+        tracks blocks by index reads the refusal as a continuation of an
+        answer that was already closed. A block the client has not seen
+        opened is opened first, so the refusal text never arrives for a
+        block that was never announced.
         """
+        refusal = (
+            SAFE_REFUSAL
+            if reason == DIVERGENCE_REASON
+            else UPSTREAM_FAILURE_REFUSAL
+        )
         events: list[dict] = []
+
+        def _start(index: int) -> dict[str, Any]:
+            self._client_blocks.add(index)
+            return {
+                "kind": "passthrough",
+                "event": "content_block_start",
+                "data": {
+                    "type": "content_block_start",
+                    "index": index,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            }
+
         if self._open_blocks:
             index = self._open_blocks[-1]
+            if index not in self._client_blocks:
+                # The block was announced upstream but the announcement never
+                # reached the client: it is still queued behind the
+                # fragments that were discarded. Open it now.
+                events.append(_start(index))
             events.append(
                 {
                     "kind": "text",
                     "index": index,
-                    "text": SAFE_REFUSAL,
+                    "text": refusal,
                 }
             )
             for open_index in list(self._open_blocks):
@@ -288,23 +405,16 @@ class AnthropicRelay:
                 )
             self._open_blocks.clear()
         else:
-            events.append(
-                {
-                    "kind": "passthrough",
-                    "event": "content_block_start",
-                    "data": {
-                        "type": "content_block_start",
-                        "index": 0,
-                        "content_block": {"type": "text", "text": ""},
-                    },
-                }
-            )
-            events.append({"kind": "text", "index": 0, "text": SAFE_REFUSAL})
+            # Every block the client knows about is closed, so the refusal
+            # opens a new one rather than reusing a finished index.
+            index = max(self._client_blocks) + 1 if self._client_blocks else 0
+            events.append(_start(index))
+            events.append({"kind": "text", "index": index, "text": refusal})
             events.append(
                 {
                     "kind": "passthrough",
                     "event": "content_block_stop",
-                    "data": {"type": "content_block_stop", "index": 0},
+                    "data": {"type": "content_block_stop", "index": index},
                 }
             )
         events.append(
@@ -345,10 +455,12 @@ def format_sse(event: dict) -> str:
         data = event["data"]
     elif kind == "text":
         name = "content_block_delta"
+        delta_kind = event.get("delta_kind") or "text_delta"
+        field = DELTA_PAYLOAD_FIELD.get(delta_kind, "text")
         data = {
             "type": "content_block_delta",
             "index": event["index"],
-            "delta": {"type": "text_delta", "text": event["text"]},
+            "delta": {"type": delta_kind, field: event["text"]},
         }
     else:
         raise ValueError(f"cannot serialize event kind {kind!r}")
@@ -397,6 +509,26 @@ def upstream_timeout() -> httpx.Timeout:
         write=WRITE_TIMEOUT_SECONDS,
         pool=POOL_TIMEOUT_SECONDS,
     )
+
+
+def standalone_refusal_message(model: str, message_id: str) -> dict[str, Any]:
+    """The same refusal as one JSON document.
+
+    A client that asked for ``"stream": false`` expects a document. Handing
+    it a server-sent event stream leaves it with a body it cannot parse,
+    which it reads as a transport failure and retries — the wrong reaction
+    to a session the circuit breaker has already revoked.
+    """
+    return {
+        "id": message_id,
+        "type": "message",
+        "role": "assistant",
+        "model": model,
+        "content": [{"type": "text", "text": SAFE_REFUSAL}],
+        "stop_reason": "refusal",
+        "stop_sequence": None,
+        "usage": {"input_tokens": 0, "output_tokens": 0},
+    }
 
 
 def standalone_refusal_sse(model: str, message_id: str) -> str:
@@ -487,15 +619,34 @@ async def collect_message(
     message: dict[str, Any] = {}
     blocks: dict[int, dict[str, Any]] = {}
     order: list[int] = []
+    refused = False
 
     def _block(index: int, kind: str) -> dict[str, Any]:
         if index not in blocks:
-            blocks[index] = {"type": kind, "text": ""}
+            blocks[index] = {
+                "type": kind,
+                "text": "",
+                "partial_json": "",
+                "thinking": "",
+                "signature": "",
+            }
             order.append(index)
         return blocks[index]
 
     async for event in relay.run(upstream):
         kind = event.get("kind")
+        if kind == "terminated":
+            reason = event.get("reason", "terminated")
+            if reason == DIVERGENCE_REASON:
+                # The defense worked: the answer is refused. Anything the
+                # model said before the divergence is dropped, because a
+                # partial answer is not an answer.
+                refused = True
+                break
+            # The upstream broke mid-answer. Handing the client a partial
+            # answer as a complete one is worse than an error: the agent
+            # would act on it.
+            raise UpstreamStreamError(reason)
         if kind == "passthrough":
             etype = event["data"].get("type")
             if etype == "message_start":
@@ -519,6 +670,20 @@ async def collect_message(
                     entry = _block(index, block_type)
                     entry["id"] = block_id
                     entry["name"] = block_name
+            elif etype == "content_block_delta":
+                # The signature of a thinking block arrives in its own delta
+                # and is not model-authored text, so it is passed through
+                # unexamined — but it still has to reach the client.
+                delta = event["data"].get("delta")
+                index = event["data"].get("index")
+                if (
+                    isinstance(delta, dict)
+                    and delta.get("type") == "signature_delta"
+                    and isinstance(index, int)
+                ):
+                    signature = delta.get("signature")
+                    if isinstance(signature, str):
+                        _block(index, "thinking")["signature"] = signature
             elif etype == "message_delta":
                 delta = event["data"].get("delta")
                 if isinstance(delta, dict) and delta.get("stop_reason"):
@@ -530,32 +695,49 @@ async def collect_message(
                     message["usage"] = merged
         elif kind == "text":
             index = event["index"]
+            delta_kind = event.get("delta_kind") or "text_delta"
+            field = DELTA_PAYLOAD_FIELD.get(delta_kind, "text")
             block = _block(index, "text")
-            block["text"] += event["text"]
+            block[field] += event["text"]
 
     content: list[dict[str, Any]] = []
-    for index in order:
-        block = blocks[index]
-        if block["type"] == "text":
-            content.append({"type": "text", "text": block["text"]})
-        else:
-            # A tool-use block. Its arguments arrived as JSON fragments; a
-            # redaction may have made them unparseable, and an unparseable
-            # argument set is a fail-closed answer, not a leak.
-            raw = block["text"].strip()
-            try:
-                parsed = json.loads(raw) if raw else {}
-            except json.JSONDecodeError:
-                parsed = {}
-            content.append(
-                {
-                    "type": block["type"],
-                    "id": block.get("id", ""),
-                    "name": block.get("name", ""),
-                    "input": parsed,
-                }
-            )
+    if refused:
+        content.append({"type": "text", "text": SAFE_REFUSAL})
+        message["stop_reason"] = "refusal"
+    else:
+        for index in order:
+            block = blocks[index]
+            if block["type"] == "text":
+                content.append({"type": "text", "text": block["text"]})
+            elif block["type"] == "thinking":
+                content.append(
+                    {
+                        "type": "thinking",
+                        "thinking": block["thinking"],
+                        "signature": block["signature"],
+                    }
+                )
+            else:
+                # A tool-use block. Its arguments arrived as JSON fragments;
+                # a redaction may have made them unparseable, and an
+                # unparseable argument set is a fail-closed answer, not a
+                # leak.
+                raw = block["partial_json"].strip()
+                try:
+                    parsed = json.loads(raw) if raw else {}
+                except json.JSONDecodeError:
+                    parsed = {}
+                content.append(
+                    {
+                        "type": block["type"],
+                        "id": block.get("id", ""),
+                        "name": block.get("name", ""),
+                        "input": parsed,
+                    }
+                )
     message["content"] = content
+    message.setdefault("type", "message")
+    message.setdefault("role", "assistant")
     message.setdefault("stop_reason", "end_turn")
     message.setdefault("stop_sequence", None)
     return message
@@ -564,12 +746,15 @@ async def collect_message(
 __all__ = [
     "ANTHROPIC_VERSION",
     "AnthropicRelay",
+    "DIVERGENCE_REASON",
     "POLICY_VERSION",
+    "UpstreamStreamError",
     "build_upstream_request",
     "collect_message",
     "format_sse",
     "iter_sse_events",
     "relay_sse",
+    "standalone_refusal_message",
     "standalone_refusal_sse",
     "upstream_timeout",
 ]
