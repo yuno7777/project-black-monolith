@@ -38,11 +38,47 @@ Read it before starting work. Write to it while you work.
 | security | `feature/video-explainer` | the AEOS Guard explainer, rescued off a branch that was about to be deleted | pushed, 1 commit |
 | security | `fix/mcp-shield/baseline-persist-failure` | the tool layer's fail-open path discarded enforcement it had already computed (`FINDINGS.md` §5) | merged into `main` as PR #64 (`1b6e8ed`); the fix is proved by mutating it back to the old behaviour and watching the new test fail. The branch was rebased onto `main` after #60 and #62 merged, so its history was rewritten and it was force-pushed |
 | security | `fix/mcp-shield/malformed-tool-entry` | one malformed tool entry voided the whole `tools/list` defence for that server (`FINDINGS.md` §6) | PR #66 open; the fix is proved by mutating it back to the old behaviour — one defective entry rejecting the whole listing — and watching all six new tests fail. Branched off `main` at `1b6e8ed`; no history rewrite, so nothing was force-pushed |
+| security | `fix/vector-anchor/truncated-error-body` | the memory layer's MCP server died mid-session when the service answered with a body that stopped short (`FINDINGS.md` §7) | PR #67 open; the fix is proved by mutating it back and watching the new test fail. **This finding is also implemented in `fix/silent-defense-failures` (`a3acb59`) — see the overlap note below** |
+| security | `fix/dashboard/incident-triage-tests` | the incident queue's write path and read path had no tests at all (`FINDINGS.md` test gaps 2 and 3) | PR #69 open; 31 tests, each proved by mutating the behaviour back and watching the test that claims to hold it fail. Worktree `C:/Users/Abhi/Desktop/monolith-wt/incident-triage`, branched off `origin/main` (`f42721d`) |
+| security + silent-defenses | `fix/vector-anchor/truncated-error-body` and `fix/silent-defense-failures` | two agents implemented the same finding; the overlap and its resolution are recorded below | resolved: the published work stands, the unpublished work is dropped. Nothing is force-pushed |
 | integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI green on `b19513b` |
 | integrator | Dependabot | #24 merged (codeql-action); #15, #16 closed as superseded; #26 superseded by a direct hmac 0.13 migration | the queue is empty: **zero open PRs** |
 
 The project is moving to user-facing features. The work below is the
 security and operations tail; the board is here so it is not lost.
+
+### One finding, two implementations (resolved)
+
+Two findings were implemented by two agents at the same time, without either
+knowing about the other. Both are recorded here so the integrator does not
+merge the same fix twice, and so the next agent does not start a third.
+
+**`FINDINGS.md` §4 — the shield's status listener used the ingest token as
+its admin credential.** The `silent-defenses` agent implemented it as
+`72fcf3d` (`fix/silent-defense-failures`). The `security` agent had an
+implementation of its own, which was **dropped**: the peer's is stronger, and
+the strength is the point. It drives the real binary end to end
+(`mcp-shield/tests/status_listener_admin_auth.rs`) and asserts that the
+ingest credential gets a `503` on `GET /stats` — a unit test can only prove
+that a predicate is right, and this was a claim about what the process
+actually does with the credential it was given. Nothing was lost by dropping
+mine.
+
+**`FINDINGS.md` §7 — the memory layer's MCP server died mid-session on a
+truncated error body.** Here the published work wins: PR #67
+(`fix/vector-anchor/truncated-error-body`) is open, CI-verified and
+reviewable, so it stands. The `silent-defenses` agent's implementation
+(`a3acb59`) reaches the same conclusion by the same route — read the body
+defensively, and keep a net under the handler so an unforeseen failure
+becomes an error result on the wire instead of a dead process — and it is
+**not** merged a second time. **`a3acb59` should be dropped from
+`fix/silent-defense-failures`**, or that branch and PR #67 will conflict in
+`vector-anchor/src/mcp_server.py`.
+
+The rule that settled both: **published, CI-verified work is not discarded;
+unpublished work is not duplicated.** When the two implementations differ in
+strength, the stronger one wins even when it is the unpublished one — which
+is why §4 went the peer's way and §7 went mine.
 
 ### Requirement floors now match their locks (resolved)
 
@@ -92,6 +128,7 @@ to `main` by ref. Use a dedicated worktree for every branch.
 | `dashboard/lib/login-rate-limit.ts`, `dashboard/scripts/dispatch-alerts.mjs` | security | rate limiting and alert delivery |
 | `supabase/migrations/**` | security | retention scoping migration |
 | `contracts/openapi.yaml` | security | corrected the revocation snapshot wording |
+| `dashboard/test/incident-triage.test.ts`, `dashboard/test/incident-queue.test.ts` | security | the incident queue's write and read paths. Reads `dashboard/lib/incident-store.ts` and `dashboard/app/api/incidents/route.ts` but does not modify either, so it does not collide with `silent-defenses`' revocation-snapshot work |
 | `main` | integrator | Merges and verification only; branch work happens in a worktree. |
 
 Free to claim: `vector-anchor/**`, `trace-audit/**`, `dashboard/app/api/operations/**`,
