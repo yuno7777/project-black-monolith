@@ -1940,3 +1940,170 @@ test("MONOLITH_DISABLE_AUTH is an exact-match opt-out in every auth helper", asy
   assert.equal(routeAuthDisabled(envWith(undefined)), false);
 });
 
+test("the session report gathers one agent run's events across all three layers", async () => {
+  const { clearMemoryEvents } = await import("../lib/event-store");
+  const { clearMemoryRevocations } = await import("../lib/incident-store");
+  const { POST: ingestPost } = await import("../app/api/ingest/route");
+  const { GET: sessionReportGet } = await import("../app/api/sessions/[sessionId]/route");
+
+  delete process.env.DATABASE_URL;
+  clearMemoryEvents();
+  clearMemoryRevocations();
+
+  process.env.EVENT_INGEST_TOKENS_JSON = JSON.stringify({
+    "tenant-session": {
+      "mcp-shield": "mcp-shield-report-token-01",
+      "vector-anchor": "vector-anchor-report-token-1",
+      "trace-audit": "trace-audit-report-token-001",
+    },
+  });
+  process.env.OPERATOR_TOKENS_JSON = JSON.stringify({
+    watcher: { token: "watcher-report-token-00001", role: "viewer", tenant_id: "tenant-session" },
+    outsider: { token: "outsider-report-token-0001", role: "viewer", tenant_id: "tenant-other" },
+  });
+
+  const send = async (
+    module: string,
+    token: string,
+    event: Record<string, unknown>,
+  ) => {
+    const response = await ingestPost(
+      new Request("http://localhost/api/ingest", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          module,
+          tenant_id: "tenant-session",
+          agent_id: "agent-report",
+          session_id: "sess-report-1",
+          ...event,
+        }),
+      }),
+    );
+    assert.equal(response.status, 201);
+  };
+
+  // The tool layer rewrote a poisoned schema rather than serving it.
+  await send("mcp-shield", "mcp-shield-report-token-01", {
+    event_type: "schema_mismatch",
+    severity: "critical",
+    outcome: "rewritten",
+  });
+  // The memory layer quarantined a poisoned document.
+  await send("vector-anchor", "vector-anchor-report-token-1", {
+    event_type: "corpus_poison_quarantine",
+    severity: "critical",
+    outcome: "quarantined",
+  });
+  // The reasoning layer redacted a credential out of an answer. The agent
+  // still got an answer, so this is a detection but not a block.
+  await send("trace-audit", "trace-audit-report-token-001", {
+    event_type: "pii_redacted",
+    severity: "warning",
+    outcome: "redacted",
+  });
+  // Bookkeeping: not a detection.
+  await send("trace-audit", "trace-audit-report-token-001", {
+    event_type: "generation_completed",
+    severity: "info",
+    outcome: "completed",
+  });
+  // A module noticing the revocation and recording its own refusal.
+  await send("mcp-shield", "mcp-shield-report-token-01", {
+    event_type: "session_quarantined",
+    severity: "critical",
+    outcome: "detected",
+  });
+
+  // A different run must not leak into this one.
+  await send("vector-anchor", "vector-anchor-report-token-1", {
+    session_id: "sess-report-2",
+    event_type: "retrieval",
+    severity: "info",
+    outcome: "served",
+  });
+
+  const report = await sessionReportGet(
+    new Request("http://localhost/api/sessions/sess-report-1", {
+      headers: { authorization: "Bearer watcher-report-token-00001" },
+    }),
+    { params: Promise.resolve({ sessionId: "sess-report-1" }) },
+  );
+  assert.equal(report.status, 200);
+  const body = await report.json();
+  assert.equal(body.session_id, "sess-report-1");
+  assert.equal(body.tenant_id, "tenant-session");
+  assert.equal(typeof body.generated_at_ms, "number");
+
+  const summary = body.summary;
+  assert.equal(summary.total, 5);
+  // Critical: schema_mismatch, corpus_poison_quarantine, session_quarantined.
+  assert.equal(summary.by_severity.critical, 3);
+  assert.equal(summary.by_severity.warning, 1);
+  assert.equal(summary.by_severity.info, 1);
+  assert.deepEqual(summary.by_module, { "mcp-shield": 2, "vector-anchor": 1, "trace-audit": 2 });
+  assert.equal(summary.by_event_type.schema_mismatch, 1);
+  assert.equal(summary.by_event_type.generation_completed, 1);
+  // generation_completed is bookkeeping, so it is not a detection.
+  assert.equal(summary.detections, 4);
+  // The redaction is a mitigation, not a block: the agent still got an answer.
+  assert.equal(summary.blocks, 3);
+  assert.equal(summary.quarantines, 1);
+  assert.equal(summary.revocations, 1);
+
+  // Worst first: every critical event precedes every warning, and every
+  // warning precedes every info event.
+  assert.deepEqual(
+    body.events.map((event: { severity: string }) => event.severity),
+    ["critical", "critical", "critical", "warning", "info"],
+  );
+  assert.equal(body.events.length, 5);
+  for (const event of body.events) {
+    assert.equal(event.session_id, "sess-report-1");
+  }
+
+  // The other run sees only its own events.
+  const other = await sessionReportGet(
+    new Request("http://localhost/api/sessions/sess-report-2", {
+      headers: { authorization: "Bearer watcher-report-token-00001" },
+    }),
+    { params: Promise.resolve({ sessionId: "sess-report-2" }) },
+  );
+  assert.equal(other.status, 200);
+  assert.equal((await other.json()).summary.total, 1);
+
+  // An operator of another tenant gets an empty report, not this one.
+  const outsider = await sessionReportGet(
+    new Request("http://localhost/api/sessions/sess-report-1", {
+      headers: { authorization: "Bearer outsider-report-token-0001" },
+    }),
+    { params: Promise.resolve({ sessionId: "sess-report-1" }) },
+  );
+  assert.equal(outsider.status, 200);
+  const outsiderBody = await outsider.json();
+  assert.equal(outsiderBody.summary.total, 0);
+  assert.equal(outsiderBody.tenant_id, "tenant-other");
+
+  // No credential, no report.
+  const anonymous = await sessionReportGet(
+    new Request("http://localhost/api/sessions/sess-report-1"),
+    { params: Promise.resolve({ sessionId: "sess-report-1" }) },
+  );
+  assert.equal(anonymous.status, 401);
+
+  // A session id that is not a session id.
+  const malformed = await sessionReportGet(
+    new Request("http://localhost/api/sessions/not a session", {
+      headers: { authorization: "Bearer watcher-report-token-00001" },
+    }),
+    { params: Promise.resolve({ sessionId: "not a session" }) },
+  );
+  assert.equal(malformed.status, 422);
+
+  clearMemoryEvents();
+  clearMemoryRevocations();
+});
+

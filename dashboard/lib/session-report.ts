@@ -1,0 +1,252 @@
+// The session report: everything one agent run did, and what it cost.
+//
+// The agent gateway mints a session id per run and hands it to all three
+// layers, so the tool-layer, memory-layer and reasoning-layer detections for
+// a run are filed under one key. This is the read side of that key.
+//
+// Two pieces, deliberately separate:
+//
+//   listSessionIncidents  a read, so it needs the ledger
+//   summarizeSession      arithmetic over the result, so it does not
+//
+// The split means the interesting half — what counts as a detection, what
+// counts as a block, what a run cost the agent — is a pure function that can
+// be tested without a database, and the durable half stays a plain query.
+
+import { withTenantDb } from "@/lib/db";
+import { getMemoryEventsForTenant } from "@/lib/event-store";
+import type { Incident, Severity } from "@/lib/types";
+
+/** How many events one session report may carry. */
+export const MAX_SESSION_EVENTS = 1_000;
+
+/**
+ * Outcomes that mean something did not reach the agent intact.
+ *
+ * The distinction is the one an operator cares about: a detection that was
+ * reported but not enforced cost the agent nothing. The set is drawn from
+ * the vocabulary the three modules actually emit —
+ *
+ *   blocked / blocked_first_contact   mcp-shield refused the tool call
+ *   rewritten                         mcp-shield replaced a poisoned schema
+ *   withheld / withheld_revoked /      mcp-shield and vector-anchor held
+ *     withheld_pending_approval         something back
+ *   filtered                          vector-anchor served the next clean hit
+ *   quarantined                       vector-anchor quarantined a document
+ *   terminated / refused              trace-audit cut the stream short
+ *   denied / revoked                  an administrative decision
+ *
+ * Deliberately *not* in it: "redacted" (the answer was sanitized but still
+ * delivered), "detected" (reported, no action taken), "served", "forwarded"
+ * and "completed" (nothing was stopped).
+ */
+const BLOCKING_OUTCOMES = new Set([
+  "blocked",
+  "blocked_first_contact",
+  "rewritten",
+  "withheld",
+  "withheld_revoked",
+  "withheld_pending_approval",
+  "filtered",
+  "quarantined",
+  "terminated",
+  "refused",
+  "denied",
+  "revoked",
+]);
+
+const QUARANTINE_EVENTS = new Set(["corpus_poison_quarantine"]);
+const REVOCATION_EVENTS = new Set(["session_quarantined"]);
+
+/**
+ * Lifecycle and bookkeeping events: real, but not detections.
+ *
+ * `retrieval` and `generation_completed` are the two an operator sees most
+ * of and would otherwise have to read past every time. Neither is a finding;
+ * counting them as detections would drown the ones that matter.
+ */
+const NON_DETECTION_EVENTS = new Set([
+  "service_start",
+  "service_stop",
+  "generation_completed",
+  "retrieval",
+  "baseline_registered",
+  "baseline_reloaded",
+  "baseline_missing",
+  "baseline_reload_failed",
+  "baseline_lock_failed",
+  "divergence_disabled",
+  "tools_list_changed",
+]);
+
+const SEVERITY_RANK: Record<Severity, number> = { critical: 0, warning: 1, info: 2 };
+
+export interface SessionSummary {
+  total: number;
+  detections: number;
+  blocks: number;
+  quarantines: number;
+  revocations: number;
+  by_severity: Record<string, number>;
+  by_module: Record<string, number>;
+  by_event_type: Record<string, number>;
+}
+
+/** Worst-first, then newest-first — the order an operator reads a queue in. */
+function orderIncidents(incidents: Incident[]): Incident[] {
+  return [...incidents].sort((left, right) => {
+    const rank = SEVERITY_RANK[left.severity] - SEVERITY_RANK[right.severity];
+    if (rank !== 0) return rank;
+    const received = (right.received_ms ?? right.timestamp_ms) - (left.received_ms ?? left.timestamp_ms);
+    if (received !== 0) return received;
+    return left.event_id < right.event_id ? 1 : left.event_id > right.event_id ? -1 : 0;
+  });
+}
+
+/**
+ * Every event one agent session produced.
+ *
+ * A session is bounded by the run that created it, so there is no cursor
+ * here: the whole session fits in one page, and a report that silently
+ * dropped its oldest events would understate exactly the run an operator
+ * wants to look at.
+ */
+export async function listSessionIncidents(
+  tenantId: string,
+  sessionId: string,
+  limit: number = MAX_SESSION_EVENTS,
+): Promise<Incident[]> {
+  const safeLimit = Math.max(1, Math.min(Math.trunc(limit), MAX_SESSION_EVENTS));
+
+  if (!process.env.DATABASE_URL) {
+    const incidents: Incident[] = getMemoryEventsForTenant(tenantId)
+      .filter((event) => event.session_id === sessionId)
+      .map((event) => ({
+        ...event,
+        received_ms: event.received_ms ?? event.timestamp_ms,
+      }));
+    return orderIncidents(incidents).slice(0, safeLimit);
+  }
+
+  return withTenantDb(tenantId, async (db) => {
+    const result = await db.query<{
+      event_id: string;
+      schema_version: number;
+      occurred_at_ms: string;
+      received_ms: string;
+      module: string;
+      event_type: string;
+      severity: Severity;
+      details: Record<string, unknown>;
+      tenant_id: string;
+      correlation_id: string | null;
+      session_id: string | null;
+      trace_id: string | null;
+      agent_id: string | null;
+      outcome: string | null;
+      status: string | null;
+      assignee: string | null;
+      note: string | null;
+      resolution: string | null;
+      updated_ms: string | null;
+      updated_by: string | null;
+    }>(
+      `select
+         e.event_id, e.schema_version, e.occurred_at_ms,
+         (extract(epoch from e.received_at) * 1000)::bigint as received_ms,
+         e.module, e.event_type, e.severity, e.details, e.tenant_id,
+         e.correlation_id, e.session_id, e.trace_id, e.agent_id, e.outcome,
+         t.status, t.assignee, t.note, t.resolution,
+         (extract(epoch from t.updated_at) * 1000)::bigint as updated_ms,
+         t.updated_by
+       from monolith.security_events e
+       left join monolith.incident_triage t using (event_id)
+       where e.tenant_id = $1 and e.session_id = $2
+       order by
+         case e.severity when 'critical' then 0 when 'warning' then 1 else 2 end,
+         e.received_at desc,
+         e.event_id desc
+       limit $3`,
+      [tenantId, sessionId, safeLimit],
+    );
+    return result.rows.map((row) => ({
+      event_id: row.event_id,
+      schema_version: row.schema_version === 2 ? 2 : 1,
+      timestamp_ms: Number(row.occurred_at_ms),
+      received_ms: Number(row.received_ms),
+      module: row.module,
+      event_type: row.event_type,
+      severity: row.severity,
+      details: row.details ?? {},
+      tenant_id: row.tenant_id,
+      correlation_id: row.correlation_id ?? undefined,
+      session_id: row.session_id ?? undefined,
+      trace_id: row.trace_id ?? undefined,
+      agent_id: row.agent_id ?? undefined,
+      outcome: row.outcome ?? undefined,
+      triage: row.status
+        ? {
+            status: row.status as never,
+            assignee: row.assignee ?? undefined,
+            note: row.note ?? undefined,
+            resolution: (row.resolution ?? undefined) as never,
+            updated_ms: Number(row.updated_ms),
+            updated_by: row.updated_by ?? "unknown",
+          }
+        : undefined,
+    }));
+  });
+}
+
+/**
+ * Reduce a session's events to the numbers a run is judged by.
+ *
+ * A *detection* is a warning or a critical finding that is not a
+ * lifecycle event. A *block* is a finding that actually stopped something.
+ * The gap between the two is the interesting number: a defense that detects
+ * a lot and blocks nothing is a defense the agent walks straight through.
+ */
+export function summarizeSession(incidents: Incident[]): SessionSummary {
+  const bySeverity: Record<string, number> = { critical: 0, warning: 0, info: 0 };
+  const byModule: Record<string, number> = {};
+  const byEventType: Record<string, number> = {};
+  let detections = 0;
+  let blocks = 0;
+  let quarantines = 0;
+  let revocations = 0;
+
+  for (const incident of incidents) {
+    bySeverity[incident.severity] = (bySeverity[incident.severity] ?? 0) + 1;
+    byModule[incident.module] = (byModule[incident.module] ?? 0) + 1;
+    byEventType[incident.event_type] = (byEventType[incident.event_type] ?? 0) + 1;
+
+    if (QUARANTINE_EVENTS.has(incident.event_type)) quarantines += 1;
+    if (REVOCATION_EVENTS.has(incident.event_type)) revocations += 1;
+
+    if (
+      !NON_DETECTION_EVENTS.has(incident.event_type)
+      && (incident.severity === "warning" || incident.severity === "critical")
+    ) {
+      detections += 1;
+    }
+
+    if (
+      BLOCKING_OUTCOMES.has(incident.outcome ?? "")
+      || QUARANTINE_EVENTS.has(incident.event_type)
+      || REVOCATION_EVENTS.has(incident.event_type)
+    ) {
+      blocks += 1;
+    }
+  }
+
+  return {
+    total: incidents.length,
+    detections,
+    blocks,
+    quarantines,
+    revocations,
+    by_severity: bySeverity,
+    by_module: byModule,
+    by_event_type: byEventType,
+  };
+}
