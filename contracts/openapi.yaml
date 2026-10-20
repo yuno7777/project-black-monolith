@@ -197,8 +197,11 @@ paths:
         "201":
           description: |
             Events accepted for the tenant-scoped ledger. `revoked_sessions`
-            lists sessions the circuit breaker revoked as a result of this
-            batch, so emitters can enforce revocation without polling.
+            lists the sessions currently quarantined for this tenant. It is a
+            snapshot, not a delta: emitters replace their local mirror with
+            it, so a session that was quarantined earlier is still listed.
+            The same set is available without an event flow from
+            `GET /api/sessions/revoked`.
           content:
             application/json:
               schema:
