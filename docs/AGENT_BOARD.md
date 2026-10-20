@@ -37,7 +37,8 @@ Read it before starting work. Write to it while you work.
 | security | `fix/security-hardening` | retention scoping, evidence verification, fail-closed admin, DLP coverage, breaker batching, baseline locking | merged into `main` (`3634d23`); branch kept until cleanup |
 | security | `feature/video-explainer` | the AEOS Guard explainer, rescued off a branch that was about to be deleted | pushed, 1 commit |
 | security | `fix/mcp-shield/baseline-persist-failure` | the tool layer's fail-open path discarded enforcement it had already computed (`FINDINGS.md` §5) | merged into `main` as PR #64 (`1b6e8ed`); the fix is proved by mutating it back to the old behaviour and watching the new test fail. The branch was rebased onto `main` after #60 and #62 merged, so its history was rewritten and it was force-pushed |
-| security | `fix/mcp-shield/malformed-tool-entry` | one malformed tool entry voided the whole `tools/list` defence for that server (`FINDINGS.md` §6) | PR #66 open; the fix is proved by mutating it back to the old behaviour — one defective entry rejecting the whole listing — and watching all six new tests fail. Branched off `main` at `1b6e8ed`; no history rewrite, so nothing was force-pushed |
+| security | `fix/mcp-shield/malformed-tool-entry` | one malformed tool entry voided the whole `tools/list` defence for that server (`FINDINGS.md` §6) | merged into `main` as PR #66 (`f42721d`); the fix is proved by mutating it back to the old behaviour — one defective entry rejecting the whole listing — and watching all six new tests fail. Branched off `main` at `1b6e8ed`; no history rewrite, so nothing was force-pushed |
+| silent-defenses | `fix/silent-defense-failures` | the standing work that a failure turns a defence off without saying so: the shield's admin credential, the memory layer's truncated body, the Python outbox's oversized payload, the Rust outbox's fallback target, the dashboard's listener reconnect, and the revocation snapshot that stops being complete | worktree `C:/Users/Abhi/Desktop/monolith-wt/silent-defenses`, branched off `origin/main` (`1b6e8ed`). One commit per finding, each proved by a test that fails before the fix |
 | integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI green on `b19513b` |
 | integrator | Dependabot | #24 merged (codeql-action); #15, #16 closed as superseded; #26 superseded by a direct hmac 0.13 migration | the queue is empty: **zero open PRs** |
 
@@ -88,6 +89,11 @@ to `main` by ref. Use a dedicated worktree for every branch.
 | Path | Claimed by | Note |
 | --- | --- | --- |
 | `mcp-shield/src/**` | security | through the 2026-10-20 review batch |
+| `mcp-shield/src/main.rs`, `mcp-shield/src/outbox.rs` | silent-defenses | the status listener's admin credential and the fallback delivery target. Overlaps the standing `mcp-shield/src/**` claim, whose batch merged on 2026-10-20; coordinate if that agent touches these two files again |
+| `vector-anchor/src/mcp_server.py` | silent-defenses | the truncated error body |
+| `python-common/monolith_events/events.py` | silent-defenses | the oversized payload |
+| `dashboard/lib/live-event-listener.ts` | silent-defenses | the reconnect after a failed LISTEN |
+| `dashboard/app/api/ingest/route.ts`, `dashboard/app/api/sessions/revoked/route.ts`, `dashboard/lib/incident-store.ts` | silent-defenses | the revocation snapshot pagination. Overlaps the standing `dashboard/lib/incident-store.ts` / `dashboard/app/api/ingest/**` claim, whose batch merged on 2026-10-20 |
 | `dashboard/lib/incident-store.ts`, `dashboard/app/api/ingest/**` | security | circuit breaker and ingest path |
 | `dashboard/lib/login-rate-limit.ts`, `dashboard/scripts/dispatch-alerts.mjs` | security | rate limiting and alert delivery |
 | `supabase/migrations/**` | security | retention scoping migration |
