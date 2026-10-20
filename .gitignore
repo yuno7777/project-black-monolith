@@ -10,6 +10,9 @@ target/
 **/target/
 # Runtime-generated trusted-schema store
 baseline_hashes.json
+# Lock file that serializes read-modify-write cycles on that store
+baseline_hashes.json.lock
+**/baseline_hashes.json.lock
 
 # â”€â”€ Python (vector-anchor, trace-audit) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 __pycache__/
