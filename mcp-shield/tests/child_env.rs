@@ -26,8 +26,10 @@ import json
 import os
 import sys
 
-with open(sys.argv[1], "w", encoding="utf-8") as handle:
+tmp = sys.argv[1] + ".tmp"
+with open(tmp, "w", encoding="utf-8") as handle:
     json.dump(dict(os.environ), handle)
+os.replace(tmp, sys.argv[1])
 
 sys.stdin.read()
 "#;
@@ -92,8 +94,11 @@ fn environment_the_server_inherits(
     let deadline = Instant::now() + Duration::from_secs(30);
     let environment = loop {
         if dump_path.exists() {
-            let raw = std::fs::read_to_string(&dump_path).expect("read the environment dump");
-            break serde_json::from_str::<HashMap<String, String>>(&raw).expect("parse the dump");
+            if let Ok(raw) = std::fs::read_to_string(&dump_path) {
+                if let Ok(parsed) = serde_json::from_str::<HashMap<String, String>>(&raw) {
+                    break parsed;
+                }
+            }
         }
         if let Ok(Some(status)) = child.try_wait() {
             panic!("the shield exited before the server started: {status}");
