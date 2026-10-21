@@ -213,7 +213,11 @@ class Runner:
             # command and the seconds, so a demo that died in the baseline
             # capture looked like a demo that died anywhere. The log holds
             # whatever the step had already said.
-            raise StepTimeout(name, expired.cmd, expired.timeout, self.logs / f"{name}.log") from expired
+            #
+            # The budget is the one the step was given, not the one the
+            # exception carries: the exception reports what was left of it
+            # when the wait gave up, which is a number no operator set.
+            raise StepTimeout(name, expired.cmd, timeout, self.logs / f"{name}.log") from expired
         if process.returncode:
             raise RuntimeError(f"{name} failed; see {self.logs / (name + '.log')}")
         return (self.logs / f"{name}.log").read_text(encoding="utf-8")
