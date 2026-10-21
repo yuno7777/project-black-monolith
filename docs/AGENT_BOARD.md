@@ -65,6 +65,17 @@ same failure.
 under test. A timeout anywhere else — in a test, in a fixture, in a
 module's own code — is the branch's.
 
+**The demo had a budget of its own, and it was the smaller one.** The
+baseline capture runs twelve prompts through the backend, and the
+backend's budget for one answer is five minutes. The demo's step budget
+for the same capture was also five minutes, so the step could be killed
+while the capture was still making progress — and the failure said
+"timed out" and named the command, leaving the step itself a guess in a
+demo that has a dozen of them. The step's budget is now three times the
+backend's, and a timeout names the step it was. A timeout in the
+*backend client* is the runner's; a timeout in the *demo runner* was the
+demo's, and it was hiding the real one.
+
 **The fix raises the ceiling; it does not remove it.** With PR #70's
 five-minute first-byte budget, the check still failed once: the runner
 took more than five minutes to answer, which the 30-second budget would
