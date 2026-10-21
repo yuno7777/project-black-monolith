@@ -89,6 +89,31 @@ class LocalToolsTests(unittest.TestCase):
             finally:
                 runner.close()
 
+    def test_a_step_that_runs_out_of_time_names_the_step(self):
+        """A demo that died in the baseline capture has to say so.
+
+        The subprocess exception reports the command and the seconds and
+        nothing else, so which step ran out of time was a guess -- and
+        the real-models job failed for a while with a message that read
+        like a timeout anywhere in the demo.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            runner = Runner(Path(directory))
+            try:
+                with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                    runner.run(
+                        "baseline",
+                        [sys.executable, "-c", "import time; time.sleep(30)"],
+                        Path(directory),
+                        dict(os.environ),
+                        timeout=2,
+                    )
+                self.assertIn("baseline", str(caught.exception))
+                self.assertIn("2 seconds", str(caught.exception))
+                self.assertIn("baseline.log", str(caught.exception))
+            finally:
+                runner.close()
+
     def test_cleanup_stops_child_and_preserves_unrelated_process(self):
         with tempfile.TemporaryDirectory() as directory:
             runner = Runner(Path(directory))

@@ -127,6 +127,26 @@ def process_options() -> dict:
     return {"start_new_session": True}
 
 
+class StepTimeout(subprocess.TimeoutExpired):
+    """A step of the demo that ran out of time, named.
+
+    The subprocess exception says which command was running and how long
+    it waited, and nothing about which step of the demo that was. The
+    real-models job failed for a while with a message that read like a
+    timeout anywhere in the demo, and the step that was actually slow is
+    the one an operator needs to be told about. It is still a
+    ``TimeoutExpired``, so everything that catches that still catches it.
+    """
+
+    def __init__(self, name: str, cmd, timeout: float, log: Path) -> None:
+        super().__init__(cmd, timeout)
+        self.name = name
+        self.log = log
+
+    def __str__(self) -> str:
+        return f"the {self.name} step timed out after {self.timeout} seconds; see {self.log}"
+
+
 def stop_process(process: subprocess.Popen) -> None:
     """Stop only the owned process tree; never kill arbitrary port listeners."""
     if os.name == "nt":
@@ -185,7 +205,19 @@ class Runner:
         timeout: int = 300,
     ) -> str:
         process = self.start(name, command, cwd, env, input_text is not None)
-        process.communicate(input=input_text, timeout=timeout)
+        try:
+            process.communicate(input=input_text, timeout=timeout)
+        except subprocess.TimeoutExpired as expired:
+            # The step's own name is the first thing an operator needs, and
+            # the subprocess exception does not carry it: it reports the
+            # command and the seconds, so a demo that died in the baseline
+            # capture looked like a demo that died anywhere. The log holds
+            # whatever the step had already said.
+            #
+            # The budget is the one the step was given, not the one the
+            # exception carries: the exception reports what was left of it
+            # when the wait gave up, which is a number no operator set.
+            raise StepTimeout(name, expired.cmd, timeout, self.logs / f"{name}.log") from expired
         if process.returncode:
             raise RuntimeError(f"{name} failed; see {self.logs / (name + '.log')}")
         return (self.logs / f"{name}.log").read_text(encoding="utf-8")
@@ -463,11 +495,23 @@ def main() -> int:
                 "MONOLITH_BASELINE_PATH": str(state / "baseline.json"),
             }
             if module == "trace-audit":
+                # The capture runs every normal prompt through the backend,
+                # and the backend's own budget for one answer is 300
+                # seconds -- the ceiling that lets a cold model load
+                # instead of counting as a dead one. The step's budget
+                # used to be the same 300 seconds, so a cold model could
+                # use up the whole step while the capture was still
+                # making progress, and the demo failed with a timeout
+                # instead of a verdict. Three times the backend's budget
+                # leaves room for the cold model and the prompts after
+                # it, and keeps the step inside the 1800 seconds the
+                # smoke test gives the whole demo.
                 runner.run(
                     "baseline",
                     [sys.executable, "fixtures/baseline_capture.py"],
                     ROOT / module,
                     module_env,
+                    timeout=900,
                 )
             process = runner.start(
                 module,

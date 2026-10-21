@@ -45,6 +45,7 @@ Read it before starting work. Write to it while you work.
 | security | `fix/vector-anchor/hot-path-tests` | the memory layer's hot path had no tests: the validating `cosine` was tested and the two functions the detector actually compares with were not (`FINDINGS.md` test gap 10) | PR #72 open; 19 tests, each proved by mutating the behaviour back and watching the test that claims to hold it fail. Worktree `C:/Users/Abhi/Desktop/monolith-wt/hot-path`, branched off `origin/main` (`f42721d`). The source is not modified — only the tests |
 | security | `fix/mcp-shield/malformed-tool-entry` | one malformed tool entry voided the whole `tools/list` defence for that server (`FINDINGS.md` §6) | merged into `main` as PR #66 (`f42721d`); the fix is proved by mutating it back to the old behaviour — one defective entry rejecting the whole listing — and watching all six new tests fail. Branched off `main` at `1b6e8ed`; no history rewrite, so nothing was force-pushed |
 | security | `fix/vector-anchor/truncated-error-body` | the memory layer's MCP server died on a truncated error body (`FINDINGS.md` §7) | PR #67 open; the fix is proved by mutating it back — the old read of the error body — and watching the new test fail because the server never answers. Branched off `main` at `1b6e8ed` |
+| security | `fix/trace-audit/cold-model-timeout` | one read timeout did two jobs, so a cold model was read as a dead backend (`FINDINGS.md` §12) | PR #70 open; the fix is proved by mutating it back and watching the new tests fail. The tests drive a real local HTTP server, because the deadlines under test are enforced by the HTTP stack and a mock transport enforces nothing |
 | integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI green on `b19513b` |
 | integrator | Dependabot | #24 merged (codeql-action); #15, #16 closed as superseded; #26 superseded by a direct hmac 0.13 migration | the queue is empty: **zero open PRs** |
 
@@ -73,6 +74,40 @@ touches it next.
   the same reason the MCP-Shield benchmark is `#[ignore]`d and the
   vector-anchor one is not in CI. The measurement lives in `EVALUATION.md`;
   the tests hold the *reason* the fast path is safe.
+### The "Real model evidence" check can fail for reasons unrelated to the diff
+The check triggers on `vector-anchor/src/**` and `trace-audit/src/**`, so it
+runs on any branch that touches either module — and on a two-core runner it
+drives a real model, which is slow.
+PR #67 changed `vector-anchor/src/mcp_server.py` and nothing in the
+reasoning layer. Its "Real model evidence" check still failed four times in
+a row, with `httpx.ReadTimeout` raised inside
+`trace-audit/src/stream_proxy.py:_ollama_stream`, while the same commit on
+`main` passed. The diff could not have caused it. The cause was a
+30-second read timeout that a cold model load exceeds; PR #70 splits that
+budget in two, so a slow first byte and a stalled stream are no longer the
+same failure.
+**Read the traceback before re-running.** A `ReadTimeout` in
+`_ollama_stream` is the cold-start problem, not a verdict on the change
+under test. A timeout anywhere else — in a test, in a fixture, in a
+module's own code — is the branch's.
+**The demo had a budget of its own, and it was the smaller one.** The
+baseline capture runs twelve prompts through the backend, and the
+backend's budget for one answer is five minutes. The demo's step budget
+for the same capture was also five minutes, so the step could be killed
+while the capture was still making progress — and the failure said
+"timed out" and named the command, leaving the step itself a guess in a
+demo that has a dozen of them. The step's budget is now three times the
+backend's, and a timeout names the step it was. A timeout in the
+*backend client* is the runner's; a timeout in the *demo runner* was the
+demo's, and it was hiding the real one.
+**The fix raises the ceiling; it does not remove it.** With PR #70's
+five-minute first-byte budget, the check still failed once: the runner
+took more than five minutes to answer, which the 30-second budget would
+also have failed. The rerun of the same commit passed in the ordinary
+time. So a `ReadTimeout` here is still a statement about the runner, and
+the rerun is the right next step — but read the traceback first, because a
+timeout in a *test* is the branch's and a timeout in the backend client is
+not.
 
 ### Requirement floors now match their locks (resolved)
 
@@ -156,6 +191,9 @@ directory holds at most twice the cap**, 32 MiB by default.
 
 Free to claim: `vector-anchor/**` (apart from the detector's hot path, above),
 `trace-audit/**`, `dashboard/app/api/operations/**`,
+| `trace-audit/src/stream_proxy.py` | security | the backend client's deadlines — the first-byte budget and the per-chunk deadline. Only the timeout handling changed; the rest of the layer is not claimed |
+Free to claim: `vector-anchor/**`, `trace-audit/**` (apart from the backend
+client's deadlines, above), `dashboard/app/api/operations/**`,
 `dashboard/app/api/benchmarks/**`, `docs/OPEN_QUESTIONS.md`, the Dependabot
 queue.
 

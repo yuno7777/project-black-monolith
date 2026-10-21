@@ -134,6 +134,14 @@ SAFE_REFUSAL = (
 PII_TOKEN_WINDOW = 16  # Compatibility only; buffering is character-bounded.
 PII_CHAR_WINDOW = 256
 OLLAMA_CONNECT_TIMEOUT_SECONDS = 5.0
+# The time allowed for the backend to answer at all. A model that is not
+# resident has to be loaded from disk into memory and prefilled before it
+# emits anything, and on a two-core runner that takes longer than one
+# inter-token gap. Without a budget of its own, a cold start reads as a
+# dead backend.
+OLLAMA_FIRST_BYTE_TIMEOUT_SECONDS = 300.0
+# The time allowed between two consecutive chunks once the stream is
+# running. A stream that stops mid-way is still caught this quickly.
 OLLAMA_READ_TIMEOUT_SECONDS = 30.0
 OLLAMA_WRITE_TIMEOUT_SECONDS = 10.0
 OLLAMA_POOL_TIMEOUT_SECONDS = 5.0
@@ -391,6 +399,52 @@ async def _mock_stream(prompt: str, max_tokens: int) -> AsyncIterator[str]:
         await asyncio.sleep(0.02)
 
 
+def _backend_timeout() -> httpx.Timeout:
+    """The transport-level timeout for a backend request.
+
+    The read budget is the generous first-byte one, because it also bounds
+    the wait for the response headers: a server that accepts the connection
+    and then says nothing must not hang the caller forever. It is also the
+    backstop under the per-chunk deadline the stream enforces itself.
+    """
+    return httpx.Timeout(
+        connect=OLLAMA_CONNECT_TIMEOUT_SECONDS,
+        read=OLLAMA_FIRST_BYTE_TIMEOUT_SECONDS,
+        write=OLLAMA_WRITE_TIMEOUT_SECONDS,
+        pool=OLLAMA_POOL_TIMEOUT_SECONDS,
+    )
+
+
+async def _chunks_with_deadline(
+    response: httpx.Response,
+    *,
+    first_byte_timeout: float,
+    read_timeout: float,
+) -> AsyncIterator[bytes]:
+    """Yield the response body under two separate deadlines.
+
+    The first chunk gets the generous budget, because a model that is not
+    resident has to be loaded and prefilled before it emits anything. Every
+    chunk after it gets the tight one, so a stream that stalls part-way
+    through is still caught quickly. httpx's own read timeout is a single
+    figure and cannot tell the two apart.
+    """
+    iterator = response.aiter_bytes()
+    budget = first_byte_timeout
+    while True:
+        try:
+            async with asyncio.timeout(budget):
+                chunk = await iterator.__anext__()
+        except StopAsyncIteration:
+            return
+        except TimeoutError as exc:
+            raise httpx.ReadTimeout(
+                f"backend sent no data within {budget:g}s"
+            ) from exc
+        budget = read_timeout
+        yield chunk
+
+
 async def _ollama_stream(
     prompt: str,
     max_tokens: int,
@@ -405,12 +459,7 @@ async def _ollama_stream(
         "stream": True,
         "options": {"num_predict": max_tokens},
     }
-    timeout = httpx.Timeout(
-        connect=OLLAMA_CONNECT_TIMEOUT_SECONDS,
-        read=OLLAMA_READ_TIMEOUT_SECONDS,
-        write=OLLAMA_WRITE_TIMEOUT_SECONDS,
-        pool=OLLAMA_POOL_TIMEOUT_SECONDS,
-    )
+    timeout = _backend_timeout()
     async with (
         httpx.AsyncClient(timeout=timeout, transport=transport) as client,
         client.stream("POST", url, json=payload) as resp,
@@ -418,7 +467,12 @@ async def _ollama_stream(
         resp.raise_for_status()
         pending = bytearray()
         yielded = 0
-        async for chunk in resp.aiter_bytes():
+        chunks = _chunks_with_deadline(
+            resp,
+            first_byte_timeout=OLLAMA_FIRST_BYTE_TIMEOUT_SECONDS,
+            read_timeout=OLLAMA_READ_TIMEOUT_SECONDS,
+        )
+        async for chunk in chunks:
             pending.extend(chunk)
             while (newline := pending.find(b"\n")) >= 0:
                 line = bytes(pending[:newline])
@@ -546,12 +600,7 @@ async def _openai_stream(
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
-    timeout = httpx.Timeout(
-        connect=OLLAMA_CONNECT_TIMEOUT_SECONDS,
-        read=OLLAMA_READ_TIMEOUT_SECONDS,
-        write=OLLAMA_WRITE_TIMEOUT_SECONDS,
-        pool=OLLAMA_POOL_TIMEOUT_SECONDS,
-    )
+    timeout = _backend_timeout()
     async with (
         httpx.AsyncClient(timeout=timeout, transport=transport) as client,
         client.stream("POST", url, json=payload, headers=headers) as resp,
@@ -559,7 +608,12 @@ async def _openai_stream(
         resp.raise_for_status()
         pending = bytearray()
         yielded = 0
-        async for chunk in resp.aiter_bytes():
+        chunks = _chunks_with_deadline(
+            resp,
+            first_byte_timeout=OLLAMA_FIRST_BYTE_TIMEOUT_SECONDS,
+            read_timeout=OLLAMA_READ_TIMEOUT_SECONDS,
+        )
+        async for chunk in chunks:
             pending.extend(chunk)
             while (newline := pending.find(b"\n")) >= 0:
                 line = bytes(pending[:newline])
