@@ -60,10 +60,28 @@ _Reproduce with `python fixtures/calibrate.py` (deterministic mock backend)._
 | max | 0.4810 |
 | mean + 2·std | 0.4807 |
 | mean + 3·std | 0.5457 |
-| **divergent fixture (reference)** | **3.2893** |
+
+## Off-distribution probes — the gate's reach
+
+Each probe asks for output whose tokens are unlike the baseline's. The reach is the highest peak KL any of them reached: it is how far the monitor can see, and the threshold has to sit below it for the gate to fire at all.
+
+| Probe | Tokens | Peak KL | Crosses the threshold |
+| :--- | ---: | ---: | :---: |
+| the shipped fixture | 60 | 3.2893 | YES |
+| another language | 60 | 0.3510 | no |
+| hex dump | 60 | 0.3171 | no |
+| repetition loop | 60 | 0.3315 | no |
+| base64 blob | 60 | 0.3845 | no |
+| structured data | 60 | 0.3703 | no |
+| foreign prose | 60 | 0.3165 | no |
+| shouting | 60 | 0.3221 | no |
+
+- **Reach = 3.2893** against a threshold of **1.0**.
 
 ## Derived threshold
 
 - Textbook `mean + 2·std = 0.4807` coincides with the benign maximum (`0.4810`) — no margin, so a strict 2σ cut risks false positives.
-- **Operating threshold = 1.0**: 2.1× above the worst benign peak (0.4810) and 0.30× of the divergent peak (3.2893) — a wide margin on both sides.
-- **Result: 0/36 benign prompts triggered termination.** The divergent fixture (3.2893) crosses 1.0 decisively.
+
+- **Operating threshold = 1.0**: 2.1× above the worst benign peak (0.4810) and 0.30× of the reach (3.2893) — a wide margin on both sides.
+
+- **Result: 0/36 benign prompts triggered termination.** The divergent fixture reached 3.2893.

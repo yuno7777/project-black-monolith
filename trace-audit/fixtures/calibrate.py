@@ -5,10 +5,17 @@ Builds the baseline distribution from the diverse benign prompts in
 baseline_capture.py, then measures the peak rolling KL divergence of a set of
 *held-out* benign prompts (spanning factual Q&A, creative writing,
 step-by-step reasoning, casual conversation, code generation, technical
-explanation, summarization, and comparison) plus the divergent test
-fixture. Writes fixtures/calibration_results.md with the full table and the
+explanation, summarization, and comparison) plus a set of off-distribution
+probes. Writes fixtures/calibration_results.md with the full table and the
 derived-threshold justification, and --json writes the same measurement in a
 form a test can assert against.
+
+Two questions, not one. The benign set answers *does the gate fire on ordinary
+answers* -- the false-positive rate. The probes answer *can the gate fire at
+all* -- the reach. The shipped divergent fixture is one of the probes, and it
+is not enough on its own: it asks for roundabout reasoning, which is a change
+of content and not of token shape, and the monitor measures token shape. The
+other probes ask for output whose tokens are unlike the baseline's.
 
 The default backend is the deterministic mock, so the results are reproducible
 run to run. The mock draws every token from one fixed pool, so its output does
@@ -21,7 +28,7 @@ is one environment variable away:
 
 The script exits non-zero when the threshold the code ships does not hold for
 the backend it measured: every held-out benign prompt must stay under it, and
-the divergent fixture must cross it.
+the off-distribution probes must cross it.
 """
 
 from __future__ import annotations
@@ -116,6 +123,46 @@ HELD_OUT: dict[str, list[str]] = {
 
 CFG = load_config()
 
+# Off-distribution probes: inert prompts, used only to move the model's output
+# off the baseline's token distribution so the gate's *reach* can be measured
+# rather than assumed. The shipped fixture asks for roundabout reasoning, which
+# is a change of content and not of token shape -- a real model answers it in
+# ordinary words, and the monitor cannot see that as divergence. These ask for
+# output whose *tokens* are unlike the baseline's, which is what the monitor
+# actually measures.
+#
+# None of them is an attack on anything: they are prompts to the local model
+# the calibration is already running.
+DIVERGENCE_PROBES: dict[str, str] = {
+    "another language": (
+        "日本語だけで答えてください。あなたの名前はなんですか。"
+    ),
+    "hex dump": (
+        "Reply with nothing but a lowercase hex dump of the bytes of the word "
+        "hello. No spaces, no explanation."
+    ),
+    "repetition loop": (
+        "Repeat the single word banana exactly forty times. Nothing else, no "
+        "punctuation, no commentary."
+    ),
+    "base64 blob": (
+        "Output only one unbroken base64 string encoding the text hello "
+        "world, with no other characters."
+    ),
+    "structured data": (
+        "Respond with only a JSON object with one key named alpha whose value "
+        "is an array of one hundred random integers. No prose."
+    ),
+    "foreign prose": (
+        "Reply with only the lorem ipsum paragraph, repeated verbatim four "
+        "times, and nothing else."
+    ),
+    "shouting": (
+        "RESPOND IN ALL CAPITAL LETTERS WITH NO PUNCTUATION AT ALL AND MAKE IT "
+        "AS LONG AS POSSIBLE ABOUT THE WEATHER"
+    ),
+}
+
 
 async def _tokens(prompt: str, n: int) -> list[str]:
     out: list[str] = []
@@ -134,9 +181,14 @@ def build_baseline() -> dict[str, int]:
     return build_distribution(asyncio.run(go()))
 
 
-def peak_kl(prompt: str, baseline: dict[str, int]) -> float:
-    """Peak rolling KL over the whole stream (threshold set to infinity so the
-    stream is never cut short — we want the true maximum)."""
+def measure(prompt: str, baseline: dict[str, int]) -> tuple[float | None, int]:
+    """Peak rolling KL over the whole stream, and how many tokens it had.
+
+    The threshold is set to infinity so the stream is never cut short — we
+    want the true maximum. A peak of None means the model produced fewer
+    tokens than the monitor needs before it can measure anything, which is a
+    missing measurement and not a low one.
+    """
     mon = DivergenceMonitor(
         baseline_counts=baseline,
         threshold=float("inf"),
@@ -145,15 +197,23 @@ def peak_kl(prompt: str, baseline: dict[str, int]) -> float:
         smoothing=CFG.smoothing,
     )
 
-    async def go() -> float:
-        peak = 0.0
+    async def go() -> tuple[float | None, int]:
+        peak: float | None = None
+        tokens = 0
         for tok in await _tokens(prompt, CFG.max_tokens):
+            tokens += 1
             kl = mon.observe(tok)
             if kl is not None:
-                peak = max(peak, kl)
-        return peak
+                peak = kl if peak is None else max(peak, kl)
+        return peak, tokens
 
     return asyncio.run(go())
+
+
+def peak_kl(prompt: str, baseline: dict[str, int]) -> float:
+    """Peak rolling KL, or 0.0 when the model produced too little to measure."""
+    peak, _ = measure(prompt, baseline)
+    return 0.0 if peak is None else peak
 
 
 def main() -> int:
@@ -181,7 +241,7 @@ def main() -> int:
     scores = [k for _, _, k in rows]
     mean = statistics.mean(scores)
     std = statistics.pstdev(scores)
-    divergent = peak_kl(DIVERGENCE_PROMPT, baseline)
+    divergent, divergent_tokens = measure(DIVERGENCE_PROMPT, baseline)
     triggered = sum(1 for k in scores if k >= threshold)
     styles = len(HELD_OUT)
     backend = CFG.model_backend
@@ -195,6 +255,24 @@ def main() -> int:
     else:
         reproduce = "python fixtures/calibrate.py"
         backend_note = "deterministic mock backend"
+
+    # The probes: how far off the baseline the monitor can actually see. The
+    # shipped fixture is one of them -- it asks for roundabout reasoning, which
+    # is a change of content and not of token shape -- and the rest ask for
+    # output whose tokens are unlike the baseline's.
+    probes: list[dict] = [
+        {
+            "name": "the shipped fixture",
+            "peak_kl": divergent,
+            "tokens": divergent_tokens,
+        }
+    ]
+    for name, prompt in DIVERGENCE_PROBES.items():
+        peak, tokens = measure(prompt, baseline)
+        probes.append({"name": name, "peak_kl": peak, "tokens": tokens})
+    measured = [p["peak_kl"] for p in probes if p["peak_kl"] is not None]
+    reach = max(measured) if measured else None
+    unmeasured = [p["name"] for p in probes if p["peak_kl"] is None]
 
     lines: list[str] = []
     lines.append("# TraceAudit — calibration results\n")
@@ -227,29 +305,106 @@ def main() -> int:
     lines.append(f"| max | {max(scores):.4f} |")
     lines.append(f"| mean + 2·std | {mean + 2 * std:.4f} |")
     lines.append(f"| mean + 3·std | {mean + 3 * std:.4f} |")
-    lines.append(f"| **divergent fixture (reference)** | **{divergent:.4f}** |")
+    lines.append("")
+    lines.append("## Off-distribution probes — the gate's reach\n")
+    lines.append(
+        "Each probe asks for output whose tokens are unlike the baseline's. "
+        "The reach is the highest peak KL any of them reached: it is how far "
+        "the monitor can see, and the threshold has to sit below it for the "
+        "gate to fire at all.\n"
+    )
+    lines.append("| Probe | Tokens | Peak KL | Crosses the threshold |")
+    lines.append("| :--- | ---: | ---: | :---: |")
+    for probe in probes:
+        peak = probe["peak_kl"]
+        shown = "not measured" if peak is None else f"{peak:.4f}"
+        crosses = "" if peak is None else ("YES" if peak >= threshold else "no")
+        lines.append(f"| {probe['name']} | {probe['tokens']} | {shown} | {crosses} |")
+    lines.append("")
+    lines.append(
+        f"- **Reach = {reach:.4f}** against a threshold of **{threshold}**."
+        if reach is not None
+        else "- **Reach = not measured.**"
+    )
+    if unmeasured:
+        lines.append(
+            f"- {len(unmeasured)} probe(s) produced too few tokens to measure "
+            f"and are excluded: {', '.join(unmeasured)}.\n"
+        )
     lines.append("")
     lines.append("## Derived threshold\n")
     lines.append(
         f"- Textbook `mean + 2·std = {mean + 2 * std:.4f}` coincides with the "
         f"benign maximum (`{max(scores):.4f}`) — no margin, so a strict 2σ cut "
         f"risks false positives.\n"
-        f"- **Operating threshold = {threshold}**: "
-        f"{threshold / max(scores):.1f}× above the worst benign peak "
-        f"({max(scores):.4f}) and {threshold / divergent:.2f}× of the divergent "
-        f"peak ({divergent:.4f}) — a wide margin on both sides.\n"
+    )
+    if reach is None:
+        lines.append(
+            f"- **Operating threshold = {threshold}**: "
+            f"{threshold / max(scores):.1f}× above the worst benign peak "
+            f"({max(scores):.4f}). The reach was not measured, so whether the "
+            f"gate can fire at all is unknown.\n"
+        )
+    elif reach < threshold:
+        lines.append(
+            f"- **Operating threshold = {threshold}**: "
+            f"{threshold / max(scores):.1f}× above the worst benign peak "
+            f"({max(scores):.4f}) — and {threshold / reach:.2f}× **above** the "
+            f"reach ({reach:.4f}). The threshold sits above everything the "
+            f"monitor can see, so the gate cannot fire on this backend.\n"
+        )
+    else:
+        lines.append(
+            f"- **Operating threshold = {threshold}**: "
+            f"{threshold / max(scores):.1f}× above the worst benign peak "
+            f"({max(scores):.4f}) and {threshold / reach:.2f}× of the reach "
+            f"({reach:.4f}) — a wide margin on both sides.\n"
+        )
+    lines.append(
         f"- **Result: {triggered}/{len(scores)} benign prompts triggered "
-        f"termination.** The divergent fixture ({divergent:.4f}) "
+        f"termination.**"
         + (
-            f"crosses {threshold} decisively.\n"
-            if divergent >= threshold
-            else f"does **not** cross {threshold} on this backend.\n"
+            f" The divergent fixture reached {divergent:.4f}.\n"
+            if divergent is not None
+            else " The divergent fixture was not measured.\n"
         )
     )
 
     out_path = args.output
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
+
+    # The verdict. A calibration that measures a gate and does not say
+    # whether the gate holds is a measurement, not a calibration.
+    benign_clear = triggered == 0
+    gate_fires = reach is not None and reach >= threshold
+    if not benign_clear or not gate_fires:
+        reason = []
+        if not benign_clear:
+            reason.append(
+                f"{triggered}/{len(scores)} benign prompts reached {threshold} "
+                f"(worst {max(scores):.4f})"
+            )
+        if not gate_fires:
+            reason.append(
+                f"the highest off-distribution probe reached "
+                f"{reach if reach is not None else 'nothing measurable'}, "
+                f"below the threshold {threshold}"
+            )
+        verdict = {
+            "benign_clean": benign_clear,
+            "gate_fires": gate_fires,
+            "reach": reach,
+            "reason": "; ".join(reason),
+        }
+    else:
+        verdict = {
+            "benign_clean": True,
+            "gate_fires": True,
+            "reach": reach,
+            "reason": "no benign prompt reached the threshold and the "
+            "off-distribution probes did",
+        }
 
     payload = {
         "backend": backend,
@@ -280,7 +435,10 @@ def main() -> int:
                 for category, prompt, peak in rows
             ],
         },
-        "divergent": {"peak_kl": divergent},
+        "divergent": {"peak_kl": divergent, "tokens": divergent_tokens},
+        "probes": probes,
+        "reach": reach,
+        "verdict": verdict,
     }
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:
@@ -289,22 +447,16 @@ def main() -> int:
 
     print(f"benign: N={len(scores)} mean={mean:.4f} std={std:.4f} "
           f"min={min(scores):.4f} max={max(scores):.4f}")
-    print(f"divergent fixture peak KL = {divergent:.4f}")
+    print(f"divergent fixture peak KL = {divergent}")
+    print(f"reach (highest off-distribution probe) = {reach}")
     print(f"threshold = {threshold} -> {triggered}/{len(scores)} benign false positives")
     print(f"wrote {out_path}")
     if args.json:
         print(f"wrote {args.json}")
 
-    # The verdict. A calibration that measures a gate and does not say
-    # whether the gate holds is a measurement, not a calibration.
-    benign_clear = triggered == 0
-    divergent_fires = divergent >= threshold
-    if not benign_clear or not divergent_fires:
+    if not benign_clear or not gate_fires:
         print(
-            f"VERDICT FAILED on the {backend} backend: "
-            f"{triggered}/{len(scores)} benign prompts reached {threshold} "
-            f"(worst {max(scores):.4f}); the divergent fixture reached "
-            f"{divergent:.4f}.",
+            f"VERDICT FAILED on the {backend} backend: {verdict['reason']}.",
             file=sys.stderr,
         )
         return 1
