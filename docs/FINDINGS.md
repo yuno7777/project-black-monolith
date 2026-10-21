@@ -685,6 +685,10 @@ that guarantee.
 | 3 | The proxy default change silently alters the preflight health checks, which can now abort the launcher. | `scripts/monolith_wrap.py` | small | fixed |
 | 4 | `generation_truncated` reaches the feed but is counted as an "attack" by the overview KPI, and is named in no documentation. | `dashboard/app/page.tsx` | medium | open |
 | 5 | The dashboard fix corrected the session report; the console's headline detection number still counts operational failures. | `dashboard/app/page.tsx` | small | open |
+| 2 | The launcher's ambient-proxy rule is weaker than the secret-boundary rule it cites, and its safety argument fails for the Windows system proxy it was written for. | `scripts/monolith_wrap.py` | medium | open |
+| 3 | The proxy default change silently alters the preflight health checks, which can now abort the launcher. | `scripts/monolith_wrap.py` | small | open |
+| 4 | `generation_truncated` reaches the feed but is counted as an "attack" by the overview KPI, and is named in no documentation. | `dashboard/app/page.tsx` | medium | fixed |
+| 5 | The dashboard fix corrected the session report; the console's headline detection number still counts operational failures. | `dashboard/app/page.tsx` | small | fixed |
 
 ---
 
@@ -847,3 +851,16 @@ up.
   behaviour back and watching the test that claims to hold it fail, and the
   route's dispatch is now explicit so an unhandled action cannot reach the
   branch that clears the detector.
+- **The console's headline number counted operational failures as attacks**
+  (documentation drift 4 and drift 5 above). The overview KPI was the
+  critical count plus the warning count, so a model provider that cut an
+  answer short — `generation_truncated`, which is an operational failure and
+  not a finding — was counted as an attack intercepted, and a run in which
+  nothing was flagged read as a detection. The session report had already
+  been corrected; the console had not, so the two numbers an operator
+  compares claimed the same thing and disagreed. Fixed in PR #79: one rule
+  in `dashboard/lib/event-classification.ts` classifies every event type as
+  a finding, an operational failure or the system's own lifecycle, the
+  console and the session report both count by it, `docs/EVENT_TYPES.md`
+  names every type and what it means, and `contracts/check_contracts.py`
+  fails the build when a layer emits a type nobody classified.

@@ -52,6 +52,7 @@ Read it before starting work. Write to it while you work.
 | security | `fix/detector-reset-path` | the memory layer's administrative reset — the one action that erases the detector's history — had no tests on either side of the wire (`FINDINGS.md` test gap 4) | PR #75 open; eight tests on the module's side and seven on the dashboard's, each proved by mutating the behaviour back and watching the test that claims to hold it fail. One unrelated commit fixes a test that failed at random (the descendant test read a file that was still being written). Worktree `C:/Users/Abhi/Desktop/monolith-wt/reset-detection` |
 | gateway-review | `fix/gateway-review-fixes` | the eleven findings from the agent-gateway review: credential containment in the shield and the launcher, the reasoning layer's answer path, the memory layer's attribution rule, the dashboard's session report | all eleven fixed, one commit each; the findings are recorded in `FINDINGS.md` with the commit that fixes each and the residuals. Worktree `C:/Users/Abhi/Desktop/monolith-wt/gateway-fixes`; branched off `fix/credential-redaction-success-path` so the credential-redaction work is included. `origin/main` merged in (PR #65), no history rewrite, so nothing was force-pushed |
 | silent-defenses | `fix/silent-defense-failures` | the standing work that a failure turns a defence off without saying so: the shield's admin credential, the memory layer's truncated body, the Python outbox's oversized payload, the Rust outbox's fallback target, the dashboard's listener reconnect, and the revocation snapshot that stops being complete | worktree `C:/Users/Abhi/Desktop/monolith-wt/silent-defenses`, branched off `origin/main` (`1b6e8ed`) and rebased onto `f42721d`. One commit per finding, each proved by a test that fails before the fix. Six findings fixed (`FINDINGS.md` §3, §4, §7, §9, §10, §11); pushed, awaiting a merge |
+| security | `fix/dashboard/operational-failure-counts` | the console's headline number counted operational failures as attacks (`FINDINGS.md` documentation drift 4 and drift 5) | PR #79 open; the rule is one function in `dashboard/lib/event-classification.ts`, shared by the console and the session report, and `contracts/check_contracts.py` fails the build when a layer emits a type the dashboard has not classified. Branched off `origin/main` at `f42721d`, so it waits on no open PR |
 | integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI green on `b19513b` |
 | integrator | Dependabot | #24 merged (codeql-action); #15, #16 closed as superseded; #26 superseded by a direct hmac 0.13 migration | the queue is empty: **zero open PRs** |
 | credential-transport | `fix/trace-audit/model-credential-transport` | the transport rule for the model credential the Anthropic gateway forwards upstream: the rule the modules already apply to their own delivery, applied to the one credential that had none (`FINDINGS.md` test gap 5, and §12, which is the defect it was hiding) | two fixes and two records; every one proved by mutating the fix back and watching the new test fail. Stacked on `fix/gateway-review-fixes` as PR #77, so it rebases onto `main` after #65 merges. Worktree `C:/Users/Abhi/Desktop/monolith-wt/credential-transport` |
@@ -282,6 +283,10 @@ proxy settings from its own environment. That is question 13 in
 | `main` | integrator | Merges and verification only; branch work happens in a worktree. |
 | `python-common/monolith_events/events.py`, `trace-audit/src/config.py`, `trace-audit/src/main.py`, `trace-audit/src/events.py` | credential-transport | the model credential's transport rule: the rule the modules already apply to their own delivery, applied to the credential the Anthropic gateway forwards upstream. Stacked on `fix/gateway-review-fixes`, so it rebases onto `main` after that merges. `python-common/monolith_events/events.py` overlaps the `silent-defenses` claim, but the two touch different functions |
 | `scripts/monolith_wrap.py`, `scripts/tests/test_monolith_wrap.py` | credential-transport | the launcher's standard-library-only copy of the transport rule, brought into line with the shared one (`80f84f6`). Overlaps the `gateway-review` claim on the same file, and it is stacked on that branch, so the change rides on top of it rather than racing it |
+| `dashboard/app/page.tsx`, `dashboard/app/components/**` | operational-counts | the console's headline numbers: an operational failure — a truncated answer, a refused session — is not an attack, and the overview KPI counts it as one (`FINDINGS.md` documentation drift 4 and drift 5). Branched off `origin/main`, so it does not wait on any open PR |
+| `dashboard/lib/event-classification.ts`, `dashboard/lib/session-report.ts`, `dashboard/test/event-classification.test.ts`, `dashboard/package.json` | operational-counts | the same drift, on the read side: one shared rule for what counts as a detection, shared by the session report and the console. `session-report.ts` is claimed here only for the classification call — its queries, its blocks and its evidence are not in scope |
+| `contracts/check_contracts.py` | operational-counts | the event-type check: a layer that emits a type the dashboard has not classified fails the build, and the documentation is checked against the same list |
+| `docs/EVENT_TYPES.md`, `docs/FINDINGS.md`, `docs/OPERATIONS.md`, `dashboard/README.md` | operational-counts | the event vocabulary and the record of the drift it fixes: drifts 4 and 5 are marked fixed, and the types the console counts by are named |
 
 Free to claim: `vector-anchor/**` (apart from the detector's hot path, above),
 `trace-audit/**`, `dashboard/app/api/operations/**`,
@@ -303,6 +308,18 @@ Free to claim: `vector-anchor/**` (apart from the two files above),
 `trace-audit/**` (apart from the four files above),
 `dashboard/app/api/operations/**`, `dashboard/app/api/benchmarks/**`,
 `docs/OPEN_QUESTIONS.md`, the Dependabot queue.
+
+**A new event type is now three edits, and the build checks all three.** The
+event envelope is deliberately open on `event_type` — a new detection must not
+need a schema change — so there is no enumeration for a new type to be
+checked against, and the console's headline number is only as good as the
+list of types it counts by. `contracts/check_contracts.py` now scans the
+layers' sources and fails the build when a layer emits a type the dashboard
+has not classified. So: emit it, classify it in
+`dashboard/lib/event-classification.ts`, and document it in
+[`EVENT_TYPES.md`](EVENT_TYPES.md). The check enforces "nothing may be emitted
+that has not been classified" and not the reverse, so a type can be classified
+before the layer that emits it ships.
 
 ## Standing work
 

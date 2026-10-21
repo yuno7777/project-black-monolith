@@ -23,6 +23,13 @@ MCP-Shield is short-lived and uses a durable JSONL spool plus a resident
 ledger, but its local spool count is not currently exposed through an HTTP
 runtime probe.
 
+These signals are read from the same ledger the console's headline numbers are
+computed from, so it is worth knowing what an event in that ledger *means*.
+Every event type belongs to one of three classes — a finding, an operational
+failure, or the system's own lifecycle — and what each type means is in
+[the event vocabulary](EVENT_TYPES.md). A warning that means "the defence
+could not run" is not a finding, and the console does not count it as one.
+
 ## Required runtime configuration
 
 ```text

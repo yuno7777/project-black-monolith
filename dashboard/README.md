@@ -82,6 +82,14 @@ root `run_full_demo.sh` against the full Docker stack.
   critical.
 - **Latency** in the summary averages `details.detection_latency_ms` (or
   `latency_ms`) across events that carry it.
+- **"Detections" counts findings, not severities.** An event is a finding when
+  a defence ran and found something; a warning that means the defence *could
+  not run* — a truncated answer, a broken provider stream, a shield that
+  forwarded a message it could not analyse — is an operational failure and is
+  not counted. The rule is by event type, in one place
+  (`lib/event-classification.ts`), shared by the console and the session
+  report, and every type in it is documented in
+  [the event vocabulary](../docs/EVENT_TYPES.md).
 - **Ingest is authenticated.** Every POST carries a per-module bearer token
   (`EVENT_INGEST_TOKENS_JSON`), compared with `timingSafeEqual` and scoped to
   a single module, so one module's credential cannot forge another's events.

@@ -14,6 +14,7 @@
 // be tested without a database, and the durable half stays a plain query.
 
 import { withTenantDb } from "@/lib/db";
+import { isDetectionEvent } from "@/lib/event-classification";
 import { getMemoryEventsForTenant } from "@/lib/event-store";
 import type { Incident, Severity } from "@/lib/types";
 
@@ -60,40 +61,22 @@ const BLOCKING_OUTCOMES = new Set([
 const QUARANTINE_EVENTS = new Set(["corpus_poison_quarantine"]);
 const REVOCATION_EVENTS = new Set(["session_quarantined"]);
 
-/**
- * Lifecycle and bookkeeping events: real, but not detections.
- *
- * `retrieval` and `generation_completed` are the two an operator sees most
- * of and would otherwise have to read past every time. Neither is a finding;
- * counting them as detections would drown the ones that matter.
- *
- * The three operational failures are here for the same reason, and it is
- * the sharper one. `upstream_stream_error` (the model provider broke),
- * `generation_truncated` (the provider cut the answer short) and
- * `analysis_error` (mcp-shield could not analyse a message and forwarded
- * it unmodified) are all warnings — but a warning that means "the defense
- * did not run" is not a warning that means "the defense found something".
- * Counting them would make a run in which nothing was flagged read as a
- * detection, which is exactly the number an operator reads first. They stay
- * in the report's event list, so nothing is hidden; and `generation_truncated`
- * still counts as a block, because the agent did not get its answer.
- */
-const NON_DETECTION_EVENTS = new Set([
-  "service_start",
-  "service_stop",
-  "generation_completed",
-  "generation_truncated",
-  "upstream_stream_error",
-  "analysis_error",
-  "retrieval",
-  "baseline_registered",
-  "baseline_reloaded",
-  "baseline_missing",
-  "baseline_reload_failed",
-  "baseline_lock_failed",
-  "divergence_disabled",
-  "tools_list_changed",
-]);
+// What counts as a detection is decided in one place —
+// `@/lib/event-classification` — because the console's headline number and
+// this report both answer the same question and must answer it the same
+// way. The rule, and the reason lifecycle and operational events are not
+// findings, live with the list of every event type the layers emit.
+//
+// The short version: `retrieval` and `generation_completed` are the two an
+// operator sees most of and would otherwise have to read past every time,
+// and the operational failures — `upstream_stream_error` (the model provider
+// broke), `generation_truncated` (the provider cut the answer short),
+// `analysis_error` (mcp-shield could not analyse a message and forwarded it
+// unmodified) and the rest — are all warnings, but a warning that means "the
+// defense did not run" is not a warning that means "the defense found
+// something". They stay in the report's event list, so nothing is hidden;
+// and `generation_truncated` still counts as a block, because the agent did
+// not get its answer.
 
 const SEVERITY_RANK: Record<Severity, number> = { critical: 0, warning: 1, info: 2 };
 
@@ -333,10 +316,11 @@ export async function listSessionIncidents(
 /**
  * Reduce a session's events to the numbers a run is judged by.
  *
- * A *detection* is a warning or a critical finding that is not a
- * lifecycle event. A *block* is a finding that actually stopped something.
- * The gap between the two is the interesting number: a defense that detects
- * a lot and blocks nothing is a defense the agent walks straight through.
+ * A *detection* is a finding: a warning or a critical that some defence
+ * actually looked for and found, as decided by `@/lib/event-classification`.
+ * A *block* is a finding that actually stopped something. The gap between
+ * the two is the interesting number: a defense that detects a lot and blocks
+ * nothing is a defense the agent walks straight through.
  */
 export function summarizeSession(incidents: Incident[], sessionTotal?: number): SessionSummary {
   const bySeverity: Record<string, number> = { critical: 0, warning: 0, info: 0 };
@@ -355,10 +339,7 @@ export function summarizeSession(incidents: Incident[], sessionTotal?: number): 
     if (QUARANTINE_EVENTS.has(incident.event_type)) quarantines += 1;
     if (REVOCATION_EVENTS.has(incident.event_type)) revocations += 1;
 
-    if (
-      !NON_DETECTION_EVENTS.has(incident.event_type)
-      && (incident.severity === "warning" || incident.severity === "critical")
-    ) {
+    if (isDetectionEvent(incident)) {
       detections += 1;
     }
 
