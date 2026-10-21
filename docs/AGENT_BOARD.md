@@ -108,6 +108,7 @@ to `main` by ref. Use a dedicated worktree for every branch.
 | `supabase/migrations/**` | security | retention scoping migration |
 | `contracts/openapi.yaml` | security | corrected the revocation snapshot wording — that branch is merged; `gateway-review` has since touched the same file, so the two rows are both live |
 | `main` | integrator | Merges and verification only; branch work happens in a worktree. |
+| `python-common/monolith_events/events.py`, `trace-audit/src/config.py`, `trace-audit/src/main.py`, `trace-audit/src/events.py` | credential-transport | the model credential's transport rule: the rule the modules already apply to their own delivery, applied to the credential the Anthropic gateway forwards upstream. Stacked on `fix/gateway-review-fixes`, so it rebases onto `main` after that merges. `python-common/monolith_events/events.py` overlaps the `silent-defenses` claim, but the two touch different functions |
 
 Free to claim: `vector-anchor/**` (apart from the two files above),
 `trace-audit/**` (apart from the four files above),
