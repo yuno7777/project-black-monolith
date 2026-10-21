@@ -46,10 +46,26 @@ use std::time::{Duration, Instant};
 /// persist across runs, so a permanently broken target cannot grow the spool
 /// without bound.
 const MAX_ATTEMPTS: u32 = 10;
-/// Upper bound on spooled records. Enforced at compaction; the oldest records
-/// are dropped first (newest detections are the most actionable).
+/// Upper bound on the records in one spool file. Enforced at compaction; the
+/// oldest records are dropped first (newest detections are the most
+/// actionable).
+///
+/// The bound is per file, not per spool: `outbox.jsonl` and `outbox.dead`
+/// each hold up to this many records, so the spool directory holds up to
+/// twice it. The two files keep budgets of their own, for the reason given
+/// on [`MAX_SPOOL_BYTES`].
 pub const MAX_SPOOL_RECORDS: usize = 10_000;
-/// Upper bound on spooled bytes across `outbox.jsonl` and `outbox.dead`.
+/// Upper bound on the bytes in one spool file.
+///
+/// The bound is per file, not per spool: `outbox.jsonl` and `outbox.dead`
+/// each hold up to this many bytes, so the spool directory holds up to
+/// twice it.
+///
+/// The two files keep budgets of their own deliberately. A budget shared
+/// across them would let one starve the other, and what the pending spool
+/// drops when it runs out is a detection that has not been delivered yet —
+/// the one loss this outbox must never make. With a budget of its own, a
+/// full dead-letter file costs the pending spool nothing.
 pub const MAX_SPOOL_BYTES: usize = 16 * 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -1208,6 +1224,14 @@ mod tests {
         record
     }
 
+    /// The size of a spool file, or zero when it is not there: a spool that
+    /// has been emptied leaves no file behind.
+    fn file_len(path: &Path) -> usize {
+        fs::metadata(path)
+            .map(|meta| meta.len() as usize)
+            .unwrap_or(0)
+    }
+
     #[test]
     fn spool_survives_a_round_trip() {
         let path = temp_dir("roundtrip").join("outbox.jsonl");
@@ -1390,6 +1414,70 @@ mod tests {
         assert_eq!(byte_kept.len(), 2);
         assert_eq!(byte_kept[0].event_id, "evt-9");
         assert_eq!(byte_kept[1].event_id, "evt-10");
+    }
+
+    /// The two spool files keep budgets of their own.
+    ///
+    /// The byte and record caps are applied to each file on its own, so the
+    /// spool directory holds up to twice `MAX_SPOOL_BYTES`. That is
+    /// deliberate, and this test is what holds it in place: a budget shared
+    /// across the two files would let a full dead-letter file starve the
+    /// pending spool, and what the pending spool drops when it runs out is a
+    /// detection that has not been delivered yet.
+    #[test]
+    fn the_pending_and_dead_spool_budgets_are_independent() {
+        let dir = temp_dir("independent-spool-budgets");
+        let spool_path = dir.join("outbox.jsonl");
+        let outbox = Outbox::for_path(&spool_path).unwrap();
+        // A small budget, so the test does not write megabytes to disk.
+        let budget = 1024;
+
+        // Fill the dead-letter file to its own budget.
+        let dead_batch: Vec<SpoolRecord> = (0..200)
+            .map(|index| record(&format!("dead-{index}")))
+            .collect();
+        append_dead_records_bounded(
+            outbox.dead_letter_path(),
+            &dead_batch,
+            MAX_SPOOL_RECORDS,
+            budget,
+        )
+        .unwrap();
+
+        // The pending spool still has a full budget of its own, and the
+        // newest record still lands: nothing the dead-letter file holds
+        // costs the pending spool anything.
+        let mut pending: Vec<SpoolRecord> = (0..200)
+            .map(|index| record(&format!("pending-{index}")))
+            .collect();
+        enforce_spool_bounds(&mut pending, MAX_SPOOL_RECORDS, budget);
+        write_records_atomically(outbox.spool_path(), &pending).unwrap();
+        let fresh = record("fresh-detection");
+        append_record_bounded(outbox.spool_path(), &fresh, MAX_SPOOL_RECORDS, budget).unwrap();
+
+        let dead_bytes = file_len(outbox.dead_letter_path());
+        let pending_bytes = file_len(outbox.spool_path());
+        assert!(
+            dead_bytes <= budget,
+            "the dead-letter file must stay inside its own budget: {dead_bytes} > {budget}"
+        );
+        assert!(
+            pending_bytes <= budget,
+            "the pending file must stay inside its own budget: {pending_bytes} > {budget}"
+        );
+        let kept = read_records(outbox.spool_path()).unwrap();
+        assert_eq!(
+            kept.last().map(|record| record.event_id.as_str()),
+            Some("fresh-detection"),
+            "a full dead-letter file must not cost the pending spool a detection"
+        );
+        // The cap is per file, so the two together hold more than one
+        // budget. If that ever stops being true the constant's doc comment
+        // is wrong, and the cap needs a decision rather than a comment.
+        assert!(
+            dead_bytes + pending_bytes > budget,
+            "the spool's two files must each have a budget of their own"
+        );
     }
 
     /// Replaying into a full spool must not quietly destroy undelivered
