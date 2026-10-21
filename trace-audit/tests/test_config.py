@@ -50,6 +50,24 @@ def test_dashboard_credentials_are_paired_and_header_safe(monkeypatch):
         load_config()
 
 
+def test_an_insecure_model_upstream_is_refused_by_default(monkeypatch):
+    """Plain HTTP to a host that is not loopback is off unless asked for.
+
+    The gateway forwards the model credential upstream, so the transport it
+    travels over is the operator's choice — but it has to be a choice, made
+    by name, rather than the default a mistyped URL happens to produce.
+    """
+    monkeypatch.delenv("MONOLITH_ALLOW_INSECURE_ANTHROPIC", raising=False)
+    assert load_config().anthropic_allow_insecure is False
+
+    monkeypatch.setenv("MONOLITH_ALLOW_INSECURE_ANTHROPIC", "true")
+    assert load_config().anthropic_allow_insecure is True
+
+    # Anything but the exact word is not the word.
+    monkeypatch.setenv("MONOLITH_ALLOW_INSECURE_ANTHROPIC", "yes")
+    assert load_config().anthropic_allow_insecure is False
+
+
 @pytest.mark.parametrize(
     "payload",
     [

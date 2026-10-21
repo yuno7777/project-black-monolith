@@ -41,6 +41,7 @@ from .config import MODULE_NAME, load_config
 from .events import (
     EventContext,
     context_from_headers,
+    credential_transport_is_trusted,
     is_session_revoked,
     make_emitter,
     now_ms,
@@ -929,6 +930,46 @@ _DIVERGENCE_NOTICE_LOCK = threading.Lock()
 # notice is dropped, and the first few hundred already say what it says.
 MAX_DIVERGENCE_NOTICES = 256
 
+# One notice per process for the refused upstream. The cause is the
+# configuration, not the caller, so a second request would say the same
+# thing; the ledger row is there so the operator can see *why* the gateway
+# is answering 503 without reading the operator's logs.
+_UNTRUSTED_UPSTREAM_NOTICED = False
+_UNTRUSTED_UPSTREAM_LOCK = threading.Lock()
+
+
+def _report_untrusted_upstream() -> None:
+    """Record once that the gateway refused to send the model credential.
+
+    The refusal itself is the control; this is the notice. It fires once
+    per process because the cause is the operator's configuration, and a
+    retrying agent would otherwise write a ledger row per retry.
+    """
+    global _UNTRUSTED_UPSTREAM_NOTICED
+    with _UNTRUSTED_UPSTREAM_LOCK:
+        if _UNTRUSTED_UPSTREAM_NOTICED:
+            return
+        _UNTRUSTED_UPSTREAM_NOTICED = True
+    emit = getattr(app.state, "emit", None)
+    if emit is None:
+        return
+    emit(
+        "upstream_transport_refused",
+        "warning",
+        {
+            "message": (
+                "the configured model upstream is not a trusted transport, so "
+                "the model credential was not forwarded. Use HTTPS, a loopback "
+                "address, or set MONOLITH_ALLOW_INSECURE_ANTHROPIC=true if "
+                "that network is trusted."
+            ),
+            "refusal": "generation",
+        },
+        resource_type="reasoning_trace",
+        outcome="refused",
+        policy_version=POLICY_VERSION,
+    )
+
 
 def _divergence_notice_once(
     baseline_model: str | None, requested_model: str, reason: str
@@ -1172,6 +1213,41 @@ async def messages(request: Request):
             media_type="text/event-stream",
         )
 
+    url, headers, payload = build_upstream_request(
+        raw,
+        cfg,
+        {key.lower(): value for key, value in request.headers.items()},
+    )
+    # The credential is in `headers` now, and it is about to travel to the
+    # URL in `url`. Every other credential this system sends is held to the
+    # same rule — HTTPS everywhere, plain HTTP only to loopback, and only
+    # when the operator says the network is trusted — and the model
+    # credential was the one that had no rule at all. A credential in
+    # cleartext is a credential on the wire, in front of whoever answers,
+    # and a configuration mistake must not be able to cause that.
+    #
+    # The check is on the URL that will actually be used, not on the
+    # configured base, so a derivation that changed the host could not
+    # quietly step around it. Nothing has been sent at this point: the
+    # refusal happens before the request is built.
+    if not credential_transport_is_trusted(
+        url, allow_insecure=cfg.anthropic_allow_insecure
+    ):
+        _report_untrusted_upstream()
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "the configured model upstream is not a trusted transport: the "
+                "model credential would travel over plain HTTP. Use HTTPS, a "
+                "loopback address, or set MONOLITH_ALLOW_INSECURE_ANTHROPIC="
+                "true if that network is trusted."
+            ),
+        )
+
+    # The divergence notice comes after the transport check on purpose: a
+    # request that was never sent was never audited, and saying "the
+    # divergence gate is off" about it would put a row in the ledger that
+    # describes an answer nobody received.
     baseline_model = getattr(app.state, "baseline_model", None)
     divergence_enabled = bool(baseline_model) and baseline_model == effective_model
     if not divergence_enabled:
@@ -1181,11 +1257,6 @@ async def messages(request: Request):
             "baseline_model_mismatch" if baseline_model else "baseline_records_no_model",
         )
 
-    url, headers, payload = build_upstream_request(
-        raw,
-        cfg,
-        {key.lower(): value for key, value in request.headers.items()},
-    )
     client = httpx.AsyncClient(timeout=upstream_timeout())
     upstream_request = client.build_request("POST", url, content=payload, headers=headers)
     try:

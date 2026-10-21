@@ -16,6 +16,7 @@ import threading
 from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -69,6 +70,7 @@ def _cfg(tmp_path, **overrides):
         anthropic_api_key=None,
         anthropic_model=None,
         anthropic_max_tokens=8192,
+        anthropic_allow_insecure=False,
     )
     for key, value in overrides.items():
         setattr(cfg, key, value)
@@ -1857,3 +1859,124 @@ def test_the_gateway_redacts_the_operator_key_echoed_in_a_200_answer(tmp_path):
     assert response.status_code == 200
     assert OPERATOR_KEY not in response.text
     assert "[REDACTED:anthropic_api_key]" in response.text
+
+
+# --- the model credential's transport ------------------------------------
+
+
+def test_the_model_credential_is_not_sent_over_plain_http(tmp_path, monkeypatch):
+    """A credential forwarded in cleartext is a credential on the wire.
+
+    Every other credential this system sends is held to one rule: HTTPS
+    everywhere, plain HTTP only to loopback. The model credential was the
+    one with no rule at all, so a mistyped
+    MONOLITH_ANTHROPIC_BASE_URL put the client's key — and the operator's
+    fallback key — in front of whoever answered.
+
+    The request must not leave at all: refusing after the bytes are on the
+    wire is not refusing.
+    """
+    sent: list = []
+
+    async def _record(self, request, **_kwargs):
+        sent.append(request)
+        raise AssertionError("the credential must not leave over plain HTTP")
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", _record)
+    monkeypatch.setattr(main, "_UNTRUSTED_UPSTREAM_NOTICED", False)
+    _setup(
+        tmp_path,
+        anthropic_base_url="http://model.example.com",
+        anthropic_api_key="operator-fallback-key",
+    )
+    client = TestClient(app, raise_server_exceptions=True)
+    response = client.post(
+        "/v1/messages",
+        headers={"x-api-key": "client-key"},
+        json={
+            "model": "stub-model",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 503
+    assert sent == [], "the credential was put on the wire"
+    # The refusal says why, and the ledger says it too: an operator whose
+    # gateway answers 503 needs to be told which of their settings did it.
+    assert "not a trusted transport" in response.json()["detail"]
+
+
+def test_the_refusal_for_an_untrusted_upstream_is_recorded_once(tmp_path, monkeypatch):
+    """The cause is the operator's configuration, not the caller.
+
+    A retrying agent would otherwise write a ledger row per retry, so the
+    notice fires once per process — and the ledger says why the gateway is
+    answering 503.
+    """
+    sent: list = []
+
+    async def _record(self, request, **_kwargs):
+        sent.append(request)
+        raise AssertionError("the credential must not leave over plain HTTP")
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", _record)
+    monkeypatch.setattr(main, "_UNTRUSTED_UPSTREAM_NOTICED", False)
+    _cfg, events = _setup(tmp_path, anthropic_base_url="http://model.example.com")
+
+    client = TestClient(app, raise_server_exceptions=True)
+    body = {
+        "model": "stub-model",
+        "max_tokens": 1024,
+        "messages": [{"role": "user", "content": "hello"}],
+        "stream": True,
+    }
+    first = client.post("/v1/messages", headers={"x-api-key": "client-key"}, json=body)
+    second = client.post("/v1/messages", headers={"x-api-key": "client-key"}, json=body)
+
+    assert first.status_code == 503
+    assert second.status_code == 503
+    assert sent == []
+    notices = [event for event in events if event[0] == "upstream_transport_refused"]
+    assert len(notices) == 1
+    assert notices[0][1] == "warning"
+    assert "MONOLITH_ALLOW_INSECURE_ANTHROPIC" in notices[0][2]["message"]
+
+
+def test_the_operator_can_allow_an_insecure_upstream_by_name(tmp_path, monkeypatch):
+    """The escape hatch exists, and it has to be asked for.
+
+    An operator whose model service really is on a trusted network can say
+    so, and then the request is sent. What must not happen is the request
+    being sent because nobody said anything.
+    """
+    sent: list = []
+
+    async def _record(self, request, **_kwargs):
+        sent.append(request)
+        raise httpx.ConnectError("no such host")
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", _record)
+    _setup(
+        tmp_path,
+        anthropic_base_url="http://model.example.com",
+        anthropic_allow_insecure=True,
+    )
+    client = TestClient(app, raise_server_exceptions=True)
+    response = client.post(
+        "/v1/messages",
+        headers={"x-api-key": "client-key"},
+        json={
+            "model": "stub-model",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+        },
+    )
+
+    # The request was attempted, and the host was unreachable, which is the
+    # only reason it did not come back with an answer.
+    assert len(sent) == 1
+    assert str(sent[0].url) == "http://model.example.com/v1/messages"
+    assert response.status_code == 502
