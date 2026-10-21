@@ -33,6 +33,7 @@ from starlette.requests import Request
 
 from src.config import load_config
 from src.detector_state import DetectorStateStore
+from src.events import EventContext
 from src.frequency_tracker import FrequencyTracker
 from src.main import app, reset_detection
 from src.quarantine import Quarantine, QuarantinedDoc
@@ -265,13 +266,14 @@ def test_the_detector_counts_from_scratch_after_a_reset(monkeypatch, tmp_path):
 def test_a_quarantined_bait_is_served_again_after_a_reset(monkeypatch, tmp_path):
     proxy, _collection, _store = make_proxy(monkeypatch, tmp_path)
     seed_bait(proxy)
+    ctx = EventContext(session_id="session-reset-test")
 
-    withheld = proxy.retrieve("anything at all")
+    withheld = proxy.retrieve("anything at all", ctx=ctx)
     assert [item["id"] for item in withheld["results"]] == [CLEAN_ID]
     assert withheld["withheld"], "the quarantined bait should have been withheld"
 
     reset_detection(request("Bearer " + ADMIN_TOKEN))
 
-    served = proxy.retrieve("anything at all")
+    served = proxy.retrieve("anything at all", ctx=ctx)
     assert [item["id"] for item in served["results"]] == [BAIT_ID, CLEAN_ID]
     assert served["withheld"] == []
