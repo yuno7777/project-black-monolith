@@ -93,6 +93,7 @@ to `main` by ref. Use a dedicated worktree for every branch.
 | `supabase/migrations/**` | security | retention scoping migration |
 | `contracts/openapi.yaml` | security | corrected the revocation snapshot wording |
 | `main` | integrator | Merges and verification only; branch work happens in a worktree. |
+| `dashboard/app/page.tsx`, `dashboard/app/components/**` | operational-counts | the console's headline numbers: an operational failure — a truncated answer, a refused session — is not an attack, and the overview KPI counts it as one (`FINDINGS.md` documentation drift 4 and drift 5). Branched off `origin/main`, so it does not wait on any open PR |
 
 Free to claim: `vector-anchor/**`, `trace-audit/**`, `dashboard/app/api/operations/**`,
 `dashboard/app/api/benchmarks/**`, `docs/OPEN_QUESTIONS.md`, the Dependabot
