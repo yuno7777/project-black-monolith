@@ -12,6 +12,7 @@
 // No credential is ever returned by either verb. The launcher reads the
 // repository's own .env, so the command the page renders carries no secret.
 
+import { isOnboardingAction } from "@/lib/onboarding-actions";
 import {
   readOnboardingState,
   resetVectorDetection,
@@ -22,13 +23,6 @@ import { jsonBodyError, readJsonBody } from "@/lib/request-body";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const ACTIONS = ["seed-corpus", "seed-bait", "reset-detection"] as const;
-type OnboardingAction = (typeof ACTIONS)[number];
-
-function isAction(value: unknown): value is OnboardingAction {
-  return typeof value === "string" && (ACTIONS as readonly string[]).includes(value);
-}
 
 export async function GET(req: Request) {
   const identity = await requireOperator(req);
@@ -60,7 +54,7 @@ export async function POST(req: Request) {
     body && typeof body === "object" && "action" in body
       ? (body as { action: unknown }).action
       : undefined;
-  if (!isAction(action)) {
+  if (!isOnboardingAction(action)) {
     return Response.json({ error: "unknown onboarding action" }, { status: 422 });
   }
 
@@ -69,8 +63,14 @@ export async function POST(req: Request) {
       const seeded = await seedDemoCorpus(action === "seed-bait");
       return Response.json({ action, ...seeded });
     }
-    await resetVectorDetection();
-    return Response.json({ action, status: "reset" });
+    if (action === "reset-detection") {
+      await resetVectorDetection();
+      return Response.json({ action, status: "reset" });
+    }
+    // Every action the list offers is handled above. Refusing is safer than
+    // falling through: the branch that clears the memory layer's detector
+    // state must only ever be reached by an action that asked for it.
+    return Response.json({ error: "unknown onboarding action" }, { status: 422 });
   } catch (error) {
     console.error("failed to run the onboarding action", error);
     return Response.json(
