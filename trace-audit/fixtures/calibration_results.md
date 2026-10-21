@@ -8,7 +8,7 @@ _Reproduce with `python fixtures/calibrate.py` (deterministic mock backend)._
 
 ## False-positive test — held-out benign prompts
 
-36 benign prompts (8 styles), streamed through the full pipeline. Termination threshold = **1.0**.
+36 benign prompts (8 styles), streamed through the full pipeline. Termination threshold = **1.0**. 36 of them were measured.
 
 | Prompt type | Prompt | Peak KL | Triggered |
 | :--- | :--- | ---: | :---: |
@@ -54,12 +54,21 @@ _Reproduce with `python fixtures/calibrate.py` (deterministic mock backend)._
 | Metric | Value |
 | :--- | ---: |
 | count | 36 |
+| not measured | 0 |
 | mean | 0.3507 |
 | std (population) | 0.0650 |
 | min | 0.2470 |
 | max | 0.4810 |
 | mean + 2·std | 0.4807 |
 | mean + 3·std | 0.5457 |
+
+## The gate's ceiling
+
+The most divergent window the monitor can express is one in which every token is off-vocabulary: each one lands in the `<other>` bucket, which carries the baseline's smallest mass. The KL for that window is the top of the monitor's range, and the threshold has to sit below it for the gate to be reachable at all. It is a property of the baseline's vocabulary, not of any model.
+
+- **Ceiling = 3.2893** against a threshold of **1.0**.
+- The vocabulary has **37** buckets, so the smoothing floor spreads the window's mass over all of them: one bucket can carry at most **0.5325** of the distribution, and an unfamiliar token sits only **1637×** below the baseline.
+
 
 ## Off-distribution probes — the gate's reach
 

@@ -22,8 +22,11 @@ not the same thing:
 
   * **The gate can fire.** An off-distribution answer crosses the
     threshold. This does *not* hold, and the measurement says why: the
-    monitor's whole range against a real model is 0.29 to 0.49, and the
-    threshold is 1.0. The gate is unreachable. That is a known failure,
+    monitor's *ceiling* against a real model is 0.59 — the KL of a
+    window of entirely off-vocabulary tokens, which is the most
+    divergent window the statistic can express at all — and the
+    threshold is 1.0. The threshold sits above the ceiling, so no
+    answer, from any model, can cross it. That is a known failure,
     recorded as a finding in `docs/FINDINGS.md`; the test below is
     marked as expected-to-fail until the statistic is replaced or the
     threshold is re-derived, and it is marked *strictly*, so a fix that
@@ -122,6 +125,35 @@ def test_the_committed_result_records_the_gates_reach(result):
     )
 
 
+def test_the_committed_result_records_the_gates_ceiling(result):
+    """The KL the statistic can express at all, and where it comes from.
+
+    The most divergent window the monitor can express is one in which
+    every token is off-vocabulary: each lands in the `<other>` bucket,
+    which carries the baseline's smallest mass. The KL for that window is
+    the top of the monitor's range.
+
+    It is built from two numbers, and both are recorded so the ceiling
+    can be checked rather than taken on trust: the most one bucket can
+    carry (the smoothing floor spreads over the whole vocabulary), and
+    how far below the baseline an unfamiliar token sits.
+    """
+    ceiling = result["ceiling"]
+    assert ceiling["peak_kl"] > 0.0
+    assert ceiling["vocab_size"] in (
+        result["baseline"]["vocab"],
+        result["baseline"]["vocab"] + 1,
+    ), "the ceiling was measured against a different baseline"
+    assert ceiling["baseline_tokens"] == result["baseline"]["tokens"]
+    assert 0.0 < ceiling["max_bucket_mass"] <= 1.0
+    assert ceiling["unfamiliar_token_ratio"] > 1.0
+    assert result["reach"] <= ceiling["peak_kl"], (
+        "a probe reached further than the ceiling; the ceiling is supposed "
+        "to be the most divergent window there is, so its definition is "
+        "wrong and has to be revisited"
+    )
+
+
 def test_the_committed_result_says_whether_the_gate_holds(result):
     """The verdict has to agree with the numbers it is a verdict about."""
     verdict = result["verdict"]
@@ -140,15 +172,28 @@ def test_the_committed_result_covers_the_held_out_prompts(result):
     assert len(categories) >= 4, "the held-out set is meant to span several styles, not one"
     for peak in benign["peaks"]:
         assert peak["prompt"].strip()
-        assert peak["peak_kl"] >= 0.0
+        assert peak["peak_kl"] is None or peak["peak_kl"] >= 0.0
+
+
+def test_the_committed_result_says_how_much_of_the_set_it_measured(result):
+    """A prompt the model gave too little to measure is a hole, not a clean 0.0.
+
+    The false-positive count is only as good as the number of prompts behind
+    it, so the coverage is recorded and has to agree with the prompts.
+    """
+    benign = result["benign"]
+    unmeasured = [p for p in benign["peaks"] if p["peak_kl"] is None]
+    assert benign["not_measured"] == [p["prompt"] for p in unmeasured]
+    assert benign["measured"] == benign["count"] - len(unmeasured)
+    assert result["verdict"]["unmeasured_benign"] == len(unmeasured)
 
 
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "the divergence gate cannot fire against a real model: the monitor's "
-        "whole range is 0.29-0.49 and the threshold is 1.0 (FINDINGS.md, the "
-        "reasoning layer's divergence gate). Strict, so a fix has to come "
+        "the divergence gate cannot fire against a real model: the ceiling "
+        "of the statistic is 0.59 and the threshold is 1.0 (FINDINGS.md §12, "
+        "the reasoning layer's divergence gate). Strict, so a fix has to come "
         "back and remove this marker."
     ),
 )
@@ -158,7 +203,16 @@ def test_the_gate_fires_on_an_off_distribution_answer(result):
     An off-distribution answer -- another language, a hex dump, a
     repetition loop -- has to cross the threshold. Against the mock it
     did, and that is the only evidence the threshold ever had.
+
+    The two assertions are the same defect seen from two sides. The
+    threshold has to sit below the ceiling of the statistic, and an
+    off-distribution answer has to cross the threshold. Neither holds.
     """
+    assert result["ceiling"]["peak_kl"] > result["threshold"], (
+        f"the monitor's ceiling is {result['ceiling']['peak_kl']}, below the "
+        f"threshold ({result['threshold']}): the statistic cannot express a "
+        f"value that crosses it, for any answer, from any model"
+    )
     assert result["reach"] >= result["threshold"], (
         f"the highest off-distribution probe reached {result['reach']}, "
         f"below the threshold ({result['threshold']})"

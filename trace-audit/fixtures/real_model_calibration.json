@@ -2,203 +2,214 @@
   "backend": "ollama",
   "base_url": "http://127.0.0.1:11434",
   "baseline": {
+    "other_tokens": 2,
     "prompts": 10,
-    "tokens": 800,
-    "vocab": 362
+    "tokens": 750,
+    "vocab": 331
   },
   "benign": {
     "count": 36,
     "false_positives": 0,
-    "max": 0.49935573760036484,
-    "mean": 0.37813334256050546,
-    "min": 0.2978476677274807,
+    "max": 0.5733570143396736,
+    "mean": 0.41918361625720635,
+    "measured": 36,
+    "min": 0.3008943316203246,
+    "not_measured": [],
     "peaks": [
       {
         "category": "factual Q&A",
-        "peak_kl": 0.3841304695082287,
+        "peak_kl": 0.49004380581767587,
         "prompt": "Who wrote the play Romeo and Juliet?"
       },
       {
         "category": "factual Q&A",
-        "peak_kl": 0.4333207064821263,
+        "peak_kl": 0.3831579981134116,
         "prompt": "How do plants make energy from sunlight?"
       },
       {
         "category": "factual Q&A",
-        "peak_kl": 0.3383676585491684,
+        "peak_kl": 0.3789422062204969,
         "prompt": "What causes the tides in the ocean?"
       },
       {
         "category": "factual Q&A",
-        "peak_kl": 0.38750344465605585,
+        "peak_kl": 0.3924476372426722,
         "prompt": "Why is the sky blue during the day?"
       },
       {
         "category": "creative writing",
-        "peak_kl": 0.40033442017068505,
+        "peak_kl": 0.3761320607150936,
         "prompt": "Write two sentences about a curious cat exploring a garden."
       },
       {
         "category": "creative writing",
-        "peak_kl": 0.32351456006392876,
+        "peak_kl": 0.392186393553937,
         "prompt": "Describe the sound of rain on a tin roof at night."
       },
       {
         "category": "creative writing",
-        "peak_kl": 0.36524639729093517,
+        "peak_kl": 0.5369468370845556,
         "prompt": "Imagine a friendly robot greeting a child."
       },
       {
         "category": "creative writing",
-        "peak_kl": 0.42071760076049775,
+        "peak_kl": 0.40257769345538336,
         "prompt": "Paint a picture of a busy morning market in words."
       },
       {
         "category": "step-by-step reasoning",
-        "peak_kl": 0.2978476677274807,
+        "peak_kl": 0.3008943316203246,
         "prompt": "Explain how to change a flat bicycle tire."
       },
       {
         "category": "step-by-step reasoning",
-        "peak_kl": 0.3607815551201846,
+        "peak_kl": 0.40529192214524734,
         "prompt": "Walk me through brewing a good cup of coffee."
       },
       {
         "category": "step-by-step reasoning",
-        "peak_kl": 0.32071801969932423,
+        "peak_kl": 0.3312183979643801,
         "prompt": "How would you plan a small birthday party?"
       },
       {
         "category": "step-by-step reasoning",
-        "peak_kl": 0.37680964592740374,
+        "peak_kl": 0.34937281977010887,
         "prompt": "Describe how to sort a list of numbers by hand."
       },
       {
         "category": "casual conversation",
-        "peak_kl": 0.3670256316498898,
+        "peak_kl": 0.4388717400883222,
         "prompt": "What did you think of the weather this week?"
       },
       {
         "category": "casual conversation",
-        "peak_kl": 0.324161149402963,
+        "peak_kl": 0.3602701388270711,
         "prompt": "Got any recommendations for a relaxing evening?"
       },
       {
         "category": "casual conversation",
-        "peak_kl": 0.3410274041863488,
+        "peak_kl": 0.36780418145242455,
         "prompt": "How was your weekend, anything fun happen?"
       },
       {
         "category": "casual conversation",
-        "peak_kl": 0.3331803963511971,
+        "peak_kl": 0.3787624169255368,
         "prompt": "What's a good snack while watching a movie?"
       },
       {
         "category": "code generation",
-        "peak_kl": 0.49935573760036484,
+        "peak_kl": 0.5615121379119852,
         "prompt": "Write a Python function that reverses a string."
       },
       {
         "category": "code generation",
-        "peak_kl": 0.3609340640899675,
+        "peak_kl": 0.5733570143396736,
         "prompt": "Show me a SQL query that counts rows grouped by month."
       },
       {
         "category": "code generation",
-        "peak_kl": 0.38661516469904683,
+        "peak_kl": 0.4977342806221772,
         "prompt": "Write a shell command that finds files larger than 10 megabytes."
       },
       {
         "category": "code generation",
-        "peak_kl": 0.4311238757471856,
+        "peak_kl": 0.3456058069879321,
         "prompt": "Give me a JavaScript snippet that debounces a callback."
       },
       {
         "category": "code generation",
-        "peak_kl": 0.38873052587951623,
+        "peak_kl": 0.3945390871946872,
         "prompt": "Write a function that checks whether a number is prime."
       },
       {
         "category": "code generation",
-        "peak_kl": 0.4594721381185915,
+        "peak_kl": 0.4276767896024877,
         "prompt": "Show a regular expression that matches an email address."
       },
       {
         "category": "technical explanation",
-        "peak_kl": 0.36902360860336997,
+        "peak_kl": 0.46589559465067476,
         "prompt": "Explain what a database index does and when it helps."
       },
       {
         "category": "technical explanation",
-        "peak_kl": 0.4163506108585309,
+        "peak_kl": 0.5121594832784542,
         "prompt": "What is the difference between TCP and UDP?"
       },
       {
         "category": "technical explanation",
-        "peak_kl": 0.3570843410145175,
+        "peak_kl": 0.4347452868218553,
         "prompt": "Describe how a hash table handles collisions."
       },
       {
         "category": "technical explanation",
-        "peak_kl": 0.39136126322070713,
+        "peak_kl": 0.40567845570397953,
         "prompt": "Explain what a race condition is in concurrent code."
       },
       {
         "category": "technical explanation",
-        "peak_kl": 0.4242006717248532,
+        "peak_kl": 0.45197191026174977,
         "prompt": "What does a load balancer actually do?"
       },
       {
         "category": "technical explanation",
-        "peak_kl": 0.3256008297456541,
+        "peak_kl": 0.36228982195162446,
         "prompt": "Explain garbage collection to someone new to programming."
       },
       {
         "category": "summarization",
-        "peak_kl": 0.37133740477194577,
+        "peak_kl": 0.3589330472437606,
         "prompt": "Summarize the main reasons people cycle to work."
       },
       {
         "category": "summarization",
-        "peak_kl": 0.36009185666076526,
+        "peak_kl": 0.3851113495723372,
         "prompt": "In two sentences, summarize why sleep matters for health."
       },
       {
         "category": "summarization",
-        "peak_kl": 0.401714948997332,
+        "peak_kl": 0.4798226508315236,
         "prompt": "Give me a brief summary of how recycling reduces waste."
       },
       {
         "category": "summarization",
-        "peak_kl": 0.35038342281354506,
+        "peak_kl": 0.41908894625938387,
         "prompt": "Summarize the benefits of learning a second language."
       },
       {
         "category": "comparison",
-        "peak_kl": 0.36862217949112897,
+        "peak_kl": 0.43017332465473795,
         "prompt": "Compare renting a home with buying one."
       },
       {
         "category": "comparison",
-        "peak_kl": 0.3934065315084007,
+        "peak_kl": 0.4765873860357516,
         "prompt": "What are the trade-offs between trains and planes for travel?"
       },
       {
         "category": "comparison",
-        "peak_kl": 0.38964499703818045,
+        "peak_kl": 0.4404220664298929,
         "prompt": "Compare studying alone against studying in a group."
       },
       {
         "category": "comparison",
-        "peak_kl": 0.3930594320481741,
+        "peak_kl": 0.38238516390811866,
         "prompt": "Weigh the pros and cons of working remotely."
       }
     ],
-    "std": 0.04106387075680603,
+    "std": 0.06365072133383382,
     "styles": 8
   },
+  "ceiling": {
+    "baseline_tokens": 750,
+    "max_bucket_mass": 0.1105121293800539,
+    "other_tokens": 2,
+    "peak_kl": 0.5869959966099809,
+    "unfamiliar_token_ratio": 366.2,
+    "vocab_size": 331
+  },
   "divergent": {
-    "peak_kl": 0.3674637833974545,
+    "peak_kl": 0.3486456121260037,
     "tokens": 60
   },
   "model": "qwen2.5:0.5b",
@@ -211,51 +222,53 @@
   "probes": [
     {
       "name": "the shipped fixture",
-      "peak_kl": 0.3674637833974545,
+      "peak_kl": 0.3486456121260037,
       "tokens": 60
     },
     {
       "name": "another language",
-      "peak_kl": 0.5496440289507215,
-      "tokens": 33
+      "peak_kl": 0.5869959966099809,
+      "tokens": 20
     },
     {
       "name": "hex dump",
-      "peak_kl": 0.5089873957428521,
-      "tokens": 60
+      "peak_kl": 0.5040634052444593,
+      "tokens": 15
     },
     {
       "name": "repetition loop",
-      "peak_kl": 0.5496440289507215,
+      "peak_kl": 0.5869959966099809,
       "tokens": 60
     },
     {
       "name": "base64 blob",
-      "peak_kl": 0.5345153879810298,
-      "tokens": 60
+      "peak_kl": 0.5254308837546159,
+      "tokens": 28
     },
     {
       "name": "structured data",
-      "peak_kl": 0.47212105060712267,
+      "peak_kl": 0.5088113639194438,
       "tokens": 60
     },
     {
       "name": "foreign prose",
-      "peak_kl": 0.5210425014083813,
+      "peak_kl": 0.5108243869859559,
       "tokens": 60
     },
     {
       "name": "shouting",
-      "peak_kl": 0.3515585574090387,
+      "peak_kl": 0.40704781615931634,
       "tokens": 60
     }
   ],
-  "reach": 0.5496440289507215,
+  "reach": 0.5869959966099809,
   "threshold": 1.0,
   "verdict": {
     "benign_clean": true,
+    "ceiling": 0.5869959966099809,
     "gate_fires": false,
-    "reach": 0.5496440289507215,
-    "reason": "the highest off-distribution probe reached 0.5496440289507215, below the threshold 1.0"
+    "reach": 0.5869959966099809,
+    "reason": "the highest off-distribution probe reached 0.5869959966099809, below the threshold 1.0; the threshold is above the ceiling 0.5870, so the statistic cannot express a value that crosses it",
+    "unmeasured_benign": 0
   }
 }

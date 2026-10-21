@@ -45,6 +45,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from src.config import load_config  # noqa: E402
 from src.divergence_monitor import (  # noqa: E402
+    OTHER,
     DivergenceMonitor,
     build_distribution,
 )
@@ -210,10 +211,53 @@ def measure(prompt: str, baseline: dict[str, int]) -> tuple[float | None, int]:
     return asyncio.run(go())
 
 
-def peak_kl(prompt: str, baseline: dict[str, int]) -> float:
-    """Peak rolling KL, or 0.0 when the model produced too little to measure."""
-    peak, _ = measure(prompt, baseline)
-    return 0.0 if peak is None else peak
+def ceiling(baseline: dict[str, int]) -> dict:
+    """The most divergent KL the monitor can express against this baseline.
+
+    A window of entirely off-vocabulary tokens is the most divergent
+    window there is: every token lands in the `<other>` bucket, which
+    carries the baseline's smallest mass, and every other bucket is left
+    at its smoothing floor. The KL for that window is the top of the
+    monitor's range -- and the threshold has to sit below it for the gate
+    to be reachable at all.
+
+    This is a property of the baseline, not of a model: the vocabulary's
+    size sets how much mass one bucket can carry (the smoothing floor
+    spreads over every bucket) and how far below the baseline an
+    unfamiliar token sits. A mock's 36-token vocabulary gives the
+    threshold room to sit; a real model's does not.
+    """
+    mon = DivergenceMonitor(
+        baseline_counts=baseline,
+        threshold=float("inf"),
+        window_size=CFG.window_size,
+        min_tokens_before_check=CFG.min_tokens_before_check,
+        smoothing=CFG.smoothing,
+    )
+    kl: float | None = None
+    for _ in range(CFG.window_size):
+        kl = mon.observe("\x00not-in-the-baseline")
+    if kl is None:
+        raise SystemExit(
+            "the monitor never reports a KL for this configuration: "
+            f"window_size={CFG.window_size} is not above "
+            f"min_tokens_before_check={CFG.min_tokens_before_check}"
+        )
+    vocab_size = mon.vocab_size
+    other_count = baseline.get(OTHER, 0)
+    baseline_total = sum(baseline.values())
+    return {
+        "peak_kl": kl,
+        "vocab_size": vocab_size,
+        "other_tokens": other_count,
+        "baseline_tokens": baseline_total,
+        # the most one bucket can carry, and how far below the baseline an
+        # unfamiliar token sits. Their product is what the ceiling is made of.
+        "max_bucket_mass": (CFG.window_size + CFG.smoothing)
+        / (CFG.window_size + CFG.smoothing * vocab_size),
+        "unfamiliar_token_ratio": (baseline_total + CFG.smoothing * vocab_size)
+        / (other_count + CFG.smoothing),
+    }
 
 
 def main() -> int:
@@ -232,13 +276,21 @@ def main() -> int:
 
     baseline = build_baseline()
     threshold = CFG.kl_threshold
+    gate_ceiling = ceiling(baseline)
+    ceiling_value = gate_ceiling["peak_kl"]
 
-    rows: list[tuple[str, str, float]] = []
+    rows: list[tuple[str, str, float | None]] = []
     for category, prompts in HELD_OUT.items():
         for p in prompts:
-            rows.append((category, p, peak_kl(p, baseline)))
+            peak, _ = measure(p, baseline)
+            rows.append((category, p, peak))
 
-    scores = [k for _, _, k in rows]
+    # A prompt the model gave too little to measure is not a clean prompt,
+    # and it is not a false positive either -- it is a hole in the evidence.
+    # It is counted separately so the false-positive rate is not flattered
+    # by a measurement that was never taken.
+    scores = [k for _, _, k in rows if k is not None]
+    unmeasured_benign = [p for _, p, k in rows if k is None]
     mean = statistics.mean(scores)
     std = statistics.pstdev(scores)
     divergent, divergent_tokens = measure(DIVERGENCE_PROMPT, baseline)
@@ -285,26 +337,49 @@ def main() -> int:
     )
     lines.append("## False-positive test — held-out benign prompts\n")
     lines.append(
-        f"{len(scores)} benign prompts ({styles} styles), streamed through the "
-        f"full pipeline. Termination threshold = **{threshold}**.\n"
+        f"{len(rows)} benign prompts ({styles} styles), streamed through the "
+        f"full pipeline. Termination threshold = **{threshold}**. "
+        f"{len(scores)} of them were measured.\n"
     )
     lines.append("| Prompt type | Prompt | Peak KL | Triggered |")
     lines.append("| :--- | :--- | ---: | :---: |")
     for category, p, k in rows:
-        lines.append(
-            f"| {category} | {p} | {k:.4f} | {'YES' if k >= threshold else 'no'} |"
-        )
+        shown = "not measured" if k is None else f"{k:.4f}"
+        fired = "" if k is None else ("YES" if k >= threshold else "no")
+        lines.append(f"| {category} | {p} | {shown} | {fired} |")
     lines.append("")
     lines.append("## KL distribution across benign prompts\n")
     lines.append("| Metric | Value |")
     lines.append("| :--- | ---: |")
     lines.append(f"| count | {len(scores)} |")
+    lines.append(f"| not measured | {len(unmeasured_benign)} |")
     lines.append(f"| mean | {mean:.4f} |")
     lines.append(f"| std (population) | {std:.4f} |")
     lines.append(f"| min | {min(scores):.4f} |")
     lines.append(f"| max | {max(scores):.4f} |")
     lines.append(f"| mean + 2·std | {mean + 2 * std:.4f} |")
     lines.append(f"| mean + 3·std | {mean + 3 * std:.4f} |")
+    lines.append("")
+    lines.append("## The gate's ceiling\n")
+    lines.append(
+        "The most divergent window the monitor can express is one in which "
+        "every token is off-vocabulary: each one lands in the `<other>` "
+        "bucket, which carries the baseline's smallest mass. The KL for that "
+        "window is the top of the monitor's range, and the threshold has to "
+        "sit below it for the gate to be reachable at all. It is a property "
+        "of the baseline's vocabulary, not of any model.\n"
+    )
+    lines.append(f"- **Ceiling = {ceiling_value:.4f}** against a threshold of "
+                 f"**{threshold}**.")
+    lines.append(
+        f"- The vocabulary has **{gate_ceiling['vocab_size']}** buckets, so "
+        f"the smoothing floor spreads the window's mass over all of them: one "
+        f"bucket can carry at most "
+        f"**{gate_ceiling['max_bucket_mass']:.4f}** of the distribution, and "
+        f"an unfamiliar token sits only "
+        f"**{gate_ceiling['unfamiliar_token_ratio']:.0f}×** below the "
+        f"baseline.\n"
+    )
     lines.append("")
     lines.append("## Off-distribution probes — the gate's reach\n")
     lines.append(
@@ -353,6 +428,14 @@ def main() -> int:
             f"reach ({reach:.4f}). The threshold sits above everything the "
             f"monitor can see, so the gate cannot fire on this backend.\n"
         )
+        if ceiling_value < threshold:
+            lines.append(
+                f"- The threshold is also above the **ceiling** "
+                f"({ceiling_value:.4f}): the statistic cannot express a value "
+                f"that crosses it at all, for any answer, from any model. "
+                f"Moving the constant down would not fix that — the ceiling "
+                f"is a property of the baseline's vocabulary.\n"
+            )
     else:
         lines.append(
             f"- **Operating threshold = {threshold}**: "
@@ -391,10 +474,17 @@ def main() -> int:
                 f"{reach if reach is not None else 'nothing measurable'}, "
                 f"below the threshold {threshold}"
             )
+        if ceiling_value < threshold:
+            reason.append(
+                f"the threshold is above the ceiling {ceiling_value:.4f}, so "
+                f"the statistic cannot express a value that crosses it"
+            )
         verdict = {
             "benign_clean": benign_clear,
             "gate_fires": gate_fires,
             "reach": reach,
+            "ceiling": ceiling_value,
+            "unmeasured_benign": len(unmeasured_benign),
             "reason": "; ".join(reason),
         }
     else:
@@ -402,6 +492,8 @@ def main() -> int:
             "benign_clean": True,
             "gate_fires": True,
             "reach": reach,
+            "ceiling": ceiling_value,
+            "unmeasured_benign": len(unmeasured_benign),
             "reason": "no benign prompt reached the threshold and the "
             "off-distribution probes did",
         }
@@ -421,9 +513,13 @@ def main() -> int:
             "prompts": len(bc.NORMAL_PROMPTS),
             "tokens": sum(baseline.values()),
             "vocab": len(baseline),
+            "other_tokens": baseline.get(OTHER, 0),
         },
+        "ceiling": gate_ceiling,
         "benign": {
-            "count": len(scores),
+            "count": len(rows),
+            "measured": len(scores),
+            "not_measured": unmeasured_benign,
             "styles": styles,
             "mean": mean,
             "std": std,
@@ -446,9 +542,11 @@ def main() -> int:
             f.write("\n")
 
     print(f"benign: N={len(scores)} mean={mean:.4f} std={std:.4f} "
-          f"min={min(scores):.4f} max={max(scores):.4f}")
+          f"min={min(scores):.4f} max={max(scores):.4f} "
+          f"not_measured={len(unmeasured_benign)}")
     print(f"divergent fixture peak KL = {divergent}")
     print(f"reach (highest off-distribution probe) = {reach}")
+    print(f"ceiling (all-unseen window) = {ceiling_value}")
     print(f"threshold = {threshold} -> {triggered}/{len(scores)} benign false positives")
     print(f"wrote {out_path}")
     if args.json:
