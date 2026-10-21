@@ -88,7 +88,7 @@ export default function ThreatFeed({
       {events.length === 0 ? (
         <div className="empty">
           <div className="empty-ic"><IconActivity size={30} /></div>
-          {emptyHint ?? "Waiting for detection events — run a demo fixture to generate traffic."}
+          {emptyHint ?? "Waiting for events — run a demo fixture to generate traffic."}
         </div>
       ) : (
         events.map((e) => (

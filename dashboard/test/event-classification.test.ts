@@ -12,7 +12,10 @@
 
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   classifyEvent,
   countDetections,
@@ -196,4 +199,28 @@ test("every classified event type is classified as one of the three classes", ()
   for (const event_type of OPERATIONAL) {
     assert.equal(EVENT_CLASSES[event_type], "operational");
   }
+});
+
+test("the console's headline number comes from the shared rule", () => {
+  // The rule is a pure function, so it is tested directly above. What is
+  // not tested directly is the page: the dashboard has no DOM test harness,
+  // and a rendered page is not what went wrong here — the page summed two
+  // severities and called the result an intercepted attack. This reads the
+  // page's source to make sure the headline count is the rule's number and
+  // not a severity sum.
+  const page = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "..", "app", "page.tsx"),
+    "utf8",
+  );
+  assert.ok(
+    page.includes("countDetections("),
+    "the console's headline count must come from countDetections()",
+  );
+  assert.doesNotMatch(
+    page,
+    /severityCounts\.critical\s*\+\s*severityCounts\.warning/,
+    "the console must not sum severities and call the result an attack",
+  );
+  // And the card may not claim to count attacks either.
+  assert.doesNotMatch(page, /Attacks intercepted/, "the card must not call findings attacks");
 });

@@ -4,13 +4,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { Incident, IncidentStatus, MonolithEvent, Severity } from "@/lib/types";
 import { KNOWN_MODULES, MODULE_LABELS } from "@/lib/types";
+import { countDetections } from "@/lib/event-classification";
 import Sidebar, { Rail } from "./components/Sidebar";
 import ThreatFeed from "./components/ThreatFeed";
 import ModuleBars from "./components/ModuleBars";
 import SeverityDonut from "./components/SeverityDonut";
 import ThemeToggle from "./components/ThemeToggle";
 import OperatorBadge from "./components/OperatorBadge";
-import { IconIntercept, IconActivity, IconAlert, IconBolt, IconSearch, IconLedger, IconX } from "./components/Icons";
+import { IconDetection, IconActivity, IconAlert, IconBolt, IconSearch, IconLedger, IconX } from "./components/Icons";
 
 /** Key for the "you have seen the pointer" flag. */
 const FIRST_RUN_KEY = "monolith.onboarding.dismissed";
@@ -196,17 +197,24 @@ export default function Page() {
     [events],
   );
 
-  const intercepted = severityCounts.critical + severityCounts.warning;
+  // The headline number counts findings, not severities. Summing the
+  // warnings and the criticals counted every operational failure as an
+  // intercepted attack: a run in which the model provider fell over and the
+  // shield could not analyse a message read as two attacks, and a run in
+  // which nothing was found read as an attack too. The rule that decides
+  // what a finding is lives in `@/lib/event-classification`, so this number
+  // and the session report mean the same thing.
+  const detections = useMemo(() => countDetections(events), [events]);
   const latency = avgEndToEndLatency(events);
 
   const kpis = [
     {
-      k: "Attacks intercepted",
-      v: intercepted,
-      sub: "warning + critical",
-      icon: <IconIntercept />,
+      k: "Detections",
+      v: detections,
+      sub: "warning + critical findings",
+      icon: <IconDetection />,
       accent: "var(--mod-vector)",
-      chip: events.length ? `${Math.round((intercepted / events.length) * 100)}% of feed` : null,
+      chip: events.length ? `${Math.round((detections / events.length) * 100)}% of feed` : null,
     },
     // Replaces the old "Total events" card: that number is already the donut's
     // centre and the sidebar's count, whereas how much is still unhandled was
@@ -221,9 +229,13 @@ export default function Page() {
       href: "/investigate",
     },
     {
+      // The severity, not the class: a critical event is critical whether a
+      // defense found it or could not run. The old sub-label said
+      // "stream-terminating", which described one event type out of the
+      // eight that are critical.
       k: "Critical",
       v: severityCounts.critical,
-      sub: "stream-terminating",
+      sub: "critical severity",
       icon: <IconAlert />,
       accent: "var(--sev-critical)",
       chip: null,
@@ -330,7 +342,7 @@ export default function Page() {
             <div className="card feed-card">
               <div className="card-head">
                 <div>
-                  <span className="card-title">Live threat feed</span>
+                  <span className="card-title">Live event feed</span>
                   <div className="card-meta" style={{ marginTop: 3 }}>
                     {filter ? `${MODULE_LABELS[filter]} · ` : "newest first · "}
                     {shown.length} event{shown.length === 1 ? "" : "s"}
@@ -357,7 +369,7 @@ export default function Page() {
                 emptyHint={
                   events.length
                     ? "No events match these filters."
-                    : "Waiting for detection events — run a demo fixture to generate traffic."
+                    : "Waiting for events — run a demo fixture to generate traffic."
                 }
               />
             </div>
@@ -365,7 +377,7 @@ export default function Page() {
             <div className="stack">
               <div className="card">
                 <div className="card-head">
-                  <span className="card-title">Detections by severity</span>
+                  <span className="card-title">Events by severity</span>
                   <span className="card-meta">{severity === "all" ? "click to filter" : "filtered"}</span>
                 </div>
                 <SeverityDonut events={events} selected={severity} onSelect={setSeverity} />

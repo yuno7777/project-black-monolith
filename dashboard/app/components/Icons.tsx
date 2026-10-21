@@ -70,8 +70,8 @@ export function IconReason({ size = 20, className }: IconProps) {
   );
 }
 
-// KPI: attacks intercepted — shield with a check.
-export function IconIntercept({ size = 18, className }: IconProps) {
+// KPI: detections — shield with a check.
+export function IconDetection({ size = 18, className }: IconProps) {
   return (
     <svg {...base(size)} className={className} aria-hidden>
       <path d="M12 3l7 2.4v4.9c0 4.4-3 7.7-7 8.9-4-1.2-7-4.5-7-8.9V5.4L12 3z" />
