@@ -12,6 +12,11 @@ into off-distribution reasoning (lots of unfamiliar tokens) drives KL up
 sharply. Crossing ``threshold`` signals divergence and lets the proxy
 terminate the stream and return a safe refusal.
 
+How sharply depends on the size of the baseline's vocabulary, and the
+threshold below was derived against a mock backend whose baseline has 36
+tokens. See the note on ``DEFAULT_KL_THRESHOLD``: against a real model the
+statistic's ceiling is below the threshold, so the gate does not fire.
+
 This module is pure Python and unit-testable without any model backend.
 """
 
@@ -27,25 +32,38 @@ OTHER = "<other>"
 # fixtures/calibration_results.md), NOT guessed. Method: capture the baseline
 # from 10 benign prompts spanning four styles (factual Q&A, creative writing,
 # step-by-step reasoning, casual conversation), then measure the peak rolling
-# KL of 16 *held-out* benign prompts drawn from those same four styles.
+# KL of 36 *held-out* benign prompts drawn from eight styles.
 #
-# Measured benign peak-KL distribution (N=16):
-#     mean = 0.343   std = 0.064   min = 0.247   max = 0.481
+# Measured benign peak-KL distribution (N=36):
+#     mean = 0.351   std = 0.065   min = 0.247   max = 0.481
 # Divergent test fixture, for reference: peak KL = 3.29.
 #
-# The textbook mean + 2*std = 0.47 sits right at the benign maximum (0.481),
+# The textbook mean + 2*std = 0.48 sits right at the benign maximum (0.481),
 # leaving no margin — so a strict 2-sigma cut would risk false positives. We
 # therefore set the operating threshold in the wide gap between the two
 # populations:
 #
 #     DEFAULT_KL_THRESHOLD = 1.0
 #
-#   * ~2.1x above the highest observed benign peak (0.481)  -> 0/16 benign FP
+#   * ~2.1x above the highest observed benign peak (0.481)  -> 0/36 benign FP
 #   * ~0.30x of the divergent fixture peak (3.29)           -> fires decisively
 #
-# The extra headroom over 2-sigma is deliberate: this benign distribution is
-# unusually tight because the default backend is a deterministic mock; a real
-# model backend would show wider benign spread, and 1.0 absorbs that drift.
+# MEASURED AGAINST A REAL MODEL, AND IT DOES NOT HOLD. The derivation above
+# is the mock backend's, and the mock's baseline has 36 distinct tokens. The
+# number that decides whether the gate can fire at all is the *ceiling*: the
+# KL of a window in which every token is off-vocabulary, which is the most
+# divergent window this statistic can express. The mock's ceiling is 3.29 --
+# which is what the divergent fixture scores, exactly. A real model's baseline
+# has ~330 tokens, and the smoothing floor spread over ten times the buckets
+# cuts the ceiling to 0.59. The threshold is ABOVE that ceiling, so against a
+# real model the gate cannot fire, for any answer, from any model.
+#
+# The old note here said the headroom was "deliberate ... a real model backend
+# would show wider benign spread, and 1.0 absorbs that drift". That was
+# never measured, and it is not what happens: the drift is in the ceiling, not
+# in the spread, and 1.0 does not absorb it. See docs/FINDINGS.md §12 and
+# fixtures/real_model_calibration.json for the measurement; the calibration
+# workflow re-runs it against a real model on every change to this file.
 DEFAULT_KL_THRESHOLD = 1.0
 
 

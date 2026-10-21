@@ -13,7 +13,10 @@ All measurements use the modules' **deterministic offline backends** (the
 mock model for TraceAudit, the hashing embedder for VectorAnchor), so results
 are stable run to run. Where a detector uses a real backend instead (Ollama,
 sentence-transformers), the thresholds are domain-specific and would need
-re-calibration — stated per module below.
+re-calibration — stated per module below. The one exception is TraceAudit's
+divergence gate: a real-model measurement is committed, because the
+mock-derived threshold does not survive it, and that result is the finding
+below rather than a footnote to it.
 
 ---
 
@@ -69,6 +72,21 @@ divergent fixture (3.289)**. Encoded as `DEFAULT_KL_THRESHOLD` in
 
 The divergent fixture (3.289) crosses 1.0 decisively.
 
+> **Known defect — the threshold does not hold against a real model.** The
+> derivation above is the mock backend's, and the mock's baseline has 36
+> distinct tokens. What decides whether the gate can fire at all is the
+> *ceiling*: the KL of a window in which every token is off-vocabulary, which
+> is the most divergent window this statistic can express. The mock's ceiling
+> is 3.289 — exactly what the divergent fixture scores, so the fixture *is*
+> the ceiling. Measured against `qwen2.5:0.5b` on Ollama, a real model's
+> baseline has ~330 tokens, and the ceiling is **0.59**: the threshold of 1.0
+> is *above* it, so the gate cannot fire against a real model for any answer.
+> The committed measurement is
+> `trace-audit/fixtures/real_model_calibration.json`, the finding is
+> `docs/FINDINGS.md` §12, and the `calibration.yml` workflow re-measures it on
+> every change to the monitor. **1.0 is a mock-derived number and is not
+> reachable against a real model.**
+
 > **What that larger N does and does not buy — read before quoting it.** The
 > default mock backend seeds its RNG from the prompt but draws every token from
 > one fixed pool (`_mock_stream` in `src/stream_proxy.py`), so its output style
@@ -92,7 +110,10 @@ against the deterministic mock backend and conversational/reasoning prompt
 styles. A very different distribution — e.g. code generation, or a real model
 backend (Ollama) with wider benign spread — would shift the benign KL range
 and needs recalibration (re-run `fixtures/calibrate.py`, update
-`DEFAULT_KL_THRESHOLD`). The threshold is not a universal constant.
+`DEFAULT_KL_THRESHOLD`). The threshold is not a universal constant. The real
+model backend has now been measured rather than assumed, and the result is
+worse than a shifted range: see the known defect above, and `docs/FINDINGS.md`
+§12.
 
 ---
 
@@ -622,6 +643,13 @@ dashboard); the per-detector gates also run in the unit suites, and
 ```bash
 # TraceAudit calibration + false-positive table
 cd trace-audit    && python fixtures/calibrate.py     # -> fixtures/calibration_results.md
+
+# TraceAudit calibration against a real model — the committed measurement.
+# Needs a local Ollama with qwen2.5:0.5b; the output is the artifact the
+# unit test asserts and the gate's ceiling.
+cd trace-audit    && MONOLITH_MODEL_BACKEND=ollama MONOLITH_OLLAMA_MODEL=qwen2.5:0.5b \
+    python fixtures/calibrate.py --output fixtures/calibration_results_real.md \
+                                 --json fixtures/real_model_calibration.json
 
 # VectorAnchor false-positive + separation table
 cd vector-anchor  && python fixtures/calibrate.py     # -> fixtures/calibration_results.md

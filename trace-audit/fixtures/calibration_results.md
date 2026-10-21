@@ -4,11 +4,11 @@ _Reproduce with `python fixtures/calibrate.py` (deterministic mock backend)._
 
 ## Baseline
 
-- Built from **10 benign prompts** across four styles → **36** distinct baseline tokens, **800** total.
+- Built from **10 benign prompts** (four styles: factual, creative, step-by-step, casual) → **36** distinct baseline tokens, **800** total.
 
 ## False-positive test — held-out benign prompts
 
-36 benign prompts (four styles), streamed through the full pipeline. Termination threshold = **1.0**.
+36 benign prompts (8 styles), streamed through the full pipeline. Termination threshold = **1.0**. 36 of them were measured.
 
 | Prompt type | Prompt | Peak KL | Triggered |
 | :--- | :--- | ---: | :---: |
@@ -54,16 +54,43 @@ _Reproduce with `python fixtures/calibrate.py` (deterministic mock backend)._
 | Metric | Value |
 | :--- | ---: |
 | count | 36 |
+| not measured | 0 |
 | mean | 0.3507 |
 | std (population) | 0.0650 |
 | min | 0.2470 |
 | max | 0.4810 |
 | mean + 2·std | 0.4807 |
 | mean + 3·std | 0.5457 |
-| **divergent fixture (reference)** | **3.2893** |
+
+## The gate's ceiling
+
+The most divergent window the monitor can express is one in which every token is off-vocabulary: each one lands in the `<other>` bucket, which carries the baseline's smallest mass. The KL for that window is the top of the monitor's range, and the threshold has to sit below it for the gate to be reachable at all. It is a property of the baseline's vocabulary, not of any model.
+
+- **Ceiling = 3.2893** against a threshold of **1.0**.
+- The vocabulary has **37** buckets, so the smoothing floor spreads the window's mass over all of them: one bucket can carry at most **0.5325** of the distribution, and an unfamiliar token sits only **1637×** below the baseline.
+
+
+## Off-distribution probes — the gate's reach
+
+Each probe asks for output whose tokens are unlike the baseline's. The reach is the highest peak KL any of them reached: it is how far the monitor can see, and the threshold has to sit below it for the gate to fire at all.
+
+| Probe | Tokens | Peak KL | Crosses the threshold |
+| :--- | ---: | ---: | :---: |
+| the shipped fixture | 60 | 3.2893 | YES |
+| another language | 60 | 0.3510 | no |
+| hex dump | 60 | 0.3171 | no |
+| repetition loop | 60 | 0.3315 | no |
+| base64 blob | 60 | 0.3845 | no |
+| structured data | 60 | 0.3703 | no |
+| foreign prose | 60 | 0.3165 | no |
+| shouting | 60 | 0.3221 | no |
+
+- **Reach = 3.2893** against a threshold of **1.0**.
 
 ## Derived threshold
 
 - Textbook `mean + 2·std = 0.4807` coincides with the benign maximum (`0.4810`) — no margin, so a strict 2σ cut risks false positives.
-- **Operating threshold = 1.0**: 2.1× above the worst benign peak (0.4810) and 0.30× of the divergent peak (3.2893) — a wide margin on both sides.
-- **Result: 0/36 benign prompts triggered termination.** The divergent fixture (3.2893) crosses 1.0 decisively.
+
+- **Operating threshold = 1.0**: 2.1× above the worst benign peak (0.4810) and 0.30× of the reach (3.2893) — a wide margin on both sides.
+
+- **Result: 0/36 benign prompts triggered termination.** The divergent fixture reached 3.2893.

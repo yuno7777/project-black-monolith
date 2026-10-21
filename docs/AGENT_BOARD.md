@@ -47,6 +47,7 @@ Read it before starting work. Write to it while you work.
 | security | `fix/vector-anchor/truncated-error-body` | the memory layer's MCP server died on a truncated error body (`FINDINGS.md` §7) | PR #67 open; the fix is proved by mutating it back — the old read of the error body — and watching the new test fail because the server never answers. Branched off `main` at `1b6e8ed` |
 | security | `fix/trace-audit/cold-model-timeout` | one read timeout did two jobs, so a cold model was read as a dead backend (`FINDINGS.md` §12) | PR #70 open; the fix is proved by mutating it back and watching the new tests fail. The tests drive a real local HTTP server, because the deadlines under test are enforced by the HTTP stack and a mock transport enforces nothing |
 | security | `fix/trace-audit/prompt-projection` | the reasoning layer's prompt projection dropped every content block it could not represent, in silence (`FINDINGS.md` test gap 6) | PR #74 open; 14 tests, each proved by mutating the behaviour back and watching the test that claims to hold it fail. Worktree `C:/Users/Abhi/Desktop/monolith-wt/prompt-projection` |
+| security | `fix/trace-audit/real-model-calibration` | the divergence gate had never been measured against a real model (`FINDINGS.md` test gap 7) | PR #76 open; the measurement found that the gate **cannot fire at all** against a real model (`FINDINGS.md` §12). The committed result is asserted by a test, the broken half of the promise is a *strict* xfail so a fix has to come back and remove the marker, and the calibration runs against a real model in CI. Branched off `main` at `f42721d`; no history rewrite, so nothing was force-pushed |
 | integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI green on `b19513b` |
 | integrator | Dependabot | #24 merged (codeql-action); #15, #16 closed as superseded; #26 superseded by a direct hmac 0.13 migration | the queue is empty: **zero open PRs** |
 
@@ -213,13 +214,16 @@ Free to claim: `vector-anchor/**`, `trace-audit/**` (apart from the backend
 client's deadlines, above), `dashboard/app/api/operations/**`,
 | `trace-audit/src/main.py`, `trace-audit/tests/test_prompt_projection.py` | security | the reasoning layer's prompt projection — the OpenAI-compatible endpoint's projection of the client's messages into one audited text prompt |
 Free to claim: `vector-anchor/**`, `trace-audit/**` (apart from the prompt projection, above),
+| `trace-audit/fixtures/**`, `trace-audit/tests/test_real_model_calibration.py` | security | the real-model calibration and the test that asserts it (PR #76) |
+| `.github/workflows/calibration.yml` | security | the real-model calibration workflow (PR #76) |
+Free to claim: `vector-anchor/**`, the rest of `trace-audit/**`,
 `dashboard/app/api/operations/**`,
 `dashboard/app/api/benchmarks/**`, `docs/OPEN_QUESTIONS.md`, the Dependabot
 queue.
 
 ## Standing work
 
-A wider survey of the repository landed on 2026-10-21: eleven defects, ten
+A wider survey of the repository landed on 2026-10-21: twelve defects, ten
 test gaps, five documentation drifts, and five things checked and confirmed
 sound. It is in [`FINDINGS.md`](FINDINGS.md), ranked, with each item marked
 **verified** (read and confirmed at the cited lines) or **reported** (a
@@ -271,6 +275,8 @@ The fixtures are assembled at runtime, never written out: a contiguous
 secret scanner, and push protection blocks the push even though the value
 is the published AWS example. The bytes handed to the detector are
 identical either way.
+| 6 | The AWS secret access key has no detector. Deliberately: 40 characters of base64 has a false-positive rate that would hard-block ordinary calls. Needs a shape-aware detector, not a regex. | `mcp-shield/src/sanitizer.rs` | low |
+| 7 | The divergence gate **cannot fire against a real model**: the statistic's ceiling against a real model's baseline is 0.59 and the threshold is 1.0, so no answer can cross it. The threshold was calibrated to the ceiling of the *mock's* 36-token vocabulary (3.29), and a real model's 331-token vocabulary cuts the ceiling to a third. Compounds item 1 above — arming the gate without fixing this gives a gate that never fires, and it fails silently. | `trace-audit/src/divergence_monitor.py` | **high** — see `FINDINGS.md` §12 |
 
 Done: the module dead-letter replay is now scoped to one tenant across the
 dashboard, both module endpoints, the shared Python outbox and the Rust spool
@@ -287,6 +293,75 @@ and Anthropic shapes by assembling them at runtime, so the JWT and the bearer
 token are now assembled the same way. The bytes handed to the detector are
 unchanged, so the test still proves the same detection. Any new fixture that
 looks like a credential must be assembled at runtime too.
+
+### The divergence gate has never been measured against a real model
+
+The reasoning layer's divergence gate sits in front of every answer it
+returns, and the threshold that decides it (1.0) came entirely from the
+deterministic mock backend. The threshold's own comment says the headroom is
+deliberate because "a real model backend would show wider benign spread, and
+1.0 absorbs that drift" — and the calibrator's comment says the opposite
+about the same number: measuring it against a real model is the blind spot
+that "stays open". Neither was measured, because nothing could be: the
+calibrator wrote prose, not a result any test could read.
+
+PR #76 closed that, and the measurement is worse than the missing assertion.
+Against `qwen2.5:0.5b` with the shipped monitor settings, thirty-six held-out
+benign prompts peak between 0.30 and 0.57 with no false positives, and the
+eight off-distribution probes — the shipped fixture, and another language, a
+hex dump, a repetition loop, a base64 blob, structured data, foreign prose
+and shouting — peak between 0.35 and 0.59. The threshold is 1.0. **The gate
+cannot fire.** The shipped divergent fixture reached 0.349: below the worst
+ordinary answer, and below a hex dump.
+
+The reason is the statistic, not the constant. The most divergent window the
+monitor can express is one in which every token is off-vocabulary — each lands
+in the `<other>` bucket, which carries the baseline's smallest mass — and the
+KL for that window is the top of the monitor's range. It is a property of the
+baseline's vocabulary:
+
+| | mock | real model |
+| --- | ---: | ---: |
+| baseline vocabulary | 36 tokens | 331 tokens |
+| most one bucket can carry | 0.5325 | 0.1105 |
+| how far below the baseline an unfamiliar token sits | 1637× | 366× |
+| **ceiling** | **3.2893** | **0.5870** |
+| the threshold the code ships | 1.0 | 1.0 |
+
+The mock's shipped fixture scores 3.2893 — *exactly* the mock's ceiling. The
+mock's "divergent" fixture is a window of tokens that appear nowhere in the
+baseline, and 1.0 was set because that was "0.30× of the divergent fixture
+peak (3.29) -> fires decisively". The threshold was calibrated to the ceiling
+of a 36-token vocabulary. A real model's vocabulary is ten times the size,
+its ceiling is a third of the mock's, and the constant was left where the
+mock put it.
+
+Two consequences for anyone picking this up:
+
+1. **§1 and §12 have to be fixed together.** §1 says the gate can never open
+   because nothing writes the baseline's `model` key; §12 says that if it did
+   open, it would not fire anyway. Fixing only §1 would arm a gate that cannot
+   see — and it would fail silently, because an answer that is never
+   terminated looks exactly like an answer that is clean.
+2. **The fix is in the statistic.** A threshold of 0.55 would fire on the
+   probes, but the gap between the worst ordinary answer and the strongest
+   probe is 0.01–0.07, and the whole band shifts by up to 0.16 between runs —
+   the backend is sampled, so each measurement is a fresh draw. A threshold
+   inside that gap would refuse ordinary answers some of the time. The
+   options are a vocabulary-independent measure (the fraction of window tokens
+   outside the baseline, or a divergence between two distributions estimated
+   over the same vocabulary) or a much larger baseline capture with the
+   threshold re-derived from a real model. Either way the mock's numbers have
+   to stop being the source.
+
+The measurement is committed at
+`trace-audit/fixtures/real_model_calibration.json` — including the ceiling,
+so a fix can be checked against the number the statistic can actually express
+rather than against a remembered one — the test asserts the half of the
+promise that holds and marks the broken half as a **strict** xfail, and
+`.github/workflows/calibration.yml` re-measures against a real model on every
+change to the monitor, the calibrator or the result. A fix that makes the gate
+fire has to come back and remove the xfail marker.
 
 ## Verification
 
