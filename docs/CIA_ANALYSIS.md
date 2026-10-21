@@ -162,9 +162,9 @@ the most defences.
 | --- | --- | --- |
 | Dashboard down | Modules keep detecting. Events spool to disk, are retried with jittered exponential backoff, and are delivered when the dashboard returns. | `verify_recovery.sh` |
 | Poison-pill event | A malformed `event_id` is a permanent `422`, not a `5xx`, so it dead-letters on arrival instead of blocking the spool behind it. | `dashboard/lib/event-store.ts:20` |
-| Unbounded spool | Capped: 10,000 pending records in the Rust spool, 10,000 pending / 2,000 dead in the Python outbox, with the oldest dropped first. | `mcp-shield/src/outbox.rs:50`, `events.py:117` |
+| Unbounded spool | Capped: the Rust spool holds at most 10,000 records and 16 MiB in `outbox.jsonl`, and the same again in `outbox.dead` — the two files keep budgets of their own; the Python outbox holds 10,000 pending / 2,000 dead. The oldest records are dropped first. | `mcp-shield/src/outbox.rs:57`, `events.py:354` |
 | Unbounded event size | 256 KB maximum payload; a 5 MB maximum response body on the boundary's outbound requests, enforced incrementally while streaming. | `events.py:24`, `transport.rs:82` |
-| Slow upstream | Bounded timeouts on the event delivery path (2 s connect, 3 s response) and on the boundary's outbound requests (10 s default). | `outbox.rs:51`, `http.rs:363` |
+| Slow upstream | Bounded timeouts on the event delivery path (2 s connect, 3 s response) and on the boundary's outbound requests (10 s default). | `outbox.rs:70`, `http.rs:363` |
 | Detector bug in MCP-Shield | **Fail-open**: the message is forwarded unmodified and the error is logged at error level with a structured event. A detector bug must never masquerade as "nothing to flag" — but it must not break the agent either. | `mcp-shield/src/proxy.rs` |
 | Detector bug in the boundary | **Fail-closed**: a broken boundary configuration aborts the proxy at startup rather than degrading to a partially enabled boundary. | `mcp-shield/src/secret_boundary/mod.rs:96` |
 | Slow response body (boundary) | Streamed with a checked size counter, and the connection is dropped as soon as the bound is exceeded rather than after the body finishes. | `transport.rs:82` |
@@ -205,7 +205,13 @@ the most defences.
   are kept because they are the most actionable. Under a sustained ingest
   outage the *earliest* evidence of an attack is the first to be lost. The
   drop is logged at error level, so it is visible — but it is still silent
-  loss of evidence, deliberately chosen over unbounded disk growth.
+  loss of evidence, deliberately chosen over unbounded disk growth. The byte
+  cap is the same bound in bytes, and it is applied to each spool file on
+  its own: `outbox.jsonl` and `outbox.dead` each hold up to 16 MiB, so the
+  spool directory holds up to twice that. The two budgets are separate on
+  purpose — a shared one would let a full dead-letter file starve the
+  pending spool, and what the pending spool drops is a detection that has
+  not been delivered yet.
 - **No rate limiting on the ingest endpoint.** An authenticated module that
   floods the dashboard degrades it for everyone. The per-module bearer token
   scopes *who* may write, not *how much*.
