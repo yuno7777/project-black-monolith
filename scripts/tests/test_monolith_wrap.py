@@ -21,15 +21,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from monolith_wrap import (
     _Injector,
     _InjectorHandler,
+    _proxy_advisory,
+    _should_use_ambient_proxy,
     build_mcp_config,
     build_shield_env,
     credential_transport_is_trusted,
     discover_mcp_servers,
+    http_get_json,
     load_dotenv,
     mint_session_id,
     print_session_report,
     redact_config_secrets,
     resolve_setting,
+    service_healthy,
     wait_for_spool_drain,
 )
 
@@ -232,6 +236,255 @@ class TransportTests(unittest.TestCase):
 
         # The proxy saw nothing: the request never went to it.
         self.assertEqual(seen, [])
+
+
+class AmbientProxyTests(unittest.TestCase):
+    """A proxy the operator did not name for this request.
+
+    urllib honours http_proxy by default, and on Windows it reads the
+    registry's ProxyEnable and ProxyServer as well, so the launcher has
+    to decide per request whether a proxy may carry it. A proxy is a
+    second destination, and one that terminates TLS can read what it
+    carries.
+    """
+
+    def _serve_proxy(self, seen: list[tuple[str, str]]) -> ThreadingHTTPServer:
+        class _Proxy(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - stdlib signature
+                seen.append(("GET", self.path))
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", "2")
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def do_CONNECT(self):  # noqa: N802 - stdlib signature
+                seen.append(("CONNECT", self.path))
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *_args):
+                pass
+
+        return ThreadingHTTPServer(("127.0.0.1", 0), _Proxy)
+
+    def _environment(self, port: int) -> dict[str, str]:
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if key.lower()
+            not in ("http_proxy", "https_proxy", "no_proxy", "all_proxy")
+        }
+        environment["http_proxy"] = f"http://127.0.0.1:{port}"
+        environment["https_proxy"] = f"http://127.0.0.1:{port}"
+        return environment
+
+    def test_a_credential_does_not_travel_through_an_ambient_proxy_by_default(self):
+        # The operator has not said that a proxy may carry a credential,
+        # so it does not. This is the rule the secret boundary applies to
+        # a resolved secret, and it is now the rule here.
+        self.assertFalse(_should_use_ambient_proxy("https://api.anthropic.com/v1/models"))
+        self.assertFalse(
+            _should_use_ambient_proxy(
+                "https://dashboard.example.com/api/sessions/1", carries_credential=True
+            )
+        )
+
+    def test_the_operator_can_allow_a_credential_through_the_proxy(self):
+        # A corporate network is sometimes the only route to the model
+        # provider, so the operator gets a way to say so.
+        self.assertTrue(
+            _should_use_ambient_proxy(
+                "https://api.anthropic.com/v1/models", allow_credential_via_proxy=True
+            )
+        )
+
+    def test_a_loopback_target_is_never_proxied(self):
+        # urllib does not bypass loopback on Windows, so a machine with a
+        # system proxy would send a request meant for 127.0.0.1 to a
+        # remote host. A proxy cannot reach the operator's own machine.
+        for url in (
+            "http://127.0.0.1:3000/health",
+            "https://localhost:3000/health",
+            "https://[::1]:3000/health",
+        ):
+            self.assertFalse(
+                _should_use_ambient_proxy(url, allow_credential_via_proxy=True), url
+            )
+            self.assertFalse(
+                _should_use_ambient_proxy(url, carries_credential=False), url
+            )
+
+    def test_a_plain_http_target_is_never_proxied_when_it_carries_a_credential(self):
+        # The credential would be readable by whoever answers, and a proxy
+        # is a whoever.
+        self.assertFalse(
+            _should_use_ambient_proxy(
+                "http://dashboard.example.com/api/sessions/1",
+                allow_credential_via_proxy=True,
+            )
+        )
+
+    def test_a_request_with_no_credential_may_use_the_proxy(self):
+        # The preflight's health check carries nothing, so the proxy may
+        # carry it: on a corporate network it is sometimes the only route
+        # to a service, and a health check that cannot reach the service
+        # reports a stack that is up and working as one that is down.
+        self.assertTrue(
+            _should_use_ambient_proxy(
+                "http://dashboard.example.com/health", carries_credential=False
+            )
+        )
+        self.assertTrue(
+            _should_use_ambient_proxy(
+                "https://dashboard.example.com/health", carries_credential=False
+            )
+        )
+
+    def test_a_health_check_reaches_a_remote_service_through_the_ambient_proxy(self):
+        """The preflight carries no credential, so it is not held to the
+        credential's rule.
+
+        The proxy default change made it inherit that rule, so a service
+        that was only reachable through the proxy reported as down and the
+        launcher refused to start — with a message that named the service
+        and said nothing about the proxy.
+        """
+        seen: list[tuple[str, str]] = []
+        proxy = self._serve_proxy(seen)
+        thread = Thread(target=proxy.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with patch.dict(
+                os.environ, self._environment(proxy.server_address[1]), clear=True
+            ):
+                healthy = service_healthy("http://service.example.com:8080/health")
+        finally:
+            proxy.shutdown()
+            proxy.server_close()
+            thread.join(timeout=5)
+
+        self.assertTrue(healthy)
+        self.assertEqual(len(seen), 1)
+
+    def test_a_health_check_does_not_go_through_the_proxy_to_a_loopback_service(self):
+        # The proxy cannot reach the operator's own machine, and on
+        # Windows urllib would not bypass loopback for us.
+        seen: list[tuple[str, str]] = []
+        proxy = self._serve_proxy(seen)
+        thread = Thread(target=proxy.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with patch.dict(
+                os.environ, self._environment(proxy.server_address[1]), clear=True
+            ):
+                healthy = service_healthy("http://127.0.0.1:9/unreachable")
+        finally:
+            proxy.shutdown()
+            proxy.server_close()
+            thread.join(timeout=5)
+
+        self.assertFalse(healthy)
+        self.assertEqual(seen, [])
+
+    def test_a_credential_does_not_reach_the_proxy_by_default(self):
+        """The request that carries the operator token.
+
+        A remote dashboard is an HTTPS target, so the tunnel used to carry
+        the token to whatever proxy the host happened to be configured
+        with — and a proxy that terminates TLS can read it.
+        """
+        seen: list[tuple[str, str]] = []
+        proxy = self._serve_proxy(seen)
+        thread = Thread(target=proxy.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with patch.dict(
+                os.environ, self._environment(proxy.server_address[1]), clear=True
+            ), self.assertRaises(urllib.error.URLError):
+                http_get_json(
+                    "https://0.0.0.0:9/api/sessions/1",
+                    timeout=2.0,
+                    headers={"authorization": "Bearer operator-token-value"},
+                )
+        finally:
+            proxy.shutdown()
+            proxy.server_close()
+            thread.join(timeout=5)
+
+        # The proxy saw nothing: the request went direct.
+        self.assertEqual(seen, [])
+
+    def test_the_operator_can_allow_the_proxy_to_carry_the_credential(self):
+        # The other half of the same setting: when the operator allows it,
+        # the request is tunnelled through the proxy, and the proxy sees
+        # the CONNECT for the target.
+        seen: list[tuple[str, str]] = []
+        proxy = self._serve_proxy(seen)
+        thread = Thread(target=proxy.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with patch.dict(
+                os.environ, self._environment(proxy.server_address[1]), clear=True
+            ), self.assertRaises(urllib.error.URLError):
+                http_get_json(
+                    "https://0.0.0.0:9/api/sessions/1",
+                    timeout=2.0,
+                    headers={"authorization": "Bearer operator-token-value"},
+                    allow_credential_via_proxy=True,
+                )
+        finally:
+            proxy.shutdown()
+            proxy.server_close()
+            thread.join(timeout=5)
+
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0][0], "CONNECT")
+
+    def test_the_console_says_when_a_proxy_will_not_carry_a_credential(self):
+        # A proxy that is configured but not used is worth a line: the
+        # operator set it, and the reason it is not carrying the traffic
+        # is not obvious from the outside.
+        with patch.dict(os.environ, self._environment(3128), clear=True):
+            lines = _proxy_advisory(
+                [("https://api.anthropic.com/v1/models", "the client's credential")],
+                allow_credential_via_proxy=False,
+            )
+        # The console wraps, so the phrases are looked for in the whole
+        # message rather than in one line of it.
+        message = " ".join(" ".join(lines).split())
+        self.assertIn("MONOLITH_ALLOW_CREDENTIAL_VIA_PROXY=true", message)
+        self.assertIn("will not go through it", message)
+
+    def test_the_console_says_when_a_proxy_will_carry_a_credential(self):
+        with patch.dict(os.environ, self._environment(3128), clear=True):
+            lines = _proxy_advisory(
+                [("https://api.anthropic.com/v1/models", "the client's credential")],
+                allow_credential_via_proxy=True,
+            )
+        self.assertIn("terminates TLS", " ".join(lines))
+
+    def test_the_console_says_nothing_about_a_proxy_that_is_not_configured(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                _proxy_advisory(
+                    [("https://api.anthropic.com/v1/models", "the client's credential")],
+                    allow_credential_via_proxy=False,
+                ),
+                [],
+            )
+
+    def test_the_console_says_nothing_about_a_loopback_destination(self):
+        # A local stack is the common case, and a line about a proxy that
+        # would not have carried the request anyway is noise.
+        with patch.dict(os.environ, self._environment(3128), clear=True):
+            self.assertEqual(
+                _proxy_advisory(
+                    [("http://127.0.0.1:3000/api/sessions/1", "the operator token")],
+                    allow_credential_via_proxy=False,
+                ),
+                [],
+            )
 
 
 class SessionReportTests(unittest.TestCase):
