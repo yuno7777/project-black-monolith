@@ -1,0 +1,60 @@
+name: Real-model calibration
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'trace-audit/src/divergence_monitor.py'
+      - 'trace-audit/fixtures/calibrate.py'
+      - 'trace-audit/fixtures/real_model_calibration.json'
+      - 'trace-audit/tests/test_real_model_calibration.py'
+      - '.github/workflows/calibration.yml'
+permissions:
+  contents: read
+jobs:
+  calibration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --require-hashes -r trace-audit/requirements.lock
+      - name: Install checksum-verified Ollama
+        run: |
+          curl --fail --location --retry 3 https://github.com/ollama/ollama/releases/download/v0.34.2/ollama-linux-amd64.tar.zst -o /tmp/ollama.tar.zst
+          echo 'e155b83589986d2c581fdbf1381ea3ebdb16549883679cd5a0627f7cdc05b12b  /tmp/ollama.tar.zst' | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/ollama"
+          tar --zstd -xf /tmp/ollama.tar.zst -C "$RUNNER_TEMP/ollama"
+          echo "$RUNNER_TEMP/ollama/bin" >> "$GITHUB_PATH"
+      - name: Start real inference and pull the model
+        run: |
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:11434/api/tags; then break; fi
+            sleep 1
+          done
+          ollama pull qwen2.5:0.5b
+      - name: Calibrate the divergence gate against a real model
+        env:
+          MONOLITH_MODEL_BACKEND: ollama
+          MONOLITH_OLLAMA_MODEL: qwen2.5:0.5b
+        run: |
+          mkdir -p evaluation/results
+          # Warm the model before the measurement. The first request loads it
+          # into memory, and a cold load on a two-core runner is a timeout
+          # rather than a verdict on the gate.
+          curl -fsS --max-time 300 http://127.0.0.1:11434/api/generate \
+            -d '{"model":"qwen2.5:0.5b","prompt":"hello","stream":false}' > /dev/null
+          python trace-audit/fixtures/calibrate.py \
+            --output evaluation/results/calibration-real.md \
+            --json trace-audit/fixtures/real_model_calibration.json
+      - name: Preserve the measurement
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: real-model-calibration
+          path: |
+            evaluation/results/calibration-real.md
+            trace-audit/fixtures/real_model_calibration.json
+          if-no-files-found: warn
