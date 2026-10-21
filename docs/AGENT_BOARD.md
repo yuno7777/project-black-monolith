@@ -53,6 +53,11 @@ Read it before starting work. Write to it while you work.
 | gateway-review | `fix/gateway-review-fixes` | the eleven findings from the agent-gateway review: credential containment in the shield and the launcher, the reasoning layer's answer path, the memory layer's attribution rule, the dashboard's session report | all eleven fixed, one commit each; the findings are recorded in `FINDINGS.md` with the commit that fixes each and the residuals. Worktree `C:/Users/Abhi/Desktop/monolith-wt/gateway-fixes`; branched off `fix/credential-redaction-success-path` so the credential-redaction work is included. `origin/main` merged in (PR #65), no history rewrite, so nothing was force-pushed |
 | silent-defenses | `fix/silent-defense-failures` | the standing work that a failure turns a defence off without saying so: the shield's admin credential, the memory layer's truncated body, the Python outbox's oversized payload, the Rust outbox's fallback target, the dashboard's listener reconnect, and the revocation snapshot that stops being complete | worktree `C:/Users/Abhi/Desktop/monolith-wt/silent-defenses`, branched off `origin/main` (`1b6e8ed`) and rebased onto `f42721d`. One commit per finding, each proved by a test that fails before the fix. Six findings fixed (`FINDINGS.md` §3, §4, §7, §9, §10, §11); pushed, awaiting a merge |
 | security | `fix/dashboard/operational-failure-counts` | the console's headline number counted operational failures as attacks (`FINDINGS.md` documentation drift 4 and drift 5) | PR #79 open; the rule is one function in `dashboard/lib/event-classification.ts`, shared by the console and the session report, and `contracts/check_contracts.py` fails the build when a layer emits a type the dashboard has not classified. Branched off `origin/main` at `f42721d`, so it waits on no open PR |
+| security | `fix/vector-anchor/truncated-error-body` | the memory layer's MCP server died mid-session when the service answered with a body that stopped short (`FINDINGS.md` §7) | PR #67 open; the fix is proved by mutating it back and watching the new test fail. **This finding is also implemented in `fix/silent-defense-failures` (`a3acb59`) — see the overlap note below** |
+| security | `fix/dashboard/incident-triage-tests` | the incident queue's write path and read path had no tests at all (`FINDINGS.md` test gaps 2 and 3) | PR #68 open; 31 tests, each proved by mutating the behaviour back and watching the test that claims to hold it fail. Worktree `C:/Users/Abhi/Desktop/monolith-wt/incident-triage`, branched off `origin/main` (`f42721d`) |
+| security | `fix/dashboard/benchmark-ledger-tests` | the benchmark ledger's write and read paths had no tests at all (`FINDINGS.md` test gap 9) | PR #69 open; 26 tests, each proved by mutating the behaviour back and watching the test that claims to hold it fail. **Stacked on PR #68** — merge #68 first. Worktree `C:/Users/Abhi/Desktop/monolith-wt/benchmark-ledger` |
+| security | `fix/dashboard/session-list-postgres-tests` | the session list's production Postgres branch was executed by no test (`FINDINGS.md` test gap 8) | PR #71 open; 16 tests, each proved by mutating the behaviour back and watching the test that claims to hold it fail. **Stacked on PR #69** — merge #68 and #69 first. Worktree `C:/Users/Abhi/Desktop/monolith-wt/session-list` |
+| security + silent-defenses | `fix/vector-anchor/truncated-error-body` and `fix/silent-defense-failures` | two agents implemented the same finding; the overlap and its resolution are recorded below | resolved: the published work stands, the unpublished work is dropped. Nothing is force-pushed |
 | integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI green on `b19513b` |
 | integrator | Dependabot | #24 merged (codeql-action); #15, #16 closed as superseded; #26 superseded by a direct hmac 0.13 migration | the queue is empty: **zero open PRs** |
 | credential-transport | `fix/trace-audit/model-credential-transport` | the transport rule for the model credential the Anthropic gateway forwards upstream: the rule the modules already apply to their own delivery, applied to the one credential that had none (`FINDINGS.md` test gap 5, and §12, which is the defect it was hiding) | two fixes and two records; every one proved by mutating the fix back and watching the new test fail. Stacked on `fix/gateway-review-fixes` as PR #77, so it rebases onto `main` after #65 merges. Worktree `C:/Users/Abhi/Desktop/monolith-wt/credential-transport` |
@@ -159,6 +164,34 @@ It used to fall through to the reset: an action added to the list without a
 branch would have erased the memory layer's history instead of doing
 whatever it was meant to do, and the branch that erases evidence is not one
 to reach by accident.
+### One finding, two implementations (resolved)
+Two findings were implemented by two agents at the same time, without either
+knowing about the other. Both are recorded here so the integrator does not
+merge the same fix twice, and so the next agent does not start a third.
+**`FINDINGS.md` §4 — the shield's status listener used the ingest token as
+its admin credential.** The `silent-defenses` agent implemented it as
+`72fcf3d` (`fix/silent-defense-failures`). The `security` agent had an
+implementation of its own, which was **dropped**: the peer's is stronger, and
+the strength is the point. It drives the real binary end to end
+(`mcp-shield/tests/status_listener_admin_auth.rs`) and asserts that the
+ingest credential gets a `503` on `GET /stats` — a unit test can only prove
+that a predicate is right, and this was a claim about what the process
+actually does with the credential it was given. Nothing was lost by dropping
+mine.
+**`FINDINGS.md` §7 — the memory layer's MCP server died mid-session on a
+truncated error body.** Here the published work wins: PR #67
+(`fix/vector-anchor/truncated-error-body`) is open, CI-verified and
+reviewable, so it stands. The `silent-defenses` agent's implementation
+(`a3acb59`) reaches the same conclusion by the same route — read the body
+defensively, and keep a net under the handler so an unforeseen failure
+becomes an error result on the wire instead of a dead process — and it is
+**not** merged a second time. **`a3acb59` should be dropped from
+`fix/silent-defense-failures`**, or that branch and PR #67 will conflict in
+`vector-anchor/src/mcp_server.py`.
+The rule that settled both: **published, CI-verified work is not discarded;
+unpublished work is not duplicated.** When the two implementations differ in
+strength, the stronger one wins even when it is the unpublished one — which
+is why §4 went the peer's way and §7 went mine.
 
 ### Requirement floors now match their locks (resolved)
 
@@ -280,6 +313,9 @@ proxy settings from its own environment. That is question 13 in
 | `scripts/monolith_wrap.py`, `scripts/tests/**` | security | the launcher's ambient-proxy rule (`FINDINGS.md` documentation drifts 2 and 3) |
 | `docs/FINDINGS.md`, `docs/OPEN_QUESTIONS.md`, `README.md` | security | the drift list, the new open question, and the launcher's section of the README |
 | `contracts/openapi.yaml` | security | corrected the revocation snapshot wording — that branch is merged; `gateway-review` has since touched the same file, so the two rows are both live |
+| `dashboard/test/incident-triage.test.ts`, `dashboard/test/incident-queue.test.ts` | security | the incident queue's write and read paths. Reads `dashboard/lib/incident-store.ts` and `dashboard/app/api/incidents/route.ts` but does not modify either, so it does not collide with `silent-defenses`' revocation-snapshot work |
+| `dashboard/test/benchmark-ledger.test.ts` | security | the benchmark ledger's write and read paths. Reads `dashboard/lib/benchmark-store.ts` and `dashboard/app/api/benchmarks/route.ts` but does not modify either |
+| `dashboard/test/session-list.test.ts` | security | the session list's production Postgres branch. Reads `dashboard/lib/onboarding-store.ts`, `dashboard/lib/db.ts` and `dashboard/app/api/sessions/route.ts` but does not modify any of them |
 | `main` | integrator | Merges and verification only; branch work happens in a worktree. |
 | `python-common/monolith_events/events.py`, `trace-audit/src/config.py`, `trace-audit/src/main.py`, `trace-audit/src/events.py` | credential-transport | the model credential's transport rule: the rule the modules already apply to their own delivery, applied to the credential the Anthropic gateway forwards upstream. Stacked on `fix/gateway-review-fixes`, so it rebases onto `main` after that merges. `python-common/monolith_events/events.py` overlaps the `silent-defenses` claim, but the two touch different functions |
 | `scripts/monolith_wrap.py`, `scripts/tests/test_monolith_wrap.py` | credential-transport | the launcher's standard-library-only copy of the transport rule, brought into line with the shared one (`80f84f6`). Overlaps the `gateway-review` claim on the same file, and it is stacked on that branch, so the change rides on top of it rather than racing it |

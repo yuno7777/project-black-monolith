@@ -511,6 +511,10 @@ regression would be invisible.
 | 2 | The entire triage write path is untested: validation, state change, audit trail. | `dashboard/app/api/triage/**` | medium |
 | 3 | The incident-queue read path is untested: filter parsing, keyset pagination, counts. | `dashboard/lib/incident-store.ts` | medium |
 | 4 | ~~The detector-reset path is untested end to end, on both sides of the wire.~~ **closed** | `vector-anchor`, `dashboard` | medium |
+| 1 | The divergence gate is never tested in its **armed** state. | `trace-audit/tests/test_anthropic_gateway.py` | medium |
+| 2 | ~~The entire triage write path is untested: validation, state change, audit trail.~~ **closed** | `dashboard/app/api/incidents/route.ts` | medium |
+| 3 | ~~The incident-queue read path is untested: filter parsing, keyset pagination, counts.~~ **closed** | `dashboard/lib/incident-store.ts` | medium |
+| 4 | The detector-reset path is untested end to end, on both sides of the wire. | `vector-anchor`, `dashboard` | medium |
 | 5 | The rule deciding whether a credential may travel over plain HTTP to the upstream model is neither present nor tested. | `trace-audit/src/anthropic_gateway.py` | medium |
 | 6 | ~~TraceAudit's prompt projection drops every non-text content block, and is never tested against one.~~ **closed** | `trace-audit/src/main.py` | medium |
 | 4 | The detector-reset path is untested end to end, on both sides of the wire. | `vector-anchor`, `dashboard` | medium |
@@ -665,6 +669,146 @@ sending it without the module credential, sending it with a body the module
 does not take, swallowing the module's refusal, and an action added to the
 list that nothing handles. Each breaks exactly the test that claims to hold
 that guarantee.
+| 8 | ~~The production Postgres branch of the session list is never executed by any test.~~ **closed** | `dashboard/app/api/sessions/route.ts` | medium |
+| 9 | ~~The benchmark ledger's write and read paths are untested, route included.~~ **closed** | `dashboard/lib/benchmark-store.ts` | small |
+| 10 | The two functions the memory-layer detector's hot path depends on are untested; the one that is tested is not on the hot path. | `vector-anchor/src/frequency_tracker.py` | small |
+
+(The cited path for gap 2 was wrong: there is no `dashboard/app/api/triage/`. The
+triage write path is `dashboard/app/api/incidents/route.ts`, and the state it
+writes is in `dashboard/lib/incident-store.ts`.)
+
+---
+
+## Closed test gaps
+
+### The triage write path (gap 2)
+
+`dashboard/test/incident-triage.test.ts` — sixteen tests over the whole write
+path: what a transition may say, what it may not, who it is attributed to, and
+what it leaves behind.
+
+Four things were uncovered, and each is a way the incident queue could record
+a decision that never happened:
+
+- **The actor comes from the credential, not the body.** A caller that names
+  itself in the payload is not evidence of who did something. The trail is
+  written with the operator's identity.
+- **The state change and the trail entry share one transaction.** A trail that
+  cannot be written takes the state change with it; an incident is never
+  "resolved" with nothing to show for it.
+- **The event has to exist, in the caller's tenant.** An event in another
+  tenant is answered exactly as one that never happened, so the queue cannot
+  be used to probe another tenant's ledger.
+- **Resolving requires a verdict.** An incident cannot be resolved without
+  one, nor verdicted without being resolved.
+
+### The incident-queue read path (gap 3)
+
+`dashboard/test/incident-queue.test.ts` — fifteen tests over what the operator
+is shown and in what order:
+
+- **Worst-first.** The queue opens on the critical detection, not on the most
+  recent one; a critical event behind a stream of informational ones is a
+  detection nobody reads.
+- **The page is a keyset.** The cursor names the last row of the page it came
+  from, and the next page starts strictly after it. An offset would shift
+  under an event that arrived in between, and the operator would see one row
+  twice and another not at all.
+- **The page is bounded by the limit,** and one extra row is the signal that
+  there is more — so the store knows there is another page without a count
+  query.
+- **The counts are per tenant and derived,** so `open` and `all` cannot drift
+  from the numbers they are made of.
+- **A cursor is untrusted input.** A malformed one is refused with a `422`
+  rather than obeyed.
+
+Both files are proved by mutation: reversing the ordering, dropping the keyset
+predicate, dropping the extra row, unscoping the counts and narrowing the
+search each break exactly the test that claims to hold the guarantee, and each
+was reverted.
+
+### The benchmark ledger (gap 9)
+
+`dashboard/test/benchmark-ledger.test.ts` — twenty-six tests over the write
+path, the read path and the route.
+
+The benchmark ledger is the one place in this repository where numbers are
+written by a human's CI job and then read back as evidence. The modules
+detect; the dashboard counts what the operators decided. The ledger sits
+between them, and it is the only one of the three whose numbers nobody in
+the stack can take for itself — so the only defence against a wrong number
+being recorded is that the ledger refuses to believe the client.
+
+- **The metrics are computed from the confusion matrix, never copied.** A run
+  that claims a perfect detection rate over a matrix that says otherwise
+  stores the matrix's answer. The corpus is counted from the matrix too: a
+  run that reported its own corpus counts could claim a thousand samples
+  over a matrix of ten.
+- **The tenant comes from the credential.** A body that names a tenant is
+  ignored, because a run filed under somebody else's tenant is a run the
+  wrong operator can read.
+- **A run is one to fifty detector reports,** of a known module, a known
+  paradigm, a named detector no longer than sixty-four characters, and no
+  detector twice. The confusion matrix is made of non-negative 32-bit
+  integers, the latency percentiles ascend, the benchmark version is in
+  range, the notes and the commit are bounded, and a threshold set that is
+  not a map of values is dropped rather than stored.
+- **A run is written one row per detector in one transaction,** carrying the
+  recomputed rate.
+- **The read path is scoped to the tenant.** The latest run is the most
+  recent one for this tenant, its detector rows are read by run id *and*
+  tenant, no run at all is null rather than an empty run, and the history is
+  one bucket per detector with a bounded limit.
+- **The route serves the run, the history and the observed accuracy
+  together,** because the page's whole argument is the comparison between
+  the lab numbers and the observed ones.
+
+Nine mutations prove it: believing the client's rate, taking the corpus or
+the tenant from the body, allowing a detector twice, dropping the percentile
+check, reading the run's detectors without the tenant, unscoping the
+history, dropping the version bound and storing a threshold set that is not
+a map each break exactly the test that claims to hold that guarantee.
+
+### The session list's production path (gap 8)
+
+`dashboard/test/session-list.test.ts` — sixteen tests over the Postgres
+branch, the route, and the agreement between the two halves.
+
+The list answers "is my agent connected yet?". The per-session endpoint
+cannot answer it, because it answers `200` with zero events for a session
+that never happened — which is indistinguishable from a connected-but-silent
+one. So this list is the discovery side of the ledger, and the half that
+production actually runs was the half no test touched.
+
+- **The list is asked for one tenant, and the transaction says so too.** The
+  query filters by tenant *and* the transaction sets the context the
+  row-level security policy reads. Both, or the policy sees nothing and the
+  filter is the only thing standing between one tenant's sessions and
+  another's.
+- **A session is a session and an agent.** The grouping is by session *and*
+  agent, so one session id under two agents is two sessions and not one
+  merged row.
+- **An event with no session is not a session,** and the list is bounded.
+- **The worst severity is a rank, not a string.** Postgres hands back a
+  number: two is critical, one is warning, zero is info. A module the
+  contract does not define is dropped rather than passed on as a null, and
+  the counts and the times are numbers — Postgres hands a `bigint` back as
+  a string, and the console wants a number.
+- **The two halves agree.** The in-memory path and the Postgres path are two
+  implementations of one list, and the in-memory one exists to stand in for
+  the other. A difference between them is a bug in whichever one moved, and
+  the operator is shown whichever one ran. The test runs the same events
+  through both and compares them, including the case the code comments
+  warn about: two groups whose halves would run together if the key did not
+  keep them apart.
+
+Eleven mutations prove it: dropping the tenant filter, dropping the
+transaction's tenant context, grouping by the session alone, counting the
+events that have no session, removing the limit's clamp, flattening the
+worst severity, passing an unknown module through, leaving the bigints
+unparsed, ordering by the wrong time, leaving the count unparsed, and
+running the key's halves together each break exactly the test that claims
+to hold that guarantee.
 
 ---
 
@@ -743,6 +887,23 @@ up.
   cadence falls back to the default and says so. The *unset* defaults are
   unchanged: only the default is in question, and a typo is not an answer to
   that question.
+- **The triage write path and the incident-queue read path had no tests at
+  all** (test gaps 2 and 3). The queue an analyst works from — who may
+  transition an incident, in what order the queue opens, how a page is cut,
+  what the counts beside it mean — was entirely unexercised, so a regression
+  in any of it would have been invisible. Fixed in PR #68: thirty-one tests
+  over the write path and the read path, each proved by mutating the
+  behaviour back and watching the test that claims to hold it fail.
+- **The benchmark ledger had no tests at all** (test gap 9). It is the one
+  place in the repository where numbers are written by a human's CI job and
+  then read back as evidence, so it is the one store whose contents nobody
+  in the stack can take for itself. A run that claimed a perfect detection
+  rate over a confusion matrix that said otherwise would have been stored
+  and displayed as a perfect detection rate, and nothing in the dashboard
+  could have told the operator the number was the client's claim rather
+  than a measurement. Fixed in PR #69: twenty-six tests over the write
+  path, the read path and the route, each proved by mutating the behaviour
+  back and watching the test that claims to hold it fail.
 - **The tool layer's fail-open path discarded enforcement it had already
   computed** (§5 above). A failed baseline write aborted the whole analysis
   with a `?`, so the server's original bytes — the poisoned schema — were
