@@ -263,6 +263,15 @@ contracts/           python contracts/check_contracts.py
 scripts/             python -m unittest discover -s scripts/tests
 ```
 
+Two of the launcher's tests are timing-sensitive on Windows and fail
+intermittently when the machine is busy: `test_cleanup_stops_spawned_descendant`
+(spawns a real child, then asserts the port is closed the instant the child
+dies) and `test_an_oversized_body_is_refused_before_it_is_read` (waits on a
+loopback server with a 15-second timeout). This is pre-existing — it was
+observed on `fix/gateway-review-fixes` with none of the credential-transport
+changes on it — so a red `scripts` gate is worth re-running once before it
+is believed.
+
 ## Finding the other agents
 
 There is no shared state beyond this repository and the remote. If this
