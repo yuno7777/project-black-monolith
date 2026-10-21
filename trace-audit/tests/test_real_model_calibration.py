@@ -9,18 +9,28 @@ backend's numbers, and the comment that justifies it says the rest:
     spread, and 1.0 absorbs that drift.
 
 Nothing asserted that the drift was absorbed. The mock's own calibrator
-says so as well: its benign prompts are drawn from one fixed token pool,
-so the mock's output does not change shape with the prompt, and
-"measuring it requires the `real` profile against Ollama".
+says the same thing and calls it a blind spot that stays open.
 
 The measurement is committed -- `fixtures/real_model_calibration.json` --
-and this test is what asserts it: a real model's ordinary answers stay
-under the threshold the code ships, and the divergent fixture crosses it.
+and this test is what asserts it. Two things are asserted, and they are
+not the same thing:
 
-The artifact is produced by the "Real model evidence" workflow, which runs
-the same calibration against Ollama whenever the reasoning layer is
-touched. This test reads the committed copy, so it needs no model and no
-network; the skip below is for a branch that does not carry the artifact.
+  * **No false positives.** A real model's ordinary answers stay under
+    the threshold the code ships. This holds, and it has to keep holding:
+    a benign prompt that reaches the threshold is a refusal, and the
+    agent is told the model had gone off the rails.
+
+  * **The gate can fire.** An off-distribution answer crosses the
+    threshold. This does *not* hold, and the measurement says why: the
+    monitor's whole range against a real model is 0.29 to 0.49, and the
+    threshold is 1.0. The gate is unreachable. That is a known failure,
+    recorded as a finding in `docs/FINDINGS.md`; the test below is
+    marked as expected-to-fail until the statistic is replaced or the
+    threshold is re-derived, and it is marked *strictly*, so a fix that
+    makes the gate fire has to come back here and remove the marker.
+
+The test reads the committed copy, so it needs no model and no network.
+A branch that does not carry the artifact skips rather than fails.
 """
 
 import json
@@ -80,11 +90,11 @@ def test_the_committed_result_used_the_shipped_monitor(result):
 
 
 def test_a_real_models_ordinary_answers_do_not_trip_the_gate(result):
-    """The guarantee the threshold's own comment only hopes for.
+    """The guarantee that holds, and has to keep holding.
 
-    A benign prompt that reaches the threshold is a refusal: the reasoning
-    layer would end an ordinary answer and tell the agent the model had
-    gone off the rails.
+    A benign prompt that reaches the threshold is a refusal: the
+    reasoning layer would end an ordinary answer and tell the agent the
+    model had gone off the rails.
     """
     benign = result["benign"]
     assert benign["false_positives"] == 0
@@ -94,11 +104,31 @@ def test_a_real_models_ordinary_answers_do_not_trip_the_gate(result):
     )
 
 
-def test_the_gate_still_fires_on_the_divergent_fixture(result):
-    assert result["divergent"]["peak_kl"] >= result["threshold"], (
-        "the divergent fixture did not reach the threshold on this backend, "
-        "so the gate would not have fired on it"
+def test_the_committed_result_records_the_gates_reach(result):
+    """How far the monitor can see is a measured fact, not an assumption.
+
+    The reach is the highest peak KL any off-distribution probe reached.
+    It is what the threshold has to sit below for the gate to fire at
+    all, so it is recorded and pinned here.
+    """
+    probes = result["probes"]
+    assert len(probes) >= 5
+    measured = [p["peak_kl"] for p in probes if p["peak_kl"] is not None]
+    assert measured, "no probe produced a measurement"
+    assert result["reach"] == max(measured)
+    assert any("shipped" in p["name"] for p in probes), (
+        "the shipped fixture is a probe: the gate has to be measured against "
+        "the prompt the demo actually uses"
     )
+
+
+def test_the_committed_result_says_whether_the_gate_holds(result):
+    """The verdict has to agree with the numbers it is a verdict about."""
+    verdict = result["verdict"]
+    reach = result["reach"]
+    assert verdict["benign_clean"] == (result["benign"]["false_positives"] == 0)
+    assert verdict["gate_fires"] == (reach is not None and reach >= result["threshold"])
+    assert verdict["reason"].strip()
 
 
 def test_the_committed_result_covers_the_held_out_prompts(result):
@@ -111,3 +141,25 @@ def test_the_committed_result_covers_the_held_out_prompts(result):
     for peak in benign["peaks"]:
         assert peak["prompt"].strip()
         assert peak["peak_kl"] >= 0.0
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "the divergence gate cannot fire against a real model: the monitor's "
+        "whole range is 0.29-0.49 and the threshold is 1.0 (FINDINGS.md, the "
+        "reasoning layer's divergence gate). Strict, so a fix has to come "
+        "back and remove this marker."
+    ),
+)
+def test_the_gate_fires_on_an_off_distribution_answer(result):
+    """The other half of the gate's promise, and the half that is broken.
+
+    An off-distribution answer -- another language, a hex dump, a
+    repetition loop -- has to cross the threshold. Against the mock it
+    did, and that is the only evidence the threshold ever had.
+    """
+    assert result["reach"] >= result["threshold"], (
+        f"the highest off-distribution probe reached {result['reach']}, "
+        f"below the threshold ({result['threshold']})"
+    )
