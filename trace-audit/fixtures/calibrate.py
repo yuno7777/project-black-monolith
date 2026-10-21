@@ -4,18 +4,31 @@
 Builds the baseline distribution from the diverse benign prompts in
 baseline_capture.py, then measures the peak rolling KL divergence of a set of
 *held-out* benign prompts (spanning factual Q&A, creative writing,
-step-by-step reasoning, and casual conversation) plus the divergent test
+step-by-step reasoning, casual conversation, code generation, technical
+explanation, summarization, and comparison) plus the divergent test
 fixture. Writes fixtures/calibration_results.md with the full table and the
-derived-threshold justification.
+derived-threshold justification, and --json writes the same measurement in a
+form a test can assert against.
 
-Deterministic (mock backend), so results are reproducible run to run. Usage:
+The default backend is the deterministic mock, so the results are reproducible
+run to run. The mock draws every token from one fixed pool, so its output does
+not change shape with the prompt -- the comment on HELD_OUT says so, and says
+that measuring a real model is the blind spot that stays open. A real backend
+is one environment variable away:
 
-    python fixtures/calibrate.py
+    MONOLITH_MODEL_BACKEND=ollama MONOLITH_OLLAMA_MODEL=qwen2.5:0.5b \
+        python fixtures/calibrate.py --output /tmp/real.md --json /tmp/real.json
+
+The script exits non-zero when the threshold the code ships does not hold for
+the backend it measured: every held-out benign prompt must stay under it, and
+the divergent fixture must cross it.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
+import json
 import os
 import statistics
 import sys
@@ -25,7 +38,6 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from src.config import load_config  # noqa: E402
 from src.divergence_monitor import (  # noqa: E402
-    DEFAULT_KL_THRESHOLD,
     DivergenceMonitor,
     build_distribution,
 )
@@ -144,9 +156,22 @@ def peak_kl(prompt: str, baseline: dict[str, int]) -> float:
     return asyncio.run(go())
 
 
-def main() -> None:
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Calibrate the divergence gate.")
+    parser.add_argument(
+        "--output",
+        default=os.path.join(os.path.dirname(__file__), "calibration_results.md"),
+        help="where to write the human-readable result",
+    )
+    parser.add_argument(
+        "--json",
+        default="",
+        help="where to write the machine-readable result (optional)",
+    )
+    args = parser.parse_args()
+
     baseline = build_baseline()
-    threshold = DEFAULT_KL_THRESHOLD
+    threshold = CFG.kl_threshold
 
     rows: list[tuple[str, str, float]] = []
     for category, prompts in HELD_OUT.items():
@@ -158,23 +183,32 @@ def main() -> None:
     std = statistics.pstdev(scores)
     divergent = peak_kl(DIVERGENCE_PROMPT, baseline)
     triggered = sum(1 for k in scores if k >= threshold)
+    styles = len(HELD_OUT)
+    backend = CFG.model_backend
+    model = CFG.ollama_model if backend == "ollama" else backend
+    if backend == "ollama":
+        reproduce = (
+            "MONOLITH_MODEL_BACKEND=ollama MONOLITH_OLLAMA_MODEL="
+            f"{CFG.ollama_model} python fixtures/calibrate.py"
+        )
+        backend_note = f"ollama backend, model `{model}`"
+    else:
+        reproduce = "python fixtures/calibrate.py"
+        backend_note = "deterministic mock backend"
 
     lines: list[str] = []
     lines.append("# TraceAudit — calibration results\n")
-    lines.append(
-        "_Reproduce with `python fixtures/calibrate.py` (deterministic mock "
-        "backend)._\n"
-    )
+    lines.append(f"_Reproduce with `{reproduce}` ({backend_note})._\n")
     lines.append("## Baseline\n")
     lines.append(
-        f"- Built from **{len(bc.NORMAL_PROMPTS)} benign prompts** across four "
-        f"styles → **{len(baseline)}** distinct baseline tokens, "
-        f"**{sum(baseline.values())}** total.\n"
+        f"- Built from **{len(bc.NORMAL_PROMPTS)} benign prompts** (four styles: "
+        f"factual, creative, step-by-step, casual) → **{len(baseline)}** distinct "
+        f"baseline tokens, **{sum(baseline.values())}** total.\n"
     )
     lines.append("## False-positive test — held-out benign prompts\n")
     lines.append(
-        f"{len(scores)} benign prompts (four styles), streamed through the full "
-        f"pipeline. Termination threshold = **{threshold}**.\n"
+        f"{len(scores)} benign prompts ({styles} styles), streamed through the "
+        f"full pipeline. Termination threshold = **{threshold}**.\n"
     )
     lines.append("| Prompt type | Prompt | Peak KL | Triggered |")
     lines.append("| :--- | :--- | ---: | :---: |")
@@ -205,20 +239,78 @@ def main() -> None:
         f"({max(scores):.4f}) and {threshold / divergent:.2f}× of the divergent "
         f"peak ({divergent:.4f}) — a wide margin on both sides.\n"
         f"- **Result: {triggered}/{len(scores)} benign prompts triggered "
-        f"termination.** The divergent fixture ({divergent:.4f}) crosses "
-        f"{threshold} decisively.\n"
+        f"termination.** The divergent fixture ({divergent:.4f}) "
+        + (
+            f"crosses {threshold} decisively.\n"
+            if divergent >= threshold
+            else f"does **not** cross {threshold} on this backend.\n"
+        )
     )
 
-    out_path = os.path.join(os.path.dirname(__file__), "calibration_results.md")
+    out_path = args.output
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
+
+    payload = {
+        "backend": backend,
+        "model": model,
+        "base_url": CFG.ollama_base_url if backend == "ollama" else "",
+        "threshold": threshold,
+        "monitor": {
+            "window_size": CFG.window_size,
+            "min_tokens_before_check": CFG.min_tokens_before_check,
+            "smoothing": CFG.smoothing,
+            "max_tokens": CFG.max_tokens,
+        },
+        "baseline": {
+            "prompts": len(bc.NORMAL_PROMPTS),
+            "tokens": sum(baseline.values()),
+            "vocab": len(baseline),
+        },
+        "benign": {
+            "count": len(scores),
+            "styles": styles,
+            "mean": mean,
+            "std": std,
+            "min": min(scores),
+            "max": max(scores),
+            "false_positives": triggered,
+            "peaks": [
+                {"category": category, "prompt": prompt, "peak_kl": peak}
+                for category, prompt, peak in rows
+            ],
+        },
+        "divergent": {"peak_kl": divergent},
+    }
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, sort_keys=True)
+            f.write("\n")
 
     print(f"benign: N={len(scores)} mean={mean:.4f} std={std:.4f} "
           f"min={min(scores):.4f} max={max(scores):.4f}")
     print(f"divergent fixture peak KL = {divergent:.4f}")
     print(f"threshold = {threshold} -> {triggered}/{len(scores)} benign false positives")
     print(f"wrote {out_path}")
+    if args.json:
+        print(f"wrote {args.json}")
+
+    # The verdict. A calibration that measures a gate and does not say
+    # whether the gate holds is a measurement, not a calibration.
+    benign_clear = triggered == 0
+    divergent_fires = divergent >= threshold
+    if not benign_clear or not divergent_fires:
+        print(
+            f"VERDICT FAILED on the {backend} backend: "
+            f"{triggered}/{len(scores)} benign prompts reached {threshold} "
+            f"(worst {max(scores):.4f}); the divergent fixture reached "
+            f"{divergent:.4f}.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"VERDICT OK on the {backend} backend: the gate holds.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

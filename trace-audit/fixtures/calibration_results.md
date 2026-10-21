@@ -4,11 +4,11 @@ _Reproduce with `python fixtures/calibrate.py` (deterministic mock backend)._
 
 ## Baseline
 
-- Built from **10 benign prompts** across four styles → **36** distinct baseline tokens, **800** total.
+- Built from **10 benign prompts** (four styles: factual, creative, step-by-step, casual) → **36** distinct baseline tokens, **800** total.
 
 ## False-positive test — held-out benign prompts
 
-36 benign prompts (four styles), streamed through the full pipeline. Termination threshold = **1.0**.
+36 benign prompts (8 styles), streamed through the full pipeline. Termination threshold = **1.0**.
 
 | Prompt type | Prompt | Peak KL | Triggered |
 | :--- | :--- | ---: | :---: |
