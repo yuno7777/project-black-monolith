@@ -38,6 +38,7 @@ Read it before starting work. Write to it while you work.
 | security | `feature/video-explainer` | the AEOS Guard explainer, rescued off a branch that was about to be deleted | pushed, 1 commit |
 | security | `fix/mcp-shield/baseline-persist-failure` | the tool layer's fail-open path discarded enforcement it had already computed (`FINDINGS.md` §5) | merged into `main` as PR #64 (`1b6e8ed`); the fix is proved by mutating it back to the old behaviour and watching the new test fail. The branch was rebased onto `main` after #60 and #62 merged, so its history was rewritten and it was force-pushed |
 | security | `fix/mcp-shield/malformed-tool-entry` | one malformed tool entry voided the whole `tools/list` defence for that server (`FINDINGS.md` §6) | PR #66 open; the fix is proved by mutating it back to the old behaviour — one defective entry rejecting the whole listing — and watching all six new tests fail. Branched off `main` at `1b6e8ed`; no history rewrite, so nothing was force-pushed |
+| security | `fix/dashboard/operational-failure-counts` | the console's headline number counted operational failures as attacks (`FINDINGS.md` documentation drift 4 and drift 5) | PR #79 open; the rule is one function in `dashboard/lib/event-classification.ts`, shared by the console and the session report, and `contracts/check_contracts.py` fails the build when a layer emits a type the dashboard has not classified. Branched off `origin/main` at `f42721d`, so it waits on no open PR |
 | integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI green on `b19513b` |
 | integrator | Dependabot | #24 merged (codeql-action); #15, #16 closed as superseded; #26 superseded by a direct hmac 0.13 migration | the queue is empty: **zero open PRs** |
 
@@ -101,6 +102,18 @@ to `main` by ref. Use a dedicated worktree for every branch.
 Free to claim: `vector-anchor/**`, `trace-audit/**`, `dashboard/app/api/operations/**`,
 `dashboard/app/api/benchmarks/**`, `docs/OPEN_QUESTIONS.md`, the Dependabot
 queue.
+
+**A new event type is now three edits, and the build checks all three.** The
+event envelope is deliberately open on `event_type` — a new detection must not
+need a schema change — so there is no enumeration for a new type to be
+checked against, and the console's headline number is only as good as the
+list of types it counts by. `contracts/check_contracts.py` now scans the
+layers' sources and fails the build when a layer emits a type the dashboard
+has not classified. So: emit it, classify it in
+`dashboard/lib/event-classification.ts`, and document it in
+[`EVENT_TYPES.md`](EVENT_TYPES.md). The check enforces "nothing may be emitted
+that has not been classified" and not the reverse, so a type can be classified
+before the layer that emits it ships.
 
 ## Standing work
 
