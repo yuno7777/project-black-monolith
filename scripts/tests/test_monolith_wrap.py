@@ -173,6 +173,26 @@ class TransportTests(unittest.TestCase):
         # A scheme that is not HTTP at all is not a transport we speak.
         self.assertFalse(credential_transport_is_trusted("ftp://dashboard.example.com", False))
 
+    def test_a_url_that_carries_a_credential_is_never_trusted(self):
+        # A password in the URL is a password in a log line, a proxy's
+        # request line and a process listing. The shared package's copy of
+        # this rule refuses it; the launcher's copy has to refuse it too,
+        # or the two rules have drifted.
+        self.assertFalse(
+            credential_transport_is_trusted("https://user:password@dashboard.example.com", False)
+        )
+        self.assertFalse(
+            credential_transport_is_trusted("https://user:password@dashboard.example.com", True)
+        )
+        # A fragment never reaches the server, so a credential there is a
+        # credential in the wrong place.
+        self.assertFalse(
+            credential_transport_is_trusted("https://dashboard.example.com#secret", False)
+        )
+        # No host to trust, and a URL too malformed to have one.
+        self.assertFalse(credential_transport_is_trusted("https:///api/sessions", False))
+        self.assertFalse(credential_transport_is_trusted("http://[::1", False))
+
     def test_the_session_report_is_skipped_when_the_token_would_travel_in_the_clear(self):
         buffer = io.StringIO()
         with redirect_stdout(buffer):

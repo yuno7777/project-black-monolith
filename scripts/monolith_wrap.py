@@ -189,13 +189,30 @@ def credential_transport_is_trusted(url: str, allow_insecure: bool) -> bool:
     token, so it answers the same way. The default is to refuse: a
     credential sent in cleartext to a remote host is a credential on the
     wire, and no configuration mistake should turn that on by accident.
+
+    This is a copy of `credential_transport_is_trusted` in the shared
+    Python package, and it is a copy because the launcher is standard
+    library only: it runs on the agent's host, where the shared package
+    is not installed. Keep the two answers identical — a rule that has
+    drifted is a credential that thought it was safe.
     """
-    parsed = urllib.parse.urlparse(url)
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        host = parsed.hostname
+    except ValueError:
+        return False
+    # A URL that carries credentials in it is never trusted: the secret
+    # would end up in a log line, a proxy's request line and a process
+    # listing, and none of those are places a credential belongs. A
+    # fragment never reaches the server, so a credential there is a
+    # credential in the wrong place.
+    if not host or parsed.username or parsed.password or parsed.fragment:
+        return False
     if parsed.scheme == "https":
         return True
     if parsed.scheme != "http":
         return False
-    if _is_loopback_host(parsed.hostname or ""):
+    if _is_loopback_host(host):
         return True
     return allow_insecure
 
