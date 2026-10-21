@@ -42,6 +42,7 @@ Read it before starting work. Write to it while you work.
 | security | `fix/mcp-shield/malformed-tool-entry` | one malformed tool entry voided the whole `tools/list` defence for that server (`FINDINGS.md` §6) | merged into `main` as PR #66 (`f42721d`); the fix is proved by mutating it back to the old behaviour — one defective entry rejecting the whole listing — and watching all six new tests fail. Branched off `main` at `1b6e8ed`; no history rewrite, so nothing was force-pushed |
 | integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI green on `b19513b` |
 | integrator | Dependabot | #24 merged (codeql-action); #15, #16 closed as superseded; #26 superseded by a direct hmac 0.13 migration | the queue is empty: **zero open PRs** |
+| credential-transport | `fix/trace-audit/model-credential-transport` | the transport rule for the model credential the Anthropic gateway forwards upstream: the rule the modules already apply to their own delivery, applied to the one credential that had none (`FINDINGS.md` test gap 5) | one commit (`139aa0d`), proved by mutating the check out and watching the two refusal tests fail with "the credential must not leave over plain HTTP". Stacked on `fix/gateway-review-fixes`, so it rebases onto `main` after that merges. Worktree `C:/Users/Abhi/Desktop/monolith-wt/credential-transport` |
 
 The project is moving to user-facing features. The work below is the
 security and operations tail; the board is here so it is not lost.
@@ -109,6 +110,7 @@ to `main` by ref. Use a dedicated worktree for every branch.
 | `contracts/openapi.yaml` | security | corrected the revocation snapshot wording — that branch is merged; `gateway-review` has since touched the same file, so the two rows are both live |
 | `main` | integrator | Merges and verification only; branch work happens in a worktree. |
 | `python-common/monolith_events/events.py`, `trace-audit/src/config.py`, `trace-audit/src/main.py`, `trace-audit/src/events.py` | credential-transport | the model credential's transport rule: the rule the modules already apply to their own delivery, applied to the credential the Anthropic gateway forwards upstream. Stacked on `fix/gateway-review-fixes`, so it rebases onto `main` after that merges. `python-common/monolith_events/events.py` overlaps the `silent-defenses` claim, but the two touch different functions |
+| `scripts/monolith_wrap.py`, `scripts/tests/test_monolith_wrap.py` | credential-transport | the launcher's standard-library-only copy of the transport rule, brought into line with the shared one (`80f84f6`). Overlaps the `gateway-review` claim on the same file, and it is stacked on that branch, so the change rides on top of it rather than racing it |
 
 Free to claim: `vector-anchor/**` (apart from the two files above),
 `trace-audit/**` (apart from the four files above),
@@ -139,6 +141,18 @@ delivery target (§11), and the dashboard listener's missing reconnect (§9).
 Each is one commit, and each is proved by a test that fails before the fix
 and passes after it.
 
+The credential-transport branch closed one more of the survey's items, and
+it is worth reading the way it was reported: test gap 5 said the rule
+deciding whether a credential may travel over plain HTTP to the upstream
+model was "neither present nor tested", and the half that matters was the
+first one. The rule did not exist. The model credential — the client's own
+`x-api-key`, or the operator's fallback key — went to whatever
+`MONOLITH_ANTHROPIC_BASE_URL` named, over whatever scheme that named, and
+every other credential this system sends is held to a rule it did not
+answer to. It is now held to the same rule, in the same place, and the
+launcher's copy of the rule was brought back into line with the shared one
+because the two had drifted. `FINDINGS.md` §12 has the detail.
+
 ### The revocation snapshot is paged now (read this before touching it)
 
 `GET /api/sessions/revoked` answers with either the whole set or one page of
@@ -162,6 +176,51 @@ they had until the whole snapshot has been read.
 otherwise carries `revoked_sessions_total` alone. An old module that reads
 that response keeps the set it had, which is what it already did; a module
 that understands the contract reads the paged snapshot.
+
+### One transport rule for every credential (read this before touching it)
+
+There is exactly one rule, and it is in one place:
+`credential_transport_is_trusted()` in `python-common/monolith_events/events.py`.
+It answers one question — *may a credential be sent to this address over this
+scheme?* — and the answer is: **HTTPS everywhere; plain HTTP only to a
+loopback address, and only when the operator has said the network is
+trusted.** A URL that carries credentials in it, or a fragment, is never
+trusted.
+
+Four callers now use it, and they are the four places a credential leaves
+this system:
+
+| Caller | Credential | Where |
+| --- | --- | --- |
+| `EventOutbox` | the module's ingest token | `python-common/monolith_events/events.py` |
+| `RevokedSessionPoller` | the module's ingest token | `python-common/monolith_events/events.py` |
+| the Anthropic gateway | the model's credential | `trace-audit/src/main.py` |
+| the launcher | the agent's endpoint | `scripts/monolith_wrap.py` |
+
+The Rust side has its own copy of the same rule, for the same reason it has
+its own copy of the outbox: `mcp-shield/src/outbox.rs` and
+`mcp-shield/src/http_transport.rs`.
+
+**Do not add a fifth rule and do not add a third copy of this one.** A new
+credential gets the shared function, not a regex of its own. A copy is a
+place where the rule can drift, and a drifted rule is a credential that
+thought it was safe.
+
+Two things to know when you touch the gateway's use of it:
+
+- **The check is on the URL that will actually be used**, not on the
+  configured base. `build_upstream_request()` derives the URL, and a
+  derivation that changed the host could otherwise step around a check made
+  against the base.
+- **The refusal happens before the request is built.** A request to an
+  untrusted upstream is answered `503` and never leaves; a ledger row
+  (`upstream_transport_refused`) says why, once per process, because the
+  cause is the operator's configuration and not the caller.
+
+The escape hatch is `MONOLITH_ALLOW_INSECURE_ANTHROPIC=true`, and it has to be
+spelled out by name. An operator whose model service is genuinely on a
+trusted network can say so; an operator who has mistyped a host cannot enable
+it by accident.
 
 The eleven findings from the agent-gateway review are all fixed and recorded in
 [`FINDINGS.md`](FINDINGS.md) under *The agent-gateway review*, with the commit

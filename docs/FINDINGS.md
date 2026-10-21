@@ -268,6 +268,51 @@ spooled, so the event is lost entirely rather than being delivered late.
 When no dashboard URL is configured, the fallback target is the SSE endpoint
 with an empty credential, so every event dead-letters.
 
+### 12. The model credential had no transport rule at all
+
+**Status:** fixed (`139aa0d`, `80f84f6`). **Where:**
+`trace-audit/src/anthropic_gateway.py`, `python-common/monolith_events/events.py`.
+**Effort:** medium. **Found as** test gap 5 below, whose "neither present"
+half was the real finding.
+
+Every credential this system sends is held to one rule: HTTPS everywhere,
+plain HTTP only to a loopback address, and only when the operator has said
+the network is trusted. The Python outbox applies it to the dashboard, the
+shared poller to the revocation endpoint, the Rust spool to its own
+delivery, and the launcher to the endpoint it points the agent at.
+
+**The model credential was the one with no rule.** The Anthropic gateway
+attaches the client's own `x-api-key` — or the operator's configured
+fallback key — to a request whose URL comes from
+`MONOLITH_ANTHROPIC_BASE_URL`, and forwards it. Nothing checked the
+transport. A mistyped base URL, or one naming a host that resolved
+somewhere else, put the credential on the wire in cleartext, in front of
+whoever answered.
+
+The rule is now applied to that credential too, on the URL that will
+actually be used rather than on the configured base, so a derivation that
+changed the host could not quietly step around it. A request to a
+plain-HTTP upstream that is not loopback is refused with `503` **before it
+leaves** — refusing after the bytes are on the wire is not refusing — and
+the refusal is recorded once as `upstream_transport_refused`, because the
+cause is the operator's configuration and a retrying agent would otherwise
+write a ledger row per retry. The escape hatch is
+`MONOLITH_ALLOW_INSECURE_ANTHROPIC=true`, spelled out by name, so a
+mistyped host cannot enable it by accident.
+
+The rule is not a new copy. `_safe_delivery_url` in the shared package
+became the public `credential_transport_is_trusted`, and the gateway
+imports it from there. The second commit (`80f84f6`) brought the
+launcher's standard-library-only copy into line with it: the two had
+drifted, and the launcher accepted a URL carrying a password in it that
+the shared rule refused.
+
+**Residual, stated honestly:** the rule is about the *transport*. A
+credential sent over HTTPS to a host the operator named is still a
+credential handed to that host, and the rule says nothing about whether
+that host deserves it. Pinning the upstream to a known address, and
+failing when it changes, is a larger change and is not done here.
+
 ---
 
 ## The agent-gateway review
@@ -348,7 +393,7 @@ regression would be invisible.
 | 2 | The entire triage write path is untested: validation, state change, audit trail. | `dashboard/app/api/triage/**` | medium |
 | 3 | The incident-queue read path is untested: filter parsing, keyset pagination, counts. | `dashboard/lib/incident-store.ts` | medium |
 | 4 | The detector-reset path is untested end to end, on both sides of the wire. | `vector-anchor`, `dashboard` | medium |
-| 5 | The rule deciding whether a credential may travel over plain HTTP to the upstream model is neither present nor tested. | `trace-audit/src/anthropic_gateway.py` | medium |
+| 5 | The rule deciding whether a credential may travel over plain HTTP to the upstream model is neither present nor tested. | `trace-audit/src/anthropic_gateway.py` | **closed** — `139aa0d`; the rule was *missing*, not merely untested, and it now exists in one place and is applied to the model credential |
 | 6 | TraceAudit's prompt projection drops every non-text content block, and is never tested against one. | `trace-audit/src/anthropic_gateway.py` | medium |
 | 7 | The divergence detector's real-model behaviour is asserted by no committed result. | `trace-audit/fixtures/` | medium |
 | 8 | The production Postgres branch of the session list is never executed by any test. | `dashboard/app/api/sessions/route.ts` | medium |
