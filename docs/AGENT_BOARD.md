@@ -94,6 +94,8 @@ to `main` by ref. Use a dedicated worktree for every branch.
 | `contracts/openapi.yaml` | security | corrected the revocation snapshot wording |
 | `main` | integrator | Merges and verification only; branch work happens in a worktree. |
 | `dashboard/app/page.tsx`, `dashboard/app/components/**` | operational-counts | the console's headline numbers: an operational failure — a truncated answer, a refused session — is not an attack, and the overview KPI counts it as one (`FINDINGS.md` documentation drift 4 and drift 5). Branched off `origin/main`, so it does not wait on any open PR |
+| `dashboard/lib/event-classification.ts`, `dashboard/lib/session-report.ts`, `dashboard/test/event-classification.test.ts`, `dashboard/package.json` | operational-counts | the same drift, on the read side: one shared rule for what counts as a detection, shared by the session report and the console. `session-report.ts` is claimed here only for the classification call — its queries, its blocks and its evidence are not in scope |
+| `contracts/check_contracts.py` | operational-counts | the event-type check: a layer that emits a type the dashboard has not classified fails the build, and the documentation is checked against the same list |
 
 Free to claim: `vector-anchor/**`, `trace-audit/**`, `dashboard/app/api/operations/**`,
 `dashboard/app/api/benchmarks/**`, `docs/OPEN_QUESTIONS.md`, the Dependabot
