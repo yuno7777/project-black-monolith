@@ -109,7 +109,7 @@ The crate is validated in CI (`.github/workflows/ci.yml`, job `secret-boundary`)
 * `cargo fmt --all -- --check`: **enforced**
 * `cargo clippy --locked --all-targets -- -D warnings`: **enforced**
 * `cargo build --locked`: **enforced**
-* `cargo test --locked`: **73 tests pass** (32 unit tests in `src/`, 21 integration tests in `tests/boundary_tests.rs`, 20 integration tests in `tests/onepassword_provider_tests.rs`)
+* `cargo test --locked`: **79 tests pass** (38 unit tests in `src/`, 21 integration tests in `tests/boundary_tests.rs`, 20 integration tests in `tests/onepassword_provider_tests.rs`) — the 2026-10-21 run; the command prints the current number
 
 ### Runtime Limitations & Boundaries:
 * **TLS Provider**: The production HTTPS transport is `ReqwestHttpsTransport` (in the `mcp-shield` crate), which uses `reqwest` with `rustls` and the platform certificate verifier. Certificate and hostname verification are enforced; an untrusted or mismatched certificate fails the operation closed. The trust store cannot be extended from the boundary configuration, so an endpoint served by a private CA is not reachable through the boundary. This crate also provides `StdTcpHttpTransport` (which fails closed safely for HTTPS, since it has no TLS engine) and `MockHttpTransport` (for deterministic offline testing).
