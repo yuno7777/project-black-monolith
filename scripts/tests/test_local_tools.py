@@ -110,10 +110,16 @@ class LocalToolsTests(unittest.TestCase):
     def test_cleanup_stops_spawned_descendant(self):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory)
+            # The port is published with a rename, not a write: the file has
+            # to appear already carrying its content. A plain write creates
+            # the file first and fills it afterwards, and a reader that sees
+            # the name can still read an empty file — which is how this test
+            # failed at random, on a machine with something else running.
             listener_code = (
-                "import socket,time,pathlib; "
+                "import os,socket,time,pathlib; "
                 "s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen(); "
-                "pathlib.Path('ready').write_text(str(s.getsockname()[1])); time.sleep(60)"
+                "pathlib.Path('ready.tmp').write_text(str(s.getsockname()[1])); "
+                "os.replace('ready.tmp','ready'); time.sleep(60)"
             )
             parent_code = (
                 "import subprocess,sys; "
