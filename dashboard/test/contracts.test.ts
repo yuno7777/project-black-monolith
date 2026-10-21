@@ -28,9 +28,8 @@ import {
   ExternalAuthUnavailable,
   externalIdentityFromClaims,
 } from "../lib/external-auth";
-import { normalizeModuleLedgerHealth } from "../lib/operations-store";
+import { moduleStatsUrl, normalizeModuleLedgerHealth } from "../lib/operations-store";
 import { alertConfigStatus } from "../lib/alert-config";
-import { moduleStatsUrl } from "../app/api/operations/route";
 
 /**
  * Run a body with environment variables set, then put them back.
