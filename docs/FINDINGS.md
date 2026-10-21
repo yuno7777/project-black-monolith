@@ -260,7 +260,61 @@ regression would be invisible.
 | 7 | The divergence detector's real-model behaviour is asserted by no committed result. | `trace-audit/fixtures/` | medium |
 | 8 | The production Postgres branch of the session list is never executed by any test. | `dashboard/app/api/sessions/route.ts` | medium |
 | 9 | The benchmark ledger's write and read paths are untested, route included. | `dashboard/lib/benchmark-store.ts` | small |
-| 10 | The two functions the memory-layer detector's hot path depends on are untested; the one that is tested is not on the hot path. | `vector-anchor/src/frequency_tracker.py` | small |
+| 10 | ~~The two functions the memory-layer detector's hot path depends on are untested; the one that is tested is not on the hot path.~~ **closed** | `vector-anchor/src/frequency_tracker.py` | small |
+
+### The memory layer's hot path (gap 10)
+
+`vector-anchor/tests/test_embedding.py` and
+`vector-anchor/tests/test_frequency_tracker.py` — sixteen new tests over
+`normalize` and `unit_dot`, and three over the tracker's use of them.
+
+The gap was not that a function was untested. It was that the *wrong* one
+was. `cosine` — the validating, three-pass version — had a test; the two
+functions every comparison in the detector actually goes through, `normalize`
+and `unit_dot`, had none. `unit_dot` is deliberately unvalidated, and the
+reason that is safe is that its inputs were normalized once on admission and
+validated where they entered the detector. That contract existed only in a
+docstring.
+
+- **`normalize` yields a unit vector,** leaves a zero vector alone rather
+  than dividing by its norm, does not touch its input, and returns a copy of
+  it — the zero vector is the one case where the result could alias the
+  input, and an aliased result would let a caller mutate detector state by
+  accident.
+- **`normalize` preserves direction and is scale-invariant,** so it agrees
+  with `cosine` at every scale. That is the whole reason the design is safe
+  to do: cosine similarity does not depend on the length of the vector, so a
+  vector can be normalized once and compared with a plain dot product
+  afterwards.
+- **`unit_dot` equals `cosine` for normalized vectors,** refuses vectors of
+  different lengths rather than comparing a prefix of one with the other, and
+  is *not* scale-invariant. That last one is a precondition, not a wart: it
+  is what makes `unit_dot` and `cosine` different functions, and a reader
+  who assumed otherwise would be wrong about what the detector measures.
+- **The hot path really is the unvalidated one.** `unit_dot` accepts values
+  `cosine` rejects, because its inputs were checked where they entered the
+  detector. A change that quietly routed it through `cosine` would restore
+  the per-call validation the split exists to avoid, and would not fail any
+  test about similarity.
+- **The tracker normalizes on both ways in.** The record path and the
+  snapshot-restore path each normalize, so the detector's answer does not
+  depend on the length of the query embedding the caller happened to hand
+  over, and a restored snapshot agrees with the live tracker it came from.
+
+Eight mutations prove it: `normalize` not normalizing, mutating its input,
+aliasing the zero vector and not being idempotent; `unit_dot` truncating
+instead of refusing and validating like `cosine`; and the record path and the
+restore path each stopping to normalize — each breaks exactly the test that
+claims to hold that guarantee.
+
+**The performance claim is deliberately not asserted.** `EVALUATION.md`
+records that the validating `cosine` costs several times as much per call,
+and that measurement is the reason for the split. A timing assertion in a
+unit test fails on a noisy machine, and a benchmark that fails teaches people
+to ignore failures — the same reason the MCP-Shield benchmark is `#[ignore]`d
+and the vector-anchor one is not in CI. What the tests hold instead is the
+*reason* the fast path is safe, which is a property of the code and not of
+the machine it runs on.
 
 ---
 
@@ -365,3 +419,10 @@ up.
   drops when it runs out is a detection that has not been delivered yet. The
   cap now says what it is — a bound on one file — and a test holds the two
   budgets apart, so the property cannot be given away by accident.
+- **The memory layer's hot path had no tests at all** (§10 above). The
+  validating `cosine` was tested and the two functions the detector actually
+  compares with were not, so the contract that made the unvalidated
+  `unit_dot` safe existed only in a docstring. Fixed in PR #72: sixteen
+  tests over `normalize` and `unit_dot` and three over the tracker's use of
+  them, each proved by mutating the behaviour back and watching the test
+  that claims to hold it fail.

@@ -21,10 +21,10 @@ def emb(text: str):
     return EF([text])[0]
 
 
-def make_tracker():
+def make_tracker(topic_similarity: float = 0.30):
     return FrequencyTracker(
         min_distinct_topics=4,
-        topic_similarity=0.30,
+        topic_similarity=topic_similarity,
         retention_horizon=500,
         max_queries_per_doc=64,
     )
@@ -216,3 +216,59 @@ def test_recorded_embeddings_are_not_mutated_by_the_caller():
     vector[:] = [0.0, 1.0]
 
     assert tracker._docs["doc"].queries[0] == [1.0, 0.0]
+
+
+def test_the_detector_does_not_depend_on_the_scale_of_a_query_embedding():
+    """The tracker's comparisons are plain dot products, which only equal
+    cosine for unit vectors. Normalizing once on admission is what makes that
+    safe, and this is the property that proves it: the answer must not change
+    when the caller hands over a longer vector."""
+    plain = make_tracker(topic_similarity=0.7)
+    scaled = make_tracker(topic_similarity=0.7)
+    # These two are 0.6 apart — under the 0.7 threshold, so two topics.
+    plain.record_query(["doc"], [1.0, 0.0])
+    plain.record_query(["doc"], [0.6, 0.8])
+    # The same first query, ten times longer. Unnormalized, its dot product
+    # with the second query is 6.0 and the two would collapse into one topic.
+    scaled.record_query(["doc"], [10.0, 0.0])
+    scaled.record_query(["doc"], [0.6, 0.8])
+
+    assert plain.distinct_topic_count("doc") == 2
+    assert scaled.distinct_topic_count("doc") == 2
+
+
+def test_a_restored_snapshot_normalizes_its_vectors():
+    """The snapshot is the tracker's other way in, so it has to normalize
+    too. A restored vector that was not normalized would be compared with a
+    dot product as if it were a unit vector, and the threshold would mean
+    something else."""
+    data = {
+        "version": 2,
+        "next_query_id": 2,
+        "documents": {"doc": {"0": [10.0, 0.0], "1": [0.6, 0.8]}},
+    }
+    restored = FrequencyTracker.from_snapshot(
+        data,
+        min_distinct_topics=4,
+        topic_similarity=0.7,
+        retention_horizon=500,
+        max_queries_per_doc=64,
+    )
+
+    assert restored.snapshot()["documents"]["doc"]["0"] == pytest.approx([1.0, 0.0])
+    assert restored.distinct_topic_count("doc") == 2
+
+
+def test_a_restored_snapshot_agrees_with_the_live_tracker():
+    tracker = make_tracker(topic_similarity=0.7)
+    for vector in ([1.0, 0.0], [0.6, 0.8], [0.0, 1.0]):
+        tracker.record_query(["doc"], vector)
+    restored = FrequencyTracker.from_snapshot(
+        tracker.snapshot(),
+        min_distinct_topics=4,
+        topic_similarity=0.7,
+        retention_horizon=500,
+        max_queries_per_doc=64,
+    )
+
+    assert restored.distinct_topic_count("doc") == tracker.distinct_topic_count("doc")

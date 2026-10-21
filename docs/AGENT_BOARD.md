@@ -42,11 +42,35 @@ Read it before starting work. Write to it while you work.
 | security | `docs/stale-test-counts` | every test count the documentation carried was wrong (`FINDINGS.md` documentation drift 6) | PR #81 open; the numbers are dated snapshots and the command is the authority |
 | security | `fix/mcp-shield/spool-byte-cap-doc` | the Rust spool's byte cap claimed to bound the spool and bounded one file at a time (`FINDINGS.md` documentation drift 1) | PR #80 open; the two budgets are held apart by a test, and the test fails when they are shared |
 | dashboard | `fix/dashboard/operational-failure-counts` | the console's headline number counted severities, so a broken upstream read as an attack (`FINDINGS.md` documentation drifts 4 and 5) | PR #79 open; the split is by event type, in one module the console and its tests both read |
+| security | `fix/vector-anchor/hot-path-tests` | the memory layer's hot path had no tests: the validating `cosine` was tested and the two functions the detector actually compares with were not (`FINDINGS.md` test gap 10) | PR #72 open; 19 tests, each proved by mutating the behaviour back and watching the test that claims to hold it fail. Worktree `C:/Users/Abhi/Desktop/monolith-wt/hot-path`, branched off `origin/main` (`f42721d`). The source is not modified — only the tests |
 | integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI green on `b19513b` |
 | integrator | Dependabot | #24 merged (codeql-action); #15, #16 closed as superseded; #26 superseded by a direct hmac 0.13 migration | the queue is empty: **zero open PRs** |
 
 The project is moving to user-facing features. The work below is the
 security and operations tail; the board is here so it is not lost.
+
+### The memory layer's hot path is `normalize` and `unit_dot`, not `cosine`
+
+The detector compares embeddings on every retrieval, and it compares them
+with `unit_dot` — a plain dot product — because vectors are normalized once
+on admission. `cosine`, the validating version, is **not** on that path; its
+only caller is the test suite.
+
+That split is why `unit_dot` is allowed to skip validation: its inputs were
+checked where they entered the detector (`record_query` and
+`from_snapshot`), and normalized there too. Two things follow for whoever
+touches it next.
+
+- **A new caller of `unit_dot` must normalize first.** `unit_dot` is not
+  scale-invariant — `unit_dot([2, 0], [1, 0])` is `2.0`, not `1.0` — and the
+  threshold the detector compares against is a cosine.
+- **There is deliberately no timing assertion.** `EVALUATION.md` records
+  that `cosine` costs several times as much per call, and that measurement is
+  why the split exists. A timing assertion in a unit test fails on a noisy
+  runner, and a benchmark that fails teaches people to ignore failures —
+  the same reason the MCP-Shield benchmark is `#[ignore]`d and the
+  vector-anchor one is not in CI. The measurement lives in `EVALUATION.md`;
+  the tests hold the *reason* the fast path is safe.
 
 ### Requirement floors now match their locks (resolved)
 
@@ -125,9 +149,11 @@ directory holds at most twice the cap**, 32 MiB by default.
 | `dashboard/lib/login-rate-limit.ts`, `dashboard/scripts/dispatch-alerts.mjs` | security | rate limiting and alert delivery |
 | `supabase/migrations/**` | security | retention scoping migration |
 | `contracts/openapi.yaml` | security | corrected the revocation snapshot wording |
+| `vector-anchor/tests/test_embedding.py`, `vector-anchor/tests/test_frequency_tracker.py` | security | the memory layer's hot path. Reads `vector-anchor/src/embedding.py` and `vector-anchor/src/frequency_tracker.py` but does not modify either |
 | `main` | integrator | Merges and verification only; branch work happens in a worktree. |
 
-Free to claim: `vector-anchor/**`, `trace-audit/**`, `dashboard/app/api/operations/**`,
+Free to claim: `vector-anchor/**` (apart from the detector's hot path, above),
+`trace-audit/**`, `dashboard/app/api/operations/**`,
 `dashboard/app/api/benchmarks/**`, `docs/OPEN_QUESTIONS.md`, the Dependabot
 queue.
 
