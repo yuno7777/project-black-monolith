@@ -34,6 +34,7 @@ Read it before starting work. Write to it while you work.
 
 | Agent | Branch | Working on | State |
 | --- | --- | --- | --- |
+| aws-secret-key | `fix/mcp-shield/aws-secret-key-detector` | standing work #6: the AWS secret access key, the one credential shape the outbound DLP did not cover | one commit, seven tests. The detector asks for the shape **and** the label, because the shape alone has the false-positive rate the board warned about. Proved by mutating the detector back to the old behaviour: the four detection tests fail and the three false-positive guards still pass. Worktree `C:/Users/Abhi/Desktop/monolith-wt/aws-secret-key`, branched off `origin/main` (`f42721d`) |
 | security | `fix/security-hardening` | retention scoping, evidence verification, fail-closed admin, DLP coverage, breaker batching, baseline locking | merged into `main` (`3634d23`); branch kept until cleanup |
 | security | `feature/video-explainer` | the AEOS Guard explainer, rescued off a branch that was about to be deleted | pushed, 1 commit |
 | security | `fix/mcp-shield/baseline-persist-failure` | the tool layer's fail-open path discarded enforcement it had already computed (`FINDINGS.md` §5) | merged into `main` as PR #64 (`1b6e8ed`); the fix is proved by mutating it back to the old behaviour and watching the new test fail. The branch was rebased onto `main` after #60 and #62 merged, so its history was rewritten and it was force-pushed |
@@ -114,7 +115,45 @@ reader's lead, not yet checked). The items below are the board's own list.
 | 3 | Every revocation snapshot is truncated at 64 KiB, so past ~1,700 live revocations the modules keep a stale set forever and the breaker fails open. | `dashboard/app/api/ingest/route.ts`, `python-common`, `mcp-shield` | **high** — see `FINDINGS.md` §3 |
 | 4 | The MCP-Shield status listener falls back to the module's ingest token as its admin credential. | `mcp-shield/src/main.rs` | medium — see `FINDINGS.md` §4 |
 | 5 | The ingest response carries the tenant's whole revocation set on every request, so the payload grows with the total number of quarantines. The fix needs the dashboard *and* `python-common` to agree on snapshot-versus-delta. | `dashboard/app/api/ingest/route.ts`, `python-common/monolith_events/events.py` | low — contract change |
-| 6 | The AWS secret access key has no detector. Deliberately: 40 characters of base64 has a false-positive rate that would hard-block ordinary calls. Needs a shape-aware detector, not a regex. | `mcp-shield/src/sanitizer.rs` | low |
+| 6 | ~~The AWS secret access key has no detector. Deliberately: 40 characters of base64 has a false-positive rate that would hard-block ordinary calls. Needs a shape-aware detector, not a regex.~~ **Fixed** by `fix(mcp-shield): detect an AWS secret access key by its shape and its label`: the detector asks for the shape **and** the label that names it, so the false positive the board warned about never reaches enforce mode. | `mcp-shield/src/sanitizer.rs` | low — see *The AWS secret access key detector* below |
+
+### The AWS secret access key detector (read this before touching it)
+
+The AWS secret access key is the one credential shape the outbound DLP did
+not cover, and it was left uncovered on purpose: it has no prefix, so a
+pattern for it is forty characters of base64 alphabet, and that shape has a
+false-positive rate high enough to hard-block ordinary calls in enforce
+mode. A detector that blocks ordinary calls is worse than one that misses a
+credential, so the shape alone was never going to be enough.
+
+The detector therefore asks for two things, and neither is enough alone:
+
+- **The shape.** Exactly 40 characters from the base64 alphabet, holding at
+  least one uppercase letter, one lowercase letter and one digit. The mix
+  requirement is what keeps a 40-character hex digest out — a git SHA-1, a
+  checksum — because a digest is written in one case and a random key of
+  this length is not. The run has to be *maximal*, so a 44-character base64
+  blob (the length of a base64-encoded SHA-256, and the most common thing
+  in a lock file) is not a 40-character key with four characters around it.
+- **The context.** A label that names an AWS secret, either the key the
+  value sits under or a marker in the same string. The label is threaded
+  through the scan as the path of keys, so `{"aws_secret_access_key": "…"}`
+  and `{"provider": {"credentials": {"awsSecretAccessKey": "…"}}}` both
+  count, and so does `aws configure set aws_secret_access_key …` in a
+  command string.
+
+**The known limit.** A 40-character value under a label that does *not*
+name AWS is not detected. Without the label it is indistinguishable from a
+random blob, and a detector that flagged it would be the false positive
+this work existed to avoid. A secret passed under a generic label
+(`password`, `token`) is therefore still missed, and that is a deliberate
+trade rather than an oversight.
+
+The fixtures are assembled at runtime, never written out: a contiguous
+40-character credential-shaped literal in the source is a finding for the
+secret scanner, and push protection blocks the push even though the value
+is the published AWS example. The bytes handed to the detector are
+identical either way.
 
 Done: the module dead-letter replay is now scoped to one tenant across the
 dashboard, both module endpoints, the shared Python outbox and the Rust spool
