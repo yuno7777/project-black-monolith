@@ -280,24 +280,25 @@ def check_event_vocabulary() -> None:
             + "; ".join(sorted(unverifiable))
         )
 
-    if DOC_PATH.is_file():
-        documented = read_documented_types(DOC_PATH)
-        missing = sorted(set(vocabulary) - set(documented))
-        if missing:
-            raise AssertionError(
-                "these event types are classified but not documented: "
-                + ", ".join(missing)
-                + f" -- add each to {DOC_PATH.relative_to(REPO)}"
-            )
-        wrong = sorted(
-            f"{name} (documented as {documented[name]}, classified as {vocabulary[name]})"
-            for name in vocabulary
-            if name in documented and documented[name] != vocabulary[name]
+    if not DOC_PATH.is_file():
+        raise AssertionError(f"the event vocabulary is not documented: {DOC_PATH}")
+    documented = read_documented_types(DOC_PATH)
+    missing = sorted(set(vocabulary) - set(documented))
+    if missing:
+        raise AssertionError(
+            "these event types are classified but not documented: "
+            + ", ".join(missing)
+            + f" -- add each to {DOC_PATH.relative_to(REPO)}"
         )
-        if wrong:
-            raise AssertionError(
-                "these event types are documented with a different class: " + "; ".join(wrong)
-            )
+    wrong = sorted(
+        f"{name} (documented as {documented[name]}, classified as {vocabulary[name]})"
+        for name in vocabulary
+        if name in documented and documented[name] != vocabulary[name]
+    )
+    if wrong:
+        raise AssertionError(
+            "these event types are documented with a different class: " + "; ".join(wrong)
+        )
 
 
 def read_documented_types(path: Path) -> dict[str, str]:
