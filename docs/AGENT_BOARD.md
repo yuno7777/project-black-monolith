@@ -110,7 +110,7 @@ reader's lead, not yet checked). The items below are the board's own list.
 
 | # | Item | Where | Priority |
 | --- | --- | --- | --- |
-| 1 | The reasoning layer's KL divergence is off in every shipped configuration: nothing ever writes the baseline's `model` key, so the gate can never open. | `trace-audit/src/main.py` | **high** — see `FINDINGS.md` §1 |
+| 1 | The reasoning layer's KL divergence never fires. Two separate reasons: nothing ever writes the baseline's `model` key, so the gate is never armed (`FINDINGS.md` §1); and the shipped threshold of 1.0 sits **above** the monitor's own ceiling for a real model (0.587), so it could not fire even when armed (`FINDINGS.md` §12, on the calibration branch, PR #76). **Unclaimed — this is the next item.** | `trace-audit/src/main.py`, `trace-audit/src/divergence_monitor.py` | **high** |
 | 2 | A notification failure rolls back the evidence it was raised for: the alert-job row shares the security event's transaction. | `dashboard/lib/event-store.ts` | **high** — see `FINDINGS.md` §2 |
 | 3 | Every revocation snapshot is truncated at 64 KiB, so past ~1,700 live revocations the modules keep a stale set forever and the breaker fails open. | `dashboard/app/api/ingest/route.ts`, `python-common`, `mcp-shield` | **high** — see `FINDINGS.md` §3 |
 | 4 | The MCP-Shield status listener falls back to the module's ingest token as its admin credential. | `mcp-shield/src/main.rs` | medium — see `FINDINGS.md` §4 |
