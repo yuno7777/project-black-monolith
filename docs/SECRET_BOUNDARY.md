@@ -186,15 +186,18 @@ The boundary emits four new event types through the standard mcp-shield event pi
 Run all test suites offline:
 
 ```bash
-# 1. MCP-Shield test suite (88 tests: 64 existing + 24 secret boundary integration)
+# The counts below are what these suites ran on 2026-10-21. The command
+# prints the current number, and the command is the authority.
+
+# 1. MCP-Shield test suite (136 unit + 8 integration)
 cd mcp-shield
 cargo test --locked
 
-# 2. Secret Boundary standalone crate test suite (73 tests)
+# 2. Secret Boundary standalone crate test suite (79 tests)
 cd ../crates/pbm-secret-boundary
 cargo test --locked
 
-# 3. Python common tests (18 tests)
+# 3. Python common tests (37 tests)
 cd ..
 python -c "import sys; sys.path.insert(0, 'python-common'); import pytest; sys.exit(pytest.main(['python-common/tests']))"
 ```

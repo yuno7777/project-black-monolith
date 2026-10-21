@@ -38,6 +38,7 @@ Read it before starting work. Write to it while you work.
 | security | `feature/video-explainer` | the AEOS Guard explainer, rescued off a branch that was about to be deleted | pushed, 1 commit |
 | security | `fix/mcp-shield/baseline-persist-failure` | the tool layer's fail-open path discarded enforcement it had already computed (`FINDINGS.md` §5) | merged into `main` as PR #64 (`1b6e8ed`); the fix is proved by mutating it back to the old behaviour and watching the new test fail. The branch was rebased onto `main` after #60 and #62 merged, so its history was rewritten and it was force-pushed |
 | security | `fix/mcp-shield/malformed-tool-entry` | one malformed tool entry voided the whole `tools/list` defence for that server (`FINDINGS.md` §6) | PR #66 open; the fix is proved by mutating it back to the old behaviour — one defective entry rejecting the whole listing — and watching all six new tests fail. Branched off `main` at `1b6e8ed`; no history rewrite, so nothing was force-pushed |
+| security | `docs/stale-test-counts` | every test count the documentation carried was wrong (`FINDINGS.md` documentation drift 6) | PR #81 open; the numbers are dated snapshots and the command is the authority |
 | integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI green on `b19513b` |
 | integrator | Dependabot | #24 merged (codeql-action); #15, #16 closed as superseded; #26 superseded by a direct hmac 0.13 migration | the queue is empty: **zero open PRs** |
 
@@ -88,6 +89,7 @@ to `main` by ref. Use a dedicated worktree for every branch.
 | Path | Claimed by | Note |
 | --- | --- | --- |
 | `mcp-shield/src/**` | security | through the 2026-10-20 review batch |
+| `mcp-shield/README.md`, `crates/pbm-secret-boundary/README.md`, `docs/SECRET_BOUNDARY.md` | security | the stale test counts (documentation drift 6) |
 | `dashboard/lib/incident-store.ts`, `dashboard/app/api/ingest/**` | security | circuit breaker and ingest path |
 | `dashboard/lib/login-rate-limit.ts`, `dashboard/scripts/dispatch-alerts.mjs` | security | rate limiting and alert delivery |
 | `supabase/migrations/**` | security | retention scoping migration |
@@ -108,7 +110,7 @@ reader's lead, not yet checked). The items below are the board's own list.
 
 | # | Item | Where | Priority |
 | --- | --- | --- | --- |
-| 1 | The reasoning layer's KL divergence is off in every shipped configuration: nothing ever writes the baseline's `model` key, so the gate can never open. | `trace-audit/src/main.py` | **high** — see `FINDINGS.md` §1 |
+| 1 | The reasoning layer's KL divergence never fires. Two separate reasons: nothing ever writes the baseline's `model` key, so the gate is never armed (`FINDINGS.md` §1); and the shipped threshold of 1.0 sits **above** the monitor's own ceiling for a real model (0.587), so it could not fire even when armed (`FINDINGS.md` §12, on the calibration branch, PR #76). **Unclaimed — this is the next item.** | `trace-audit/src/main.py`, `trace-audit/src/divergence_monitor.py` | **high** |
 | 2 | A notification failure rolls back the evidence it was raised for: the alert-job row shares the security event's transaction. | `dashboard/lib/event-store.ts` | **high** — see `FINDINGS.md` §2 |
 | 3 | Every revocation snapshot is truncated at 64 KiB, so past ~1,700 live revocations the modules keep a stale set forever and the breaker fails open. | `dashboard/app/api/ingest/route.ts`, `python-common`, `mcp-shield` | **high** — see `FINDINGS.md` §3 |
 | 4 | The MCP-Shield status listener falls back to the module's ingest token as its admin credential. | `mcp-shield/src/main.rs` | medium — see `FINDINGS.md` §4 |
@@ -148,6 +150,12 @@ dashboard/           npm run lint, npm test, npm run build
 contracts/           python contracts/check_contracts.py
 scripts/             python -m unittest discover -s scripts/tests
 ```
+
+A count written in a document is a snapshot, not a promise. Every test
+count this repository used to carry was wrong — 45 where the suite ran
+144, 73 where it ran 79 — because a number does not update itself when the
+next test lands. Write the number with the date it was counted and point at
+the command, which prints the current one and is the authority.
 
 ## Finding the other agents
 

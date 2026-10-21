@@ -273,6 +273,7 @@ regression would be invisible.
 | 3 | The proxy default change silently alters the preflight health checks, which can now abort the launcher. | `scripts/monolith_wrap.py` | small |
 | 4 | `generation_truncated` reaches the feed but is counted as an "attack" by the overview KPI, and is named in no documentation. | `dashboard/app/page.tsx` | medium |
 | 5 | The dashboard fix corrected the session report; the console's headline detection number still counts operational failures. | `dashboard/app/page.tsx` | small |
+| 6 | Three documents state how many tests a suite has, and every one of those numbers was wrong. **Fixed** — the numbers are a dated snapshot now, and the command that prints the current one is the authority. | `mcp-shield/README.md`, `crates/pbm-secret-boundary/README.md`, `docs/SECRET_BOUNDARY.md` | small |
 
 ---
 
@@ -346,3 +347,11 @@ up.
   PR #66: each tool is inspected on its own, a tool the shield cannot vouch
   for is withheld, a tool that only breaks the spec is still fully checked
   and served, and the rest of the listing keeps its protection.
+- **Every test count the documentation gave was wrong** (documentation
+  drift 6 above). Three files said how many tests a suite has — 45 in
+  `mcp-shield/README.md`, 73 in the secret boundary's README, and 88 / 73 /
+  18 in `docs/SECRET_BOUNDARY.md` — and the suites ran 144, 79 and 37 on
+  2026-10-21. A count written in a document is a snapshot that rots the
+  moment the next test lands, so the numbers now say when they were counted
+  and point at the command, which prints the current number and is the
+  authority.
