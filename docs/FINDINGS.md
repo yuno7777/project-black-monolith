@@ -242,6 +242,118 @@ spooled, so the event is lost entirely rather than being delivered late.
 When no dashboard URL is configured, the fallback target is the SSE endpoint
 with an empty credential, so every event dead-letters.
 
+### 12. The divergence gate cannot fire against a real model backend
+
+**Status:** verified. **Where:** `trace-audit/src/divergence_monitor.py`,
+`trace-audit/fixtures/calibrate.py`. **Effort:** large. **This is the most
+serious of the open items.**
+
+Measured against `qwen2.5:0.5b` on Ollama, with the shipped monitor settings
+(window 20, min 12 tokens, smoothing 0.5) and the shipped baseline capture
+(ten prompts → 750 tokens → 331 distinct tokens):
+
+| | peak KL |
+| --- | ---: |
+| 36 held-out benign prompts | 0.301 – 0.573 (0 false positives) |
+| eight off-distribution probes | 0.349 – 0.587 |
+| **the threshold the code ships** | **1.0** |
+
+The threshold sits above everything the monitor can see, so the stream is
+never terminated: **the gate cannot fire against a real model.** The shipped
+divergent fixture reached 0.349 — below the worst ordinary answer, and below
+a hex dump.
+
+**The threshold is above the statistic's ceiling.** The most divergent window
+the monitor can express is one in which every token is off-vocabulary: each
+one lands in the `<other>` bucket, which carries the baseline's smallest
+mass. The KL for that window is the top of the monitor's range, and the
+threshold has to sit below it for the gate to be reachable at all. It is a
+property of the baseline's vocabulary, not of any model:
+
+| | mock | real model |
+| --- | ---: | ---: |
+| baseline vocabulary | 36 tokens | 331 tokens |
+| most one bucket can carry | 0.5325 | 0.1105 |
+| how far below the baseline an unfamiliar token sits | 1637× | 366× |
+| **ceiling** | **3.2893** | **0.5870** |
+| the threshold the code ships | 1.0 | 1.0 |
+
+Both factors move the same way. The smoothing floor is spread over every
+bucket, so a vocabulary ten times the size lets one bucket carry a tenth of
+the mass; and the bigger vocabulary carries proportionally more smoothing
+mass, so an unfamiliar token is a smaller surprise. Their product is the
+ceiling, and on a real model it is 0.587 — **below the threshold**.
+
+The measured reach equals the ceiling *exactly* in every run, on both
+backends: the probes that push the model off-distribution reach the top of
+the range and stop there, and they tie with each other to the last digit,
+because once every token in the window is unseen the measure no longer
+depends on what the tokens are.
+
+**What the mock's number was.** The mock's shipped fixture scores 3.2893 —
+which is the mock's ceiling, exactly. The mock's "divergent" fixture is a
+window of tokens that appear nowhere in the baseline, and 1.0 was set
+because that was "0.30× of the divergent fixture peak (3.29) -> fires
+decisively". The threshold was therefore calibrated to the *ceiling of a
+36-token vocabulary*. A real model's vocabulary is ten times the size, the
+ceiling is a third of the mock's, and the constant is left where the mock put
+it.
+
+**A smaller, separate defect in the same place.** The real model's baseline
+folds whitespace-only chunks into `<other>`, because `normalize_token` maps
+an empty token to `OTHER`. Two to eight of the 750 baseline tokens are
+whitespace, so the `<other>` bucket starts with mass it should not have, and
+an unfamiliar token looks less surprising than it is. Dropping the
+whitespace instead of folding it in raises the ceiling from 0.52 to 0.78 —
+still below the threshold. It is worth fixing on its own, but it is not what
+breaks the gate.
+
+**The band moves, and it moves more than the margin.** The measurement has
+now been taken four times — on two CI runners and twice locally — and the
+backend is sampled, so each run is a fresh draw:
+
+| run | worst benign | reach | shipped fixture | gap |
+| --- | ---: | ---: | ---: | ---: |
+| local | 0.499 | 0.550 | 0.367 | 0.050 |
+| CI runner | 0.493 | 0.533 | 0.346 | 0.039 |
+| local | 0.656 | 0.725 | 0.480 | 0.069 |
+| local (committed) | 0.573 | 0.587 | 0.349 | 0.014 |
+
+The gap between the worst ordinary answer and the strongest probe is
+0.01–0.07 in every run, and the whole band shifts by up to 0.16 between
+runs. So even a threshold placed inside the gap would be below the worst
+ordinary answer of the next run — the separation is real but it is smaller
+than the noise.
+
+Four facts held in all four runs: the reach stayed far below 1.0
+(0.53–0.73); the saturating probes always tied exactly (and in the two runs
+where the ceiling was measured directly, the reach equalled it); the shipped
+fixture always scored *below* the worst ordinary answer; and the reach never
+left the 0.53–0.73 band.
+
+**What would settle it.** The statistic, not the constant. A threshold moved
+down to 0.55 would fire on the probes, but it would also sit inside the
+run-to-run spread of the ordinary answers, so it would refuse ordinary
+answers some of the time. The options are a vocabulary-independent statistic
+(the fraction of window tokens outside the baseline, or a divergence between
+two distributions both estimated over the same vocabulary), or a much larger
+baseline capture with the threshold re-derived from a real model and a margin
+measured against the run-to-run spread rather than against a single draw.
+Either way the mock's numbers have to stop being the source, and the
+calibration has to keep running against a real model — the workflow that does
+it is `calibration.yml`, and the committed measurement is
+`trace-audit/fixtures/real_model_calibration.json`. The ceiling is now
+recorded in that artifact, so a fix can be checked against the number the
+statistic can actually express rather than against a remembered one.
+
+**This sits on top of §1.** The gate cannot open in any shipped
+configuration, because nothing writes the baseline's `model` key. Arming it
+without fixing this would produce a gate that never fires — and it would
+fail *silently*, because an answer that is never terminated looks exactly
+like an answer that is clean. §1's "what would settle it" has to answer this
+one too: a gate that is armed and cannot see is worse than one that is
+disarmed and says so.
+
 ---
 
 ## Test gaps
@@ -346,3 +458,15 @@ up.
   PR #66: each tool is inspected on its own, a tool the shield cannot vouch
   for is withheld, a tool that only breaks the spec is still fully checked
   and served, and the rest of the listing keeps its protection.
+- **The divergence detector's real-model behaviour was asserted by no
+  committed result** (test gap 7 above). Every number behind the shipped
+  threshold of 1.0 came from the deterministic mock, whose tokens all come
+  from one fixed pool, and the calibrator's own comment named the blind spot
+  as one that "stays open". Fixed in PR #76, and the measurement found
+  something worse than a missing assertion: against a real model the gate
+  cannot fire at all, because the threshold sits above the statistic's
+  ceiling (§12 above). The measurement is committed
+  (`trace-audit/fixtures/real_model_calibration.json`), including the
+  ceiling itself, a test asserts the half of the promise that holds and
+  marks the broken half as a *strict* expected failure, and the calibration
+  runs against a real model in CI.
