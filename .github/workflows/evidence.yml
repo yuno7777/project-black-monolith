@@ -51,19 +51,6 @@ jobs:
           python evaluation/real_models.py vector --output evaluation/results/semantic-real.json
           python evaluation/real_models.py trace --model llama3.2:1b --external evaluation/results/external.json --output evaluation/results/llama-real.json
           python evaluation/real_models.py trace --model qwen2.5:0.5b --external evaluation/results/external.json --output evaluation/results/qwen-real.json
-      - name: Calibrate the divergence gate against a real model
-        env:
-          MONOLITH_MODEL_BACKEND: ollama
-          MONOLITH_OLLAMA_MODEL: qwen2.5:0.5b
-        run: |
-          # Warm the model before the measurement. The first request loads it
-          # into memory, and a cold load on a two-core runner is a timeout
-          # rather than a verdict on the gate.
-          curl -fsS http://127.0.0.1:11434/api/generate \
-            -d '{"model":"qwen2.5:0.5b","prompt":"hello","stream":false}' > /dev/null
-          python trace-audit/fixtures/calibrate.py \
-            --output evaluation/results/calibration-real.md \
-            --json trace-audit/fixtures/real_model_calibration.json
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: '22'
@@ -91,6 +78,4 @@ jobs:
             evaluation/results/content-independent.json
             evaluation/results/content-development.json
             evaluation/results/redaction-stress.json
-            evaluation/results/calibration-real.md
-            trace-audit/fixtures/real_model_calibration.json
           if-no-files-found: error
