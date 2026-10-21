@@ -5,8 +5,14 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
+from src.events import EventContext
 from src.quarantine import Quarantine
 from src.retriever_proxy import RetrieverProxy
+
+# Every retrieval names the session it belongs to: a retrieval that cannot
+# be attributed to a session is refused, because the cross-layer circuit
+# breaker revokes sessions and cannot act on one it cannot name.
+SESSION = EventContext(session_id="concurrency-test-session")
 
 
 class Collection:
@@ -66,7 +72,7 @@ def test_concurrent_retrievals_do_not_interleave_detector_updates():
 
     def retrieve(index):
         barrier.wait()
-        return proxy.retrieve(f"query-{index}")
+        return proxy.retrieve(f"query-{index}", None, SESSION)
 
     with ThreadPoolExecutor(max_workers=8) as workers:
         results = list(workers.map(retrieve, range(8)))
@@ -127,7 +133,7 @@ def test_corpus_update_waits_for_inflight_query_and_clears_its_history():
         updated.set()
 
     with ThreadPoolExecutor(max_workers=2) as workers:
-        retrieval = workers.submit(proxy.retrieve, "query")
+        retrieval = workers.submit(proxy.retrieve, "query", None, SESSION)
         assert entered.wait(3)
         mutation = workers.submit(update)
         try:

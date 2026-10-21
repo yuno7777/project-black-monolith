@@ -10,6 +10,7 @@ from monolith_events.events import (
     EventOutbox,
     _NoRedirect,
     context_from_headers,
+    credential_transport_is_trusted,
     make_emitter,
     replay_dead_letters,
 )
@@ -57,6 +58,54 @@ def test_outbox_allows_loopback_http_for_local_development(tmp_path):
         start_worker=False,
     )
     delivery.close()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://api.anthropic.com/v1/messages",
+        "http://127.0.0.1:8100/v1/messages",
+        "http://localhost:8100/v1/messages",
+        "http://[::1]:8100/v1/messages",
+    ],
+)
+def test_the_credential_transport_rule_trusts_https_and_loopback(url):
+    assert credential_transport_is_trusted(url) is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # Plain HTTP to anywhere that is not loopback: the credential would
+        # be on the wire, in front of whoever answers.
+        "http://model.example.com/v1/messages",
+        "http://10.0.0.5:8100/v1/messages",
+        # A credential in the URL is a credential in a log line, a proxy's
+        # request line and a process listing.
+        "https://user:password@model.example.com/v1/messages",
+        # A fragment never reaches the server; a credential there is a
+        # credential in the wrong place.
+        "https://model.example.com/v1/messages#secret",
+        # Not a transport at all.
+        "file:///tmp/messages",
+        # No host to trust.
+        "https:///v1/messages",
+    ],
+)
+def test_the_credential_transport_rule_refuses_the_rest(url):
+    assert credential_transport_is_trusted(url) is False
+
+
+def test_the_credential_transport_rule_needs_the_operator_to_opt_in():
+    """Plain HTTP to a non-loopback host is refused by default.
+
+    The escape hatch has to be asked for by name: an operator whose model
+    service is on a trusted network can say so, and an operator who has
+    mistyped a host cannot enable it by accident.
+    """
+    url = "http://model.example.com/v1/messages"
+    assert credential_transport_is_trusted(url) is False
+    assert credential_transport_is_trusted(url, allow_insecure=True) is True
 
 
 def test_plaintext_service_delivery_requires_explicit_opt_in(tmp_path):

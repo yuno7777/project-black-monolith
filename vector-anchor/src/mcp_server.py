@@ -29,8 +29,13 @@ Environment:
   MONOLITH_VECTOR_ANCHOR_URL   service base URL (default http://127.0.0.1:8001)
   MONOLITH_TENANT_ID           tenant the session belongs to
   MONOLITH_AGENT_ID            the agent
-  MONOLITH_SESSION_ID          the session
+  MONOLITH_SESSION_ID          the session (required)
   MONOLITH_REQUEST_TIMEOUT_S   per-request timeout (default 15)
+
+``MONOLITH_SESSION_ID`` is required, not optional. The cross-layer circuit
+breaker revokes a session, so a retrieval that cannot be attributed to one is
+a retrieval the breaker cannot protect; the service refuses those, and this
+server says so rather than making the call and letting it fail downstream.
 """
 
 from __future__ import annotations
@@ -162,6 +167,10 @@ def _error_detail(error: urllib.error.HTTPError) -> str:
         return "(the response body could not be read)"
 
 
+def _session_id() -> str:
+    return (os.environ.get("MONOLITH_SESSION_ID") or "").strip()
+
+
 def _call_service(payload: dict) -> dict:
     url = _service_url() + "/retrieve"
     try:
@@ -272,6 +281,20 @@ def _handle_call(request_id, params: dict) -> None:
         return
     if len(query) > MAX_QUERY_LENGTH:
         _result_text(request_id, "The query is too long.", is_error=True)
+        return
+    if not _session_id():
+        # A retrieval that cannot be attributed to a session is one the
+        # cross-layer circuit breaker cannot revoke, so the service refuses
+        # it. Saying so here is better than letting the call fail
+        # downstream: a misconfiguration has to be loud, and the name of
+        # the variable that is missing is what the operator needs.
+        _result_text(
+            request_id,
+            "VectorAnchor cannot serve a retrieval without a session id. Set "
+            "MONOLITH_SESSION_ID so the retrieval can be attributed to a "
+            "session and revoked with it.",
+            is_error=True,
+        )
         return
     payload: dict = {"query": query}
     k = arguments.get("k")

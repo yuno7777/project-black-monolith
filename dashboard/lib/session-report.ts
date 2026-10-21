@@ -132,6 +132,35 @@ export interface SessionIncidentPage {
   incidents: Incident[];
   /** Every event the session produced, including the ones not returned. */
   total: number;
+  /**
+   * The agents whose events the report covers.
+   *
+   * A session id is minted per run and handed to every layer, so in one
+   * deployment it names one agent's run. The correlation boundary
+   * everywhere else is the triple (tenant, agent, session) — see
+   * `sessionKey` in `incident-store.ts` — and two agents that happened to
+   * share a session id would otherwise be merged into one report, which is
+   * a wrong answer to "what did this run trip". The list says which agents
+   * the report is about, so a reader never has to guess.
+   *
+   * It covers the whole session, not just the page, so it stays right when
+   * the report is truncated.
+   */
+  agentIds: string[];
+}
+
+/** What a session report may be narrowed to. */
+export interface SessionReportOptions {
+  /** The most events the page may carry. */
+  limit?: number;
+  /**
+   * Restrict the report to one agent.
+   *
+   * Omitted, the report covers every agent in the tenant that used the
+   * session id — and the caller is told that, rather than being handed a
+   * merged report that reads like one run.
+   */
+  agentId?: string;
 }
 
 /** Worst-first, then newest-first — the order an operator reads a queue in. */
@@ -145,6 +174,15 @@ function orderIncidents(incidents: Incident[]): Incident[] {
   });
 }
 
+/** The distinct agent ids in a set of events, in a stable order. */
+function distinctAgentIds(incidents: Incident[]): string[] {
+  const seen = new Set<string>();
+  for (const incident of incidents) {
+    if (incident.agent_id) seen.add(incident.agent_id);
+  }
+  return [...seen].sort();
+}
+
 /**
  * Every event one agent session produced.
  *
@@ -154,22 +192,36 @@ function orderIncidents(incidents: Incident[]): Incident[] {
  * events would understate exactly the run an operator wants to look at —
  * so the page carries the session's true size alongside the events, and the
  * caller says so when the two differ.
+ *
+ * `options.agentId` narrows the report to one agent. Left out, the report
+ * covers every agent in the tenant that used the session id, and the page
+ * names them, because the correlation boundary is the triple
+ * (tenant, agent, session) and not (tenant, session).
  */
 export async function listSessionIncidents(
   tenantId: string,
   sessionId: string,
-  limit: number = MAX_SESSION_EVENTS,
+  options: SessionReportOptions = {},
 ): Promise<SessionIncidentPage> {
-  const safeLimit = Math.max(1, Math.min(Math.trunc(limit), MAX_SESSION_EVENTS));
+  const safeLimit = Math.max(
+    1,
+    Math.min(Math.trunc(options.limit ?? MAX_SESSION_EVENTS), MAX_SESSION_EVENTS),
+  );
+  const agentId = options.agentId?.trim() || undefined;
 
   if (!process.env.DATABASE_URL) {
     const matching: Incident[] = getMemoryEventsForTenant(tenantId)
       .filter((event) => event.session_id === sessionId)
+      .filter((event) => agentId === undefined || event.agent_id === agentId)
       .map((event) => ({
         ...event,
         received_ms: event.received_ms ?? event.timestamp_ms,
       }));
-    return { incidents: orderIncidents(matching).slice(0, safeLimit), total: matching.length };
+    return {
+      incidents: orderIncidents(matching).slice(0, safeLimit),
+      total: matching.length,
+      agentIds: distinctAgentIds(matching),
+    };
   }
 
   return withTenantDb(tenantId, async (db) => {
@@ -178,6 +230,7 @@ export async function listSessionIncidents(
       schema_version: number;
       occurred_at_ms: string;
       received_ms: string;
+      received_at: string;
       module: string;
       event_type: string;
       severity: Severity;
@@ -198,27 +251,40 @@ export async function listSessionIncidents(
       resolution: string | null;
       updated_ms: string | null;
       updated_by: string | null;
+      agent_ids: string[];
       total_count: string;
     }>(
-      `select
-         e.event_id, e.schema_version, e.occurred_at_ms,
-         (extract(epoch from e.received_at) * 1000)::bigint as received_ms,
-         e.module, e.event_type, e.severity, e.details, e.tenant_id,
-         e.correlation_id, e.session_id, e.trace_id, e.agent_id, e.outcome,
-         e.source, e.resource_type, e.resource_id, e.policy_version,
-         t.status, t.assignee, t.note, t.resolution,
-         (extract(epoch from t.updated_at) * 1000)::bigint as updated_ms,
-         t.updated_by,
-         (count(*) over ())::bigint as total_count
-       from monolith.security_events e
-       left join monolith.incident_triage t using (event_id)
-       where e.tenant_id = $1 and e.session_id = $2
+      `with session as (
+         select
+           e.event_id, e.schema_version, e.occurred_at_ms,
+           (extract(epoch from e.received_at) * 1000)::bigint as received_ms,
+           e.received_at,
+           e.module, e.event_type, e.severity, e.details, e.tenant_id,
+           e.correlation_id, e.session_id, e.trace_id, e.agent_id, e.outcome,
+           e.source, e.resource_type, e.resource_id, e.policy_version,
+           t.status, t.assignee, t.note, t.resolution,
+           (extract(epoch from t.updated_at) * 1000)::bigint as updated_ms,
+           t.updated_by
+         from monolith.security_events e
+         left join monolith.incident_triage t using (event_id)
+         where e.tenant_id = $1 and e.session_id = $2
+           and ($3::text is null or e.agent_id = $3)
+       ),
+       agents as (
+         select coalesce(
+           array_agg(distinct agent_id) filter (where agent_id is not null),
+           '{}'::text[]
+         ) as agent_ids
+         from session
+       )
+       select s.*, a.agent_ids, (count(*) over ())::bigint as total_count
+       from session s cross join agents a
        order by
-         case e.severity when 'critical' then 0 when 'warning' then 1 else 2 end,
-         e.received_at desc,
-         e.event_id desc
-       limit $3`,
-      [tenantId, sessionId, safeLimit],
+         case s.severity when 'critical' then 0 when 'warning' then 1 else 2 end,
+         s.received_at desc,
+         s.event_id desc
+       limit $4`,
+      [tenantId, sessionId, agentId ?? null, safeLimit],
     );
     const incidents: Incident[] = result.rows.map((row) => ({
       event_id: row.event_id,
@@ -257,7 +323,10 @@ export async function listSessionIncidents(
     // count(*) over () counts the whole session, not the page: it is
     // evaluated before the limit is applied.
     const total = result.rows.length > 0 ? Number(result.rows[0].total_count) : 0;
-    return { incidents, total };
+    // The agents are aggregated over the whole session rather than the
+    // page, so the list stays right when the report is truncated.
+    const agentIds = result.rows.length > 0 ? (result.rows[0].agent_ids ?? []) : [];
+    return { incidents, total, agentIds };
   });
 }
 

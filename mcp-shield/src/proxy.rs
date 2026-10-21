@@ -205,16 +205,82 @@ struct AnalysisContext {
     boundary: Option<Arc<crate::secret_boundary::ShieldSecretBoundary>>,
 }
 
-/// Remove `PBM_SECRET_*` environment variables from a child command so
-/// downstream MCP servers cannot read secret-boundary credentials directly
-/// from their inherited process environment.
+/// Environment variables the shield owns, and which the MCP server it wraps
+/// must never see.
+///
+/// The child is a *third-party* server: it is one of the things the shield
+/// exists to defend the agent against, so anything the shield holds on the
+/// agent's behalf is a capability the child must not inherit. `MCP_SHIELD_KEY`
+/// is the HMAC key the schema fingerprints are signed with, so a child that
+/// holds it can re-sign a poisoned baseline and the next agent to connect
+/// will trust it. `MONOLITH_EVENT_TOKEN` writes into the incident ledger, so a
+/// child that holds it can forge the evidence an operator reads.
+///
+/// The correlation ids (`MONOLITH_TENANT_ID`, `MONOLITH_AGENT_ID`,
+/// `MONOLITH_SESSION_ID`) are deliberately *not* on this list. VectorAnchor's
+/// own MCP server is started through the shield and stamps them onto every
+/// request it makes; taking them away would break the memory layer's
+/// correlation, and they are identities rather than capabilities.
+const SHIELD_OWNED_ENV: &[&str] = &[
+    // The HMAC key that signs a schema fingerprint, and the path of the
+    // baseline it signs: together they are the trust anchor.
+    "MCP_SHIELD_KEY",
+    "MCP_SHIELD_BASELINE",
+    // The shield's own posture. A wrapped server has no business knowing
+    // whether enforcement is on.
+    "MCP_SHIELD_MODE",
+    "MCP_SHIELD_FIRST_CONTACT",
+    // The Secret Boundary's configuration: it names the credential provider.
+    "MCP_SHIELD_SECRET_BOUNDARY_CONFIG",
+    // The ledger's address, its spool, and the credentials that write to it.
+    "MONOLITH_DASHBOARD_URL",
+    "MONOLITH_EVENT_OUTBOX_PATH",
+    "MONOLITH_ADMIN_TOKEN",
+    "MONOLITH_OPERATOR_TOKEN",
+    "MONOLITH_ALLOW_INSECURE_DASHBOARD",
+];
+
+/// Prefixes for which *every* variable is the shield's.
+///
+/// `MONOLITH_EVENT_TOKEN` is a prefix rather than an exact name because the
+/// launcher gives each module its own token (`MONOLITH_EVENT_TOKEN_MCP_SHIELD`
+/// and friends), and a deny-list that only knew one spelling would leave the
+/// others in place.
+const SHIELD_OWNED_ENV_PREFIXES: &[&str] = &[
+    pbm_secret_boundary::DEFAULT_ENV_SECRET_PREFIX,
+    "MONOLITH_EVENT_TOKEN",
+];
+
+/// Whether the named variable is one the shield must not hand to the MCP
+/// server it wraps.
+fn is_shield_owned_env(name: &str) -> bool {
+    // Environment variable names are case-insensitive on Windows, so the
+    // comparison is done on the upper-cased name.
+    let upper = name.to_ascii_uppercase();
+    if SHIELD_OWNED_ENV_PREFIXES
+        .iter()
+        .any(|prefix| upper.starts_with(prefix))
+    {
+        return true;
+    }
+    SHIELD_OWNED_ENV.iter().any(|owned| upper == *owned)
+}
+
+/// Remove the shield's own credentials and configuration from a child
+/// command, so a downstream MCP server cannot read them out of its inherited
+/// process environment.
+///
+/// The `--remote-url` bridge is the shield's own child process, and it is
+/// configured entirely through `MCP_SHIELD_REMOTE_TOKEN`,
+/// `MCP_SHIELD_PROTOCOL_VERSION` and `MCP_SHIELD_REMOTE_TIMEOUT_SECS` — none
+/// of which are on the list above, so the bridge still starts.
+///
+/// Returns the names that were removed. The values are never returned, and
+/// never logged.
 pub(crate) fn strip_secret_env_vars(cmd: &mut Command) -> Vec<String> {
     let keys: Vec<String> = std::env::vars_os()
         .filter_map(|(k, _)| k.into_string().ok())
-        .filter(|k| {
-            k.to_ascii_uppercase()
-                .starts_with(pbm_secret_boundary::DEFAULT_ENV_SECRET_PREFIX)
-        })
+        .filter(|k| is_shield_owned_env(k))
         .collect();
     for key in &keys {
         cmd.env_remove(key);
@@ -411,7 +477,18 @@ pub async fn run(server_cmd: Vec<String>, config: ShieldConfig) -> Result<()> {
         // The server's own stderr passes straight through for debuggability.
         .stderr(Stdio::inherit())
         .kill_on_drop(true);
-    strip_secret_env_vars(&mut command);
+    // The shield's own credentials and configuration are removed from the
+    // environment the MCP server inherits. The names are logged, because an
+    // operator looking at a wrapper that cannot reach the ledger needs to be
+    // able to see that it was the wrapper that took the credential away; the
+    // values never leave the process that owns them.
+    let stripped = strip_secret_env_vars(&mut command);
+    if !stripped.is_empty() {
+        tracing::info!(
+            names = %stripped.join(","),
+            "removed the shield's own variables from the MCP server environment"
+        );
+    }
 
     let mut child = command
         .spawn()
@@ -3412,5 +3489,63 @@ mod tests {
             stripped.iter().any(|k| k == var_name),
             "strip_secret_env_vars must identify and strip PBM_SECRET_* variables"
         );
+    }
+
+    #[test]
+    fn strip_secret_env_vars_removes_the_shield_own_variables() {
+        // The shield's own credentials must not reach the MCP server it
+        // wraps: the HMAC key re-signs a poisoned baseline, and the event
+        // token writes into the incident ledger.
+        let owned = [
+            "MCP_SHIELD_KEY",
+            "MCP_SHIELD_BASELINE",
+            "MCP_SHIELD_MODE",
+            "MCP_SHIELD_FIRST_CONTACT",
+            "MCP_SHIELD_SECRET_BOUNDARY_CONFIG",
+            "MONOLITH_EVENT_TOKEN",
+            "MONOLITH_EVENT_TOKEN_MCP_SHIELD",
+            "MONOLITH_ADMIN_TOKEN",
+            "MONOLITH_OPERATOR_TOKEN",
+            "MONOLITH_DASHBOARD_URL",
+            "MONOLITH_EVENT_OUTBOX_PATH",
+            "MONOLITH_ALLOW_INSECURE_DASHBOARD",
+        ];
+        for name in owned {
+            std::env::set_var(name, "value-the-child-must-not-see");
+        }
+
+        let mut cmd = Command::new("echo");
+        let stripped = strip_secret_env_vars(&mut cmd);
+
+        for name in owned {
+            std::env::remove_var(name);
+            assert!(
+                stripped.iter().any(|k| k == name),
+                "{name} must be stripped from the environment the MCP server inherits"
+            );
+        }
+    }
+
+    #[test]
+    fn shield_owned_env_keeps_the_correlation_ids_and_the_remote_bridge_config() {
+        // VectorAnchor's MCP server is started through the shield and stamps
+        // the correlation ids onto every request it makes, so they have to
+        // survive. The `--remote-url` bridge is the shield's own child and
+        // is configured entirely through the remote variables, so they have
+        // to survive too.
+        for name in [
+            "MONOLITH_TENANT_ID",
+            "MONOLITH_AGENT_ID",
+            "MONOLITH_SESSION_ID",
+            "MCP_SHIELD_REMOTE_TOKEN",
+            "MCP_SHIELD_PROTOCOL_VERSION",
+            "MCP_SHIELD_REMOTE_TIMEOUT_SECS",
+            "PATH",
+        ] {
+            assert!(
+                !is_shield_owned_env(name),
+                "{name} must not be stripped from the child environment"
+            );
+        }
     }
 }

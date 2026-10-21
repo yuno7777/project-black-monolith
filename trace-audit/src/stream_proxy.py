@@ -380,7 +380,7 @@ def _stable_seed(prompt: str) -> int:
     return int.from_bytes(hashlib.sha256(prompt.encode("utf-8")).digest()[:8], "big")
 
 
-def _secret_fingerprint(value: str) -> bytes:
+def secret_fingerprint(value: str) -> bytes:
     """One-way in-memory dedupe key; never retain the plaintext credential."""
     return hashlib.sha256(value.encode("utf-8")).digest()
 
@@ -730,6 +730,7 @@ class StreamAuditor:
         divergence_enabled: bool = True,
         emit_sync: bool = False,
         literals: Sequence[str] = (),
+        reported_secrets: set[bytes] | None = None,
     ) -> AsyncIterator[dict]:
         """Audit a token stream somebody else produced.
 
@@ -745,6 +746,11 @@ class StreamAuditor:
         shape-based patterns. The operator's own fallback key is added to
         them on every path: an answer can echo it as easily as an error body
         can, and the client that receives it never had it.
+
+        `reported_secrets` is the set of one-way fingerprints of credentials
+        already reported in this stream. A caller that audits part of the
+        answer itself — the citation text in a citation delta — passes its
+        own set here so the same credential is not reported twice.
         """
         start = now_ms()
         monitor = DivergenceMonitor(
@@ -754,7 +760,9 @@ class StreamAuditor:
             min_tokens_before_check=self.cfg.min_tokens_before_check,
             smoothing=self.cfg.smoothing,
         )
-        reported_secrets: set[bytes] = set()
+        reported_secrets = (
+            reported_secrets if reported_secrets is not None else set()
+        )
         peak_kl = 0.0
         credential_literals = tuple(
             dict.fromkeys(
@@ -770,7 +778,7 @@ class StreamAuditor:
 
         async def _redactions(matches) -> AsyncIterator[dict]:
             for m in matches:
-                fingerprint = _secret_fingerprint(m.value)
+                fingerprint = secret_fingerprint(m.value)
                 if fingerprint in reported_secrets:
                     continue
                 reported_secrets.add(fingerprint)

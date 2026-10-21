@@ -18,6 +18,10 @@ cd "$(dirname "$0")/.."
 PORT="${MONOLITH_VA_PORT:-8001}"
 BASE="http://localhost:${PORT}"
 export MONOLITH_SERVICE_URL="$BASE"
+# Every retrieval names the session it belongs to. A retrieval that cannot be
+# attributed to a session is one the cross-layer circuit breaker cannot
+# revoke, so the service refuses it.
+DEMO_SESSION_ID="${MONOLITH_SESSION_ID:-vector-anchor-demo}"
 # Fresh embedded corpus each run for reproducibility.
 export MONOLITH_CHROMA_PATH="$(mktemp -d)/chroma_store"
 
@@ -42,7 +46,7 @@ done
 curl -sf "$BASE/health" >/dev/null || { echo "service did not start" >&2; exit 1; }
 echo "service is up: $(curl -s "$BASE/health")"
 
-retrieve() { curl -s -X POST "$BASE/retrieve" -H 'Content-Type: application/json' -d "{\"query\": $1}"; }
+retrieve() { curl -s -X POST "$BASE/retrieve" -H 'Content-Type: application/json' -H "X-Monolith-Session-Id: ${DEMO_SESSION_ID}" -d "{\"query\": $1}"; }
 jqget() { "$PY" -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 
 echo

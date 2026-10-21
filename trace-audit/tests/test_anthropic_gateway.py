@@ -16,12 +16,14 @@ import threading
 from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "fixtures"))
 
+import baseline_capture  # noqa: E402
 import fake_anthropic_server  # noqa: E402
 from src import main  # noqa: E402
 from src.anthropic_gateway import (  # noqa: E402
@@ -33,6 +35,7 @@ from src.divergence_monitor import build_distribution  # noqa: E402
 from src.events import revoked_session_registry  # noqa: E402
 from src.main import _read_capped_body, app  # noqa: E402
 from src.stream_proxy import (  # noqa: E402
+    DIVERGENT_TOKENS,
     NORMAL_TOKENS,
     SAFE_REFUSAL,
     StreamAuditor,
@@ -67,6 +70,7 @@ def _cfg(tmp_path, **overrides):
         anthropic_api_key=None,
         anthropic_model=None,
         anthropic_max_tokens=8192,
+        anthropic_allow_insecure=False,
     )
     for key, value in overrides.items():
         setattr(cfg, key, value)
@@ -222,6 +226,115 @@ def test_the_relay_redacts_a_credential_the_model_emitted():
     assert FICTIONAL_AWS_KEY not in text
     assert "[REDACTED:aws_access_key_id]" in text
     assert text.endswith("and that is all")
+
+
+def test_the_relay_audits_the_passage_a_citation_quotes():
+    """A citation carries model-authored text, and it reaches the client.
+
+    The audited delta kinds are the ones whose payload is a string field. A
+    citation's payload is a nested object — the quoted passage sits inside
+    a `citation` object, beside the document title and the offsets — so it
+    was relayed verbatim: the one place in the answer path where text the
+    model produced was never scanned.
+    """
+    frames = _frames(
+        (
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            },
+        ),
+        (
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "citations_delta",
+                    "citation": {
+                        "type": "char_location",
+                        "document_title": "notes.md",
+                        "document_index": 0,
+                        "start_char_index": 10,
+                        "end_char_index": 60,
+                        "cited_text": f"the key is {FICTIONAL_AWS_KEY} and that is all",
+                    },
+                },
+            },
+        ),
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        ("message_stop", {"type": "message_stop"}),
+    )
+    emitted: list[tuple] = []
+
+    async def run():
+        cfg = _cfg(_tmp_path())
+        counts = build_distribution(NORMAL_TOKENS * 5)
+        auditor = StreamAuditor(
+            cfg,
+            counts,
+            lambda event_type, severity, details, ctx=None, **kwargs: emitted.append(
+                (event_type, severity, details)
+            ),
+        )
+        relay = AnthropicRelay(auditor, None, divergence_enabled=False)
+        return [event async for event in relay.run(frames)]
+
+    events = asyncio.run(run())
+    citations = [
+        event["data"]["delta"]["citation"]
+        for event in events
+        if event["kind"] == "passthrough"
+        and event["data"].get("type") == "content_block_delta"
+    ]
+    assert len(citations) == 1
+    assert FICTIONAL_AWS_KEY not in citations[0]["cited_text"]
+    assert "[REDACTED:aws_access_key_id]" in citations[0]["cited_text"]
+    # The rest of the citation is untouched: the client still knows what was
+    # cited and where.
+    assert citations[0]["document_title"] == "notes.md"
+    assert citations[0]["start_char_index"] == 10
+    assert citations[0]["end_char_index"] == 60
+    # And the redaction is in the ledger, like every other one.
+    assert "pii_redacted" in [event_type for event_type, _severity, _details in emitted]
+    redaction = next(
+        details for event_type, _severity, details in emitted if event_type == "pii_redacted"
+    )
+    assert redaction["label"] == "aws_access_key_id"
+
+
+def test_a_citation_with_nothing_to_audit_is_relayed_unchanged():
+    """A citation is not a credential, and must not be mangled into one."""
+    frames = _frames(
+        (
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "citations_delta",
+                    "citation": {
+                        "type": "char_location",
+                        "document_title": "notes.md",
+                        "cited_text": "an ordinary quoted passage",
+                    },
+                },
+            },
+        ),
+        ("message_stop", {"type": "message_stop"}),
+    )
+
+    events = asyncio.run(_run_relay(frames))
+    citations = [
+        event["data"]["delta"]["citation"]
+        for event in events
+        if event["kind"] == "passthrough"
+        and event["data"].get("type") == "content_block_delta"
+    ]
+    assert len(citations) == 1
+    assert citations[0]["cited_text"] == "an ordinary quoted passage"
 
 
 def test_the_relay_keeps_two_blocks_in_order():
@@ -472,6 +585,140 @@ def test_a_baseline_from_another_model_disables_divergence(tmp_path):
     assert "message_stop" in response.text
 
 
+def test_a_baseline_captured_from_the_answering_model_arms_the_divergence_gate(
+    tmp_path, monkeypatch
+):
+    """The whole chain, end to end: capture, record, arm, fire.
+
+    The gate could never be armed. Nothing wrote the model a baseline was
+    captured from, so the baseline on disk could never name a model, so the
+    gateway could never match it against the model that was answering — and
+    the reasoning layer never terminated anything in any shipped
+    configuration.
+
+    The chain is: the capture records the model it captured from, the
+    reload keeps it, the gateway matches it against the model answering,
+    and a stream that leaves that model's distribution is cut short.
+    """
+    baseline_file = tmp_path / "baseline.json"
+    monkeypatch.setenv("MONOLITH_BASELINE_PATH", str(baseline_file))
+    monkeypatch.setenv("MONOLITH_ANTHROPIC_API_KEY", "capture-fixture-value")
+    monkeypatch.setenv("MONOLITH_ANTHROPIC_MODEL", "stub-model")
+    monkeypatch.setenv("MONOLITH_MODEL_BACKEND", "mock")
+
+    with _Stub("clean") as stub:
+        monkeypatch.setenv(
+            "MONOLITH_ANTHROPIC_BASE_URL", f"http://127.0.0.1:{stub.port}"
+        )
+        # The capture streams from the Anthropic-shaped upstream and
+        # records the model it captured from.
+        baseline_capture.main(["--force", "--anthropic", "--model", "stub-model"])
+        captured = json.loads(baseline_file.read_text(encoding="utf-8"))
+        assert captured["model"] == "stub-model"
+        assert captured["counts"], "the capture recorded no tokens at all"
+
+        # The reload keeps the model, and arms the gate for it.
+        _cfg_out, events = _setup(
+            tmp_path,
+            anthropic_base_url=f"http://127.0.0.1:{stub.port}",
+            baseline_path=str(baseline_file),
+        )
+        client = TestClient(app, raise_server_exceptions=True)
+        reloaded = client.post(
+            "/admin/reload-baseline",
+            headers={"Authorization": "Bearer admin-secret-token-0000"},
+        )
+        assert reloaded.status_code == 200
+        assert reloaded.json()["baseline_model"] == "stub-model"
+        assert app.state.baseline_model == "stub-model"
+
+        # The model that is answering is the model the baseline was captured
+        # from, so the gate is armed and a divergent answer is cut short.
+        fake_anthropic_server.Handler.mode = "divergent"
+        response = client.post(
+            "/v1/messages",
+            headers={"x-api-key": "client-key"},
+            json={
+                "model": "stub-model",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    payloads = _sse_payloads(response.text)
+    text = "".join(
+        payload["delta"]["text"]
+        for payload in payloads
+        if payload["type"] == "content_block_delta"
+    )
+    # The client is handed the refusal, and none of the divergent trace.
+    assert text == SAFE_REFUSAL
+    assert "zzxq" not in response.text
+    # The stream is still well formed: every block the client was told
+    # about is closed.
+    opened = [p["index"] for p in payloads if p["type"] == "content_block_start"]
+    closed = [p["index"] for p in payloads if p["type"] == "content_block_stop"]
+    assert opened == closed
+    # And the ledger says the defense fired.
+    types = [event[0] for event in events]
+    assert "reasoning_divergence_terminate" in types
+    terminate = next(
+        event for event in events if event[0] == "reasoning_divergence_terminate"
+    )
+    assert terminate[1] == "critical"
+    assert terminate[2]["kl_divergence"] >= 1.0
+    assert terminate[4]["outcome"] == "terminated"
+
+
+def test_a_baseline_from_another_model_leaves_the_answer_alone(tmp_path):
+    """A baseline from another model cannot score this one.
+
+    A KL score against a distribution from a different model says nothing
+    about the model that is answering, so terminating on it would refuse
+    ordinary traffic. The gate stays closed, the answer arrives whole, and
+    the ledger says why — once, not once per request.
+    """
+    main._DIVERGENCE_NOTICES.clear()
+    try:
+        with _Stub("divergent") as stub:
+            _cfg_out, events = _setup(
+                tmp_path, anthropic_base_url=f"http://127.0.0.1:{stub.port}"
+            )
+            app.state.baseline_model = "some-other-model"
+            client = TestClient(app, raise_server_exceptions=True)
+            response = client.post(
+                "/v1/messages",
+                headers={"x-api-key": "client-key"},
+                json={
+                    "model": "stub-model",
+                    "max_tokens": 1024,
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "stream": True,
+                },
+            )
+    finally:
+        main._DIVERGENCE_NOTICES.clear()
+
+    assert response.status_code == 200
+    # The answer is not terminated.
+    assert "reasoning_divergence_terminate" not in [event[0] for event in events]
+    text = "".join(
+        payload["delta"]["text"]
+        for payload in _sse_payloads(response.text)
+        if payload["type"] == "content_block_delta"
+    )
+    assert "zzxq" in text, "the divergent answer was cut short with the gate disarmed"
+    # And the ledger says the gate was off, and why.
+    notices = [event for event in events if event[0] == "divergence_disabled"]
+    assert len(notices) == 1
+    assert notices[0][1] == "info"
+    assert notices[0][2]["reason"] == "baseline_model_mismatch"
+    assert notices[0][2]["baseline_model"] == "some-other-model"
+    assert notices[0][2]["requested_model"] == "stub-model"
+
+
 def test_a_request_over_the_operator_ceiling_is_refused(tmp_path):
     with _Stub("clean") as stub:
         _setup(
@@ -492,6 +739,93 @@ def test_a_request_over_the_operator_ceiling_is_refused(tmp_path):
 
     assert response.status_code == 400
     assert "ceiling" in response.json()["detail"]
+
+
+def test_a_request_with_no_token_count_is_capped_at_the_operator_ceiling(tmp_path):
+    """A ceiling that a client can switch off is not a ceiling.
+
+    The token count was validated only when the client named one, so a
+    request that omitted it was forwarded untouched and the upstream's own
+    default applied — which may be well above the limit the operator set.
+    The request is now capped at the ceiling instead.
+    """
+    with _Stub("clean") as stub:
+        _setup(
+            tmp_path,
+            anthropic_base_url=f"http://127.0.0.1:{stub.port}",
+            anthropic_max_tokens=512,
+        )
+        client = TestClient(app, raise_server_exceptions=True)
+        response = client.post(
+            "/v1/messages",
+            headers={"x-api-key": "client-key"},
+            json={
+                "model": "stub-model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    # The upstream was asked for the ceiling, not for its own default.
+    assert fake_anthropic_server.Handler.last_body.get("max_tokens") == 512
+
+
+def test_a_request_with_no_token_count_is_capped_on_the_document_path(tmp_path):
+    """The cap has to survive the path that re-serializes the body.
+
+    A client that asked for a document gets the body rebuilt, because the
+    upstream is always asked to stream. The rebuilt body is where a cap
+    applied to the original would be lost, so the cap is applied to the
+    rebuilt body.
+    """
+    with _Stub("clean") as stub:
+        _setup(
+            tmp_path,
+            anthropic_base_url=f"http://127.0.0.1:{stub.port}",
+            anthropic_max_tokens=512,
+        )
+        client = TestClient(app, raise_server_exceptions=True)
+        response = client.post(
+            "/v1/messages",
+            headers={"x-api-key": "client-key"},
+            json={
+                "model": "stub-model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    assert fake_anthropic_server.Handler.last_body.get("max_tokens") == 512
+
+
+def test_a_request_that_names_a_token_count_keeps_it(tmp_path):
+    """The cap only applies to a request that named no count.
+
+    A client that asked for less than the ceiling still gets what it
+    asked for.
+    """
+    with _Stub("clean") as stub:
+        _setup(
+            tmp_path,
+            anthropic_base_url=f"http://127.0.0.1:{stub.port}",
+            anthropic_max_tokens=512,
+        )
+        client = TestClient(app, raise_server_exceptions=True)
+        response = client.post(
+            "/v1/messages",
+            headers={"x-api-key": "client-key"},
+            json={
+                "model": "stub-model",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert fake_anthropic_server.Handler.last_body.get("max_tokens") == 64
 
 
 def test_a_non_streaming_request_gets_one_json_document(tmp_path):
@@ -836,7 +1170,7 @@ def test_the_body_is_refused_before_the_whole_body_is_read():
     assert caught.value.detail == "request body is too large"
 
 
-def _relay_and_events(frames, **kwargs):
+def _relay_and_events(frames, *, divergence_enabled=False, **kwargs):
     """Run the relay and hand back the relay itself, so a test can ask it
     for the refusal it would frame a terminated answer with."""
 
@@ -844,7 +1178,9 @@ def _relay_and_events(frames, **kwargs):
         cfg = _cfg(_tmp_path())
         counts = build_distribution(NORMAL_TOKENS * 5)
         auditor = StreamAuditor(cfg, counts, lambda *_a, **_k: None)
-        relay = AnthropicRelay(auditor, None, divergence_enabled=False, **kwargs)
+        relay = AnthropicRelay(
+            auditor, None, divergence_enabled=divergence_enabled, **kwargs
+        )
         return relay, [event async for event in relay.run(frames)]
 
     return asyncio.run(run())
@@ -980,7 +1316,13 @@ def test_an_auditor_failure_drains_the_queue_before_the_refusal():
         """An auditor whose read of the upstream fails part-way through."""
 
         async def audit_tokens(
-            self, source, ctx, divergence_enabled=False, emit_sync=False, literals=()
+            self,
+            source,
+            ctx,
+            divergence_enabled=False,
+            emit_sync=False,
+            literals=(),
+            reported_secrets=None,
         ):
             async for _ in source:
                 pass
@@ -1010,6 +1352,89 @@ def test_an_auditor_failure_drains_the_queue_before_the_refusal():
     # The refusal opens a fresh block: the client already saw block 0
     # closed, and re-opening it would be a malformed stream.
     assert _refusal_starts(relay.refusal_events("upstream_stream_error")) == [1]
+
+
+def _client_stream(relay, events):
+    """The events a client actually receives, in order.
+
+    The relay's own events, minus the marker that says "a refusal follows",
+    plus the refusal the relay frames. This is the stream the client sees.
+    """
+    stream = [event for event in events if event.get("kind") != "terminated"]
+    terminated = [event for event in events if event.get("kind") == "terminated"]
+    if terminated:
+        stream += relay.refusal_events(terminated[0].get("reason", "terminated"))
+    return stream
+
+
+def _block_lifecycle(stream):
+    """The blocks a client was told about, and whether each one was closed."""
+    opened: list[int] = []
+    closed: list[int] = []
+    for event in stream:
+        if event.get("kind") != "passthrough":
+            continue
+        data = event.get("data", {})
+        if data.get("type") == "content_block_start":
+            opened.append(data["index"])
+        elif data.get("type") == "content_block_stop":
+            closed.append(data["index"])
+    return opened, closed
+
+
+def test_the_divergence_refusal_closes_every_block_it_announced():
+    """A refused answer still has to be a well-formed message.
+
+    The divergence fires in the middle of an answer, so the block that was
+    open when it fired is open on the client — and its stop event is sitting
+    in the relay's queue, waiting for the text before it to be released. The
+    terminated path did not release the queue, so the stop never reached the
+    client: the client was left holding a block it never saw the end of, and
+    the refusal opened a second block for an answer it could not assemble.
+
+    The gate is armed here for the first time: a baseline of ordinary
+    reasoning tokens, and a stream that leaves that distribution.
+    """
+    frames = _frames(
+        ("message_start", {"type": "message_start", "message": {"id": "msg_1"}}),
+        _block_start(0),
+        *[_block_delta(0, token) for token in NORMAL_TOKENS[:15]],
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        _block_start(1),
+        *[_block_delta(1, token) for token in DIVERGENT_TOKENS[:12]],
+        ("content_block_stop", {"type": "content_block_stop", "index": 1}),
+        ("message_stop", {"type": "message_stop"}),
+    )
+
+    relay, events = _relay_and_events(frames, divergence_enabled=True)
+
+    terminated = [event for event in events if event["kind"] == "terminated"]
+    assert terminated, "the divergence did not fire"
+    assert terminated[0]["reason"] == "reasoning_divergence"
+
+    stream = _client_stream(relay, events)
+    opened, closed = _block_lifecycle(stream)
+    assert opened, "the client was given no content block at all"
+    # Every block the client was told about is closed. A block that is
+    # opened and never closed is a malformed stream, and a malformed stream
+    # is a transport failure the agent retries.
+    assert closed == opened
+
+    # And the text of a block arrives before that block's stop: a client
+    # that assembles an answer from the events cannot lose the text of a
+    # block it was told was closed.
+    closed_at: dict[int, int] = {}
+    for position, event in enumerate(stream):
+        if event.get("kind") == "passthrough" and event["data"].get("type") == "content_block_stop":
+            closed_at[event["data"]["index"]] = position
+    for position, event in enumerate(stream):
+        if event.get("kind") != "text":
+            continue
+        index = event["index"]
+        if index in closed_at:
+            assert position < closed_at[index], (
+                f"the text of block {index} arrived after its stop"
+            )
 
 
 def test_a_truncated_stream_is_recorded_in_the_ledger(tmp_path):
@@ -1308,6 +1733,101 @@ def test_a_credential_split_across_fragments_is_still_caught():
     assert "ok" in text
 
 
+def test_a_credential_split_across_a_block_boundary_is_still_caught():
+    """The look-behind has to survive a content block boundary.
+
+    The buffer was released at every block boundary, which let the
+    retained look-behind out verbatim and wiped the window. A credential
+    split across the boundary was therefore released in two halves, and
+    neither half matched any pattern: the same key in one block was
+    redacted, and the same key split across two blocks reached the client
+    whole. The window now carries across the boundary, so the key is
+    scanned as the single string it is.
+    """
+    client_key = "sk-ant-api03-client-supplied-key-9876543210"
+    head, tail = client_key[:20], client_key[20:]
+
+    one_block = _frames(
+        _block_start(0),
+        _block_delta(0, f"the key is {client_key} ok"),
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        ("message_stop", {"type": "message_stop"}),
+    )
+    two_blocks = _frames(
+        _block_start(0),
+        _block_delta(0, f"the key is {head}"),
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        _block_start(1),
+        _block_delta(1, f"{tail} ok"),
+        ("content_block_stop", {"type": "content_block_stop", "index": 1}),
+        ("message_stop", {"type": "message_stop"}),
+    )
+
+    for frames in (one_block, two_blocks):
+        cfg = _cfg(_tmp_path())
+        counts = build_distribution(NORMAL_TOKENS * 5)
+        auditor = StreamAuditor(cfg, counts, lambda *_a, **_k: None)
+        relay = AnthropicRelay(
+            auditor, None, divergence_enabled=False, literals=(client_key,)
+        )
+        events = asyncio.run(_run_relay_with_auditor(frames, relay))
+
+        text = "".join(event["text"] for event in events if event["kind"] == "text")
+        assert client_key not in text, "the credential reached the client"
+        assert "[REDACTED:anthropic_api_key]" in text
+        # Exactly one redaction: the key was caught whole, not twice.
+        assert relay.summary()["redaction_count"] == 1
+        # And the text around it survived.
+        assert text.startswith("the key is ")
+        assert text.endswith(" ok")
+
+
+def test_every_block_is_closed_after_its_own_text():
+    """A client that assembles an answer from the events cannot lose the
+    text of a block it was told was closed.
+
+    The look-behind now carries across a block boundary, so the ordering
+    cannot rest on the boundary releasing it. It rests on the queue
+    instead: a block's stop event goes out only once the fragments that
+    preceded it have been delivered, and the next block's text goes out
+    only after that block was opened.
+    """
+    frames = _frames(
+        ("message_start", {"type": "message_start", "message": {"id": "msg_1"}}),
+        _block_start(0),
+        _block_delta(0, "first"),
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        _block_start(1),
+        _block_delta(1, "second"),
+        ("content_block_stop", {"type": "content_block_stop", "index": 1}),
+        ("message_stop", {"type": "message_stop"}),
+    )
+
+    events = asyncio.run(_run_relay(frames))
+    stream = [event for event in events if event["kind"] != "terminated"]
+
+    open_block = None
+    text_per_block: dict[int, int] = {}
+    for event in stream:
+        if event["kind"] == "passthrough":
+            etype = event["data"].get("type")
+            if etype == "content_block_start":
+                assert open_block is None, "a block started before the last one closed"
+                open_block = event["data"]["index"]
+            elif etype == "content_block_stop":
+                assert event["data"]["index"] == open_block, "a block was closed out of order"
+                open_block = None
+        else:
+            assert event["index"] == open_block, (
+                f"the text of block {event['index']} arrived while block "
+                f"{open_block} was open"
+            )
+            text_per_block[event["index"]] = text_per_block.get(event["index"], 0) + 1
+
+    assert open_block is None, "a block was left open"
+    assert text_per_block == {0: 1, 1: 1}
+
+
 def test_the_gateway_redacts_the_operator_key_echoed_in_a_200_answer(tmp_path):
     """End to end: the operator's key never reaches the client.
 
@@ -1339,3 +1859,124 @@ def test_the_gateway_redacts_the_operator_key_echoed_in_a_200_answer(tmp_path):
     assert response.status_code == 200
     assert OPERATOR_KEY not in response.text
     assert "[REDACTED:anthropic_api_key]" in response.text
+
+
+# --- the model credential's transport ------------------------------------
+
+
+def test_the_model_credential_is_not_sent_over_plain_http(tmp_path, monkeypatch):
+    """A credential forwarded in cleartext is a credential on the wire.
+
+    Every other credential this system sends is held to one rule: HTTPS
+    everywhere, plain HTTP only to loopback. The model credential was the
+    one with no rule at all, so a mistyped
+    MONOLITH_ANTHROPIC_BASE_URL put the client's key — and the operator's
+    fallback key — in front of whoever answered.
+
+    The request must not leave at all: refusing after the bytes are on the
+    wire is not refusing.
+    """
+    sent: list = []
+
+    async def _record(self, request, **_kwargs):
+        sent.append(request)
+        raise AssertionError("the credential must not leave over plain HTTP")
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", _record)
+    monkeypatch.setattr(main, "_UNTRUSTED_UPSTREAM_NOTICED", False)
+    _setup(
+        tmp_path,
+        anthropic_base_url="http://model.example.com",
+        anthropic_api_key="operator-fallback-key",
+    )
+    client = TestClient(app, raise_server_exceptions=True)
+    response = client.post(
+        "/v1/messages",
+        headers={"x-api-key": "client-key"},
+        json={
+            "model": "stub-model",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 503
+    assert sent == [], "the credential was put on the wire"
+    # The refusal says why, and the ledger says it too: an operator whose
+    # gateway answers 503 needs to be told which of their settings did it.
+    assert "not a trusted transport" in response.json()["detail"]
+
+
+def test_the_refusal_for_an_untrusted_upstream_is_recorded_once(tmp_path, monkeypatch):
+    """The cause is the operator's configuration, not the caller.
+
+    A retrying agent would otherwise write a ledger row per retry, so the
+    notice fires once per process — and the ledger says why the gateway is
+    answering 503.
+    """
+    sent: list = []
+
+    async def _record(self, request, **_kwargs):
+        sent.append(request)
+        raise AssertionError("the credential must not leave over plain HTTP")
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", _record)
+    monkeypatch.setattr(main, "_UNTRUSTED_UPSTREAM_NOTICED", False)
+    _cfg, events = _setup(tmp_path, anthropic_base_url="http://model.example.com")
+
+    client = TestClient(app, raise_server_exceptions=True)
+    body = {
+        "model": "stub-model",
+        "max_tokens": 1024,
+        "messages": [{"role": "user", "content": "hello"}],
+        "stream": True,
+    }
+    first = client.post("/v1/messages", headers={"x-api-key": "client-key"}, json=body)
+    second = client.post("/v1/messages", headers={"x-api-key": "client-key"}, json=body)
+
+    assert first.status_code == 503
+    assert second.status_code == 503
+    assert sent == []
+    notices = [event for event in events if event[0] == "upstream_transport_refused"]
+    assert len(notices) == 1
+    assert notices[0][1] == "warning"
+    assert "MONOLITH_ALLOW_INSECURE_ANTHROPIC" in notices[0][2]["message"]
+
+
+def test_the_operator_can_allow_an_insecure_upstream_by_name(tmp_path, monkeypatch):
+    """The escape hatch exists, and it has to be asked for.
+
+    An operator whose model service really is on a trusted network can say
+    so, and then the request is sent. What must not happen is the request
+    being sent because nobody said anything.
+    """
+    sent: list = []
+
+    async def _record(self, request, **_kwargs):
+        sent.append(request)
+        raise httpx.ConnectError("no such host")
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", _record)
+    _setup(
+        tmp_path,
+        anthropic_base_url="http://model.example.com",
+        anthropic_allow_insecure=True,
+    )
+    client = TestClient(app, raise_server_exceptions=True)
+    response = client.post(
+        "/v1/messages",
+        headers={"x-api-key": "client-key"},
+        json={
+            "model": "stub-model",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+        },
+    )
+
+    # The request was attempted, and the host was unreachable, which is the
+    # only reason it did not come back with an answer.
+    assert len(sent) == 1
+    assert str(sent[0].url) == "http://model.example.com/v1/messages"
+    assert response.status_code == 502

@@ -23,6 +23,7 @@ from monolith_wrap import (
     _InjectorHandler,
     _proxy_advisory,
     _should_use_ambient_proxy,
+    build_child_env,
     build_mcp_config,
     build_shield_env,
     credential_transport_is_trusted,
@@ -175,6 +176,26 @@ class TransportTests(unittest.TestCase):
         self.assertTrue(credential_transport_is_trusted("http://dashboard.example.com", True))
         # A scheme that is not HTTP at all is not a transport we speak.
         self.assertFalse(credential_transport_is_trusted("ftp://dashboard.example.com", False))
+
+    def test_a_url_that_carries_a_credential_is_never_trusted(self):
+        # A password in the URL is a password in a log line, a proxy's
+        # request line and a process listing. The shared package's copy of
+        # this rule refuses it; the launcher's copy has to refuse it too,
+        # or the two rules have drifted.
+        self.assertFalse(
+            credential_transport_is_trusted("https://user:password@dashboard.example.com", False)
+        )
+        self.assertFalse(
+            credential_transport_is_trusted("https://user:password@dashboard.example.com", True)
+        )
+        # A fragment never reaches the server, so a credential there is a
+        # credential in the wrong place.
+        self.assertFalse(
+            credential_transport_is_trusted("https://dashboard.example.com#secret", False)
+        )
+        # No host to trust, and a URL too malformed to have one.
+        self.assertFalse(credential_transport_is_trusted("https:///api/sessions", False))
+        self.assertFalse(credential_transport_is_trusted("http://[::1", False))
 
     def test_the_session_report_is_skipped_when_the_token_would_travel_in_the_clear(self):
         buffer = io.StringIO()
@@ -548,6 +569,52 @@ class SessionReportTests(unittest.TestCase):
         # And the breakdown says what it covers.
         self.assertIn("the counts below cover the first 1000", output)
 
+    def test_the_report_is_asked_for_by_agent(self):
+        """A session id another agent shared would merge two runs.
+
+        The correlation boundary is (tenant, agent, session), and the
+        launcher minted both the session id and the agent id for this run.
+        So it asks the dashboard for its own agent's events, instead of
+        whatever else in the tenant happened to use the same session id.
+        """
+        seen: list[str] = []
+
+        class _Dashboard(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - stdlib signature
+                seen.append(self.path)
+                payload = b"{}"
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _Dashboard)
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                print_session_report(
+                    f"http://127.0.0.1:{server.server_address[1]}",
+                    "sess-1",
+                    "operator-token-value",
+                    agent_id="agent one",
+                    allow_insecure=False,
+                )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        # The agent id is a query parameter, so it is percent-encoded.
+        self.assertEqual(seen, ["/api/sessions/sess-1?agent_id=agent%20one"])
+        # And the operator can see which run the report is about.
+        self.assertIn("agent one", buffer.getvalue())
+
 
 class PlanRedactionTests(unittest.TestCase):
     def test_the_plan_does_not_print_a_secret(self):
@@ -621,6 +688,124 @@ class PlanRedactionTests(unittest.TestCase):
             config["mcpServers"]["files"]["args"][-1],
             "ghp_live_0000",
         )
+
+    def test_the_short_secret_flags_are_redacted_and_the_path_is_not(self):
+        """A short flag is a secret flag too, and a path is not.
+
+        ``--pat`` carries a personal access token, ``--bearer`` a bearer
+        credential and ``--pw`` a password. None of them contains one of the
+        long markers, so a substring match missed all three — and adding
+        "pat" to that list would have redacted every ``--path`` the operator
+        configured, which is a different thing entirely.
+        """
+        config = build_mcp_config(
+            {
+                "files": {
+                    "command": "npx",
+                    "args": [
+                        "-y",
+                        "server",
+                        "--pat",
+                        "ghp_live_0000",
+                        "--bearer",
+                        "bearer-value-3333",
+                        "--pw",
+                        "hunter2",
+                        "--path",
+                        "/tmp/data",
+                    ],
+                    "env": {},
+                },
+                "inline": {
+                    "command": "server",
+                    "args": ["--pat=ghp_inline_0000"],
+                    "env": {},
+                },
+            },
+            shield=Path("/opt/mcp-shield"),
+            env={"MONOLITH_SESSION_ID": "sess-1"},
+            vector_anchor_url="http://127.0.0.1:8001",
+            python="/usr/bin/python3",
+        )
+        printed = json.dumps(redact_config_secrets(config))
+        self.assertNotIn("ghp_live_0000", printed)
+        self.assertNotIn("bearer-value-3333", printed)
+        self.assertNotIn("hunter2", printed)
+        self.assertNotIn("ghp_inline_0000", printed)
+        # The flag itself is not a secret, and the plan is useless without it.
+        self.assertIn("--pat", printed)
+        self.assertIn("--bearer", printed)
+        self.assertIn("--pw", printed)
+        # A path is not a secret. Redacting it would hide the only part of
+        # the configuration an operator needs to check.
+        self.assertIn("/tmp/data", printed)
+        # And the file on disk keeps the real values: the server needs them.
+        # The wrapped server's own command is the first argument, so the
+        # flags start at the second.
+        self.assertEqual(
+            config["mcpServers"]["files"]["args"][4],
+            "ghp_live_0000",
+        )
+        self.assertEqual(
+            config["mcpServers"]["files"]["args"][6],
+            "bearer-value-3333",
+        )
+        self.assertEqual(
+            config["mcpServers"]["files"]["args"][8],
+            "hunter2",
+        )
+
+
+class ChildEnvTests(unittest.TestCase):
+    def test_the_operator_credentials_do_not_reach_the_agent(self):
+        """The agent is the thing this system defends against.
+
+        It starts processes of its own — the MCP servers it runs, the tools
+        it calls, the scripts it writes — and every one of them inherits the
+        agent's environment. An exported operator credential would
+        therefore reach all of them, and the operator's ledger credential
+        would let the agent write the incident record that describes it.
+        """
+        base = {
+            "PATH": "/usr/bin",
+            "HOME": "/home/operator",
+            "ANTHROPIC_API_KEY": "the-anthropic-key-the-operator-configured",
+            "MONOLITH_OPERATOR_TOKEN": "operator-token-0001",
+            "MONOLITH_EVENT_TOKEN": "ingest-token-0002",
+            "MONOLITH_EVENT_TOKEN_MCP_SHIELD": "module-token-0003",
+            "MONOLITH_ADMIN_TOKEN": "admin-token-0004",
+            "MCP_SHIELD_KEY": "hmac-key-0005",
+            "PBM_SECRET_PROVIDER_TOKEN": "provider-token-0006",
+            "A_TOKEN_FOR_SOMETHING_ELSE": "not-ours-to-take",
+        }
+        child = build_child_env(base)
+
+        for name in (
+            "MONOLITH_OPERATOR_TOKEN",
+            "MONOLITH_EVENT_TOKEN",
+            "MONOLITH_EVENT_TOKEN_MCP_SHIELD",
+            "MONOLITH_ADMIN_TOKEN",
+            "MCP_SHIELD_KEY",
+            "PBM_SECRET_PROVIDER_TOKEN",
+        ):
+            self.assertNotIn(name, child, f"{name} must not reach the agent")
+
+        # The agent's own credential is the agent's to spend, and the point
+        # of the gateway is that the agent can still reach the provider.
+        self.assertEqual(
+            child["ANTHROPIC_API_KEY"],
+            "the-anthropic-key-the-operator-configured",
+        )
+        # And the environment it needs to run at all.
+        self.assertEqual(child["PATH"], "/usr/bin")
+        self.assertEqual(child["HOME"], "/home/operator")
+        # A credential that belongs to something else is not ours to take.
+        self.assertEqual(child["A_TOKEN_FOR_SOMETHING_ELSE"], "not-ours-to-take")
+
+    def test_a_lower_case_credential_is_hidden_too(self):
+        """Environment variable names are case-insensitive on Windows."""
+        child = build_child_env({"monolith_operator_token": "operator-token-0007"})
+        self.assertNotIn("monolith_operator_token", child)
 
 
 class SessionIdTests(unittest.TestCase):

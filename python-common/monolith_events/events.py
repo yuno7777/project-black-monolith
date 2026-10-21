@@ -125,7 +125,21 @@ def tenant_scope(value: str | None) -> str | None:
     return cleaned
 
 
-def _safe_delivery_url(value: str, *, allow_insecure_http: bool = False) -> bool:
+def credential_transport_is_trusted(value: str, *, allow_insecure: bool = False) -> bool:
+    """Whether a credential may be sent to this address over this scheme.
+
+    HTTPS everywhere. Plain HTTP only to a loopback address, and only when
+    the operator has said the network is trusted. A URL that carries
+    credentials in it is never trusted: the secret would end up in a log
+    line, a proxy's request line and a process listing, and none of those
+    are places a credential belongs.
+
+    This is the one rule, and the modules apply it to every credential they
+    send. The event outbox uses it for the dashboard, the shared poller for
+    the revocation endpoint, and the Anthropic gateway for the model
+    credential it forwards upstream — a credential that travelled over plain
+    HTTP would be on the wire, in front of whoever answers.
+    """
     try:
         parsed = urllib.parse.urlsplit(value)
         host = parsed.hostname
@@ -142,7 +156,7 @@ def _safe_delivery_url(value: str, *, allow_insecure_http: bool = False) -> bool
         and not parsed.fragment
         and (
             parsed.scheme == "https"
-            or (parsed.scheme == "http" and (loopback or allow_insecure_http))
+            or (parsed.scheme == "http" and (loopback or allow_insecure))
         )
     )
 
@@ -281,7 +295,7 @@ class RevokedSessionPoller:
     ) -> None:
         if interval_ms < 1_000:
             raise ValueError("poll interval must be at least one second")
-        if not _safe_delivery_url(url, allow_insecure_http=allow_insecure_http):
+        if not credential_transport_is_trusted(url, allow_insecure=allow_insecure_http):
             raise ValueError("poll URL must use HTTPS (HTTP is loopback-only)")
         if not _valid_bearer_token(token):
             raise ValueError("poll token must be 16-512 header-safe characters")
@@ -359,7 +373,7 @@ class EventOutbox:
     ) -> None:
         if min(max_attempts, max_pending, max_dead, dead_retention_ms) < 1:
             raise ValueError("outbox limits must be positive")
-        if not _safe_delivery_url(url, allow_insecure_http=allow_insecure_http):
+        if not credential_transport_is_trusted(url, allow_insecure=allow_insecure_http):
             raise ValueError("outbox URL must use HTTPS (HTTP is loopback-only)")
         if not _valid_bearer_token(token):
             raise ValueError("outbox token must be 16-512 header-safe characters")

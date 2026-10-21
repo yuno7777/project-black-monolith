@@ -96,12 +96,69 @@ def test_clean_session_retrieves_normally():
     assert events[-1][0] == "retrieval"
 
 
-def test_no_session_identity_skips_the_check():
+def test_a_retrieval_with_no_session_identity_is_refused():
+    """A retrieval that cannot be attributed to a session is refused.
+
+    The circuit breaker revokes a session, and the revocation registry
+    works on a session id. A retrieval with no session id has no session
+    to revoke, so the check that stands between the corpus and a
+    compromised agent does not run at all — the check was skipped
+    silently, and a caller that reached the corpus without an identity
+    was a caller the breaker could not act on.
+    """
+    from src.events import EventContext
+
+    events: list = []
+    proxy = _proxy(events)
+    response = proxy.retrieve("ordinary query", 1, None)
+
+    assert response["results"] == []
+    assert response["withheld"] == []
+    assert response["session_quarantined"] is True
+    # Nothing from the corpus was touched.
+    assert proxy.collection.queried is False
+    assert proxy.tracker.recorded is False
+
+    refusals = [event for event in events if event[0] == "session_quarantined"]
+    assert len(refusals) == 1
+    assert refusals[0][1] == "critical"
+    # The reason tells a misconfiguration apart from a compromise.
+    assert refusals[0][2]["refusal"] == "unattributed_retrieval"
+    assert refusals[0][2]["session_id"] == ""
+
+
+def test_an_unattributed_refusal_is_reported_once_per_identity():
+    """A caller that retries must not be able to flood the ledger."""
+    from src.events import EventContext
+
+    events: list = []
+    proxy = _proxy(events)
+    ctx = EventContext(session_id=None, agent_id="agent-without-a-session")
+
+    assert proxy.retrieve("one", 1, ctx)["session_quarantined"] is True
+    assert proxy.retrieve("two", 1, ctx)["session_quarantined"] is True
+    assert len([event for event in events if event[0] == "session_quarantined"]) == 1
+
+    # A different caller is a different misconfiguration, and says so.
+    other = EventContext(session_id=None, agent_id="another-agent")
+    assert proxy.retrieve("three", 1, other)["session_quarantined"] is True
+    assert len([event for event in events if event[0] == "session_quarantined"]) == 2
+
+
+def test_a_revoked_session_and_an_unattributed_one_are_told_apart():
+    """The two refusals look the same to the caller, and are not the same."""
+    from src.events import EventContext
+
     events: list = []
     proxy = _proxy(events)
     revoked_session_registry().replace(["revoked-session-2"])
     try:
-        response = proxy.retrieve("ordinary query", 1, None)
-        assert response["results"][0]["id"] == "doc-1"
+        proxy.retrieve("ordinary query", 1, EventContext(session_id="revoked-session-2"))
+        proxy.retrieve("ordinary query", 1, None)
     finally:
         revoked_session_registry().replace([])
+
+    reasons = [
+        event[2]["refusal"] for event in events if event[0] == "session_quarantined"
+    ]
+    assert reasons == ["retrieval", "unattributed_retrieval"]

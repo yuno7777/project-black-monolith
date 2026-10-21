@@ -174,3 +174,11 @@ See the scope notes in [SECURITY.md](../SECURITY.md) for what that leaves
 open — a forged tenant claim is stopped at ingest by the per-tenant module
 credential, while a forged session claim inside the module's own tenant is
 attribution the module believes.
+
+A missing session claim is the one case the memory layer does not accept.
+The cross-layer circuit breaker revokes a session, so a retrieval that names
+no session is a retrieval the breaker cannot act on; VectorAnchor refuses it
+rather than serving corpus text into a context it cannot later withdraw. The
+claim is still not unforgeable — a caller that names a *different* session is
+attribution the module believes — but the sanctioned path is always
+attributable, and the refusal is loud rather than silent.

@@ -146,6 +146,13 @@ paths:
         Hot-reload the TraceAudit KL baseline. An empty body reloads from the
         configured path; a body may carry a replacement `distribution` (or
         `counts`) mapping, which is validated and written atomically first.
+
+        The `model` names the model the distribution was captured from. It is
+        the key that opens the divergence gate: a KL score against a
+        distribution from another model says nothing about the model answering
+        the request, so the gateway refuses to terminate on it. A reload that
+        names no model keeps the recorded one when the distribution is
+        unchanged, and otherwise leaves the baseline model-agnostic.
       security:
         - bearerAuth: []
       requestBody:
@@ -158,6 +165,9 @@ paths:
                 distribution:
                   type: object
                   additionalProperties: { "type": "number", "minimum": 0 }
+                model:
+                  type: string
+                  maxLength: 128
       responses:
         "200":
           description: The baseline was validated and swapped into the live auditor.
@@ -165,10 +175,16 @@ paths:
             application/json:
               schema:
                 type: object
-                required: ["reloaded", "vocab_size"]
+                required: ["reloaded", "vocab_size", "baseline_model"]
                 properties:
                   reloaded: { "const": true }
                   vocab_size: { "type": "integer", "minimum": 1 }
+                  baseline_model:
+                    type: [ "string", "null" ]
+                    description: |
+                      The model the baseline was captured from, or null when it
+                      is model-agnostic — which means the divergence gate is
+                      closed for every model.
   /v1/chat/completions:
     post:
       operationId: auditedChatCompletion

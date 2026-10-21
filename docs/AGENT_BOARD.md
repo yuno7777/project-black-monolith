@@ -50,8 +50,11 @@ Read it before starting work. Write to it while you work.
 | security | `fix/trace-audit/prompt-projection` | the reasoning layer's prompt projection dropped every content block it could not represent, in silence (`FINDINGS.md` test gap 6) | PR #74 open; 14 tests, each proved by mutating the behaviour back and watching the test that claims to hold it fail. Worktree `C:/Users/Abhi/Desktop/monolith-wt/prompt-projection` |
 | security | `fix/trace-audit/real-model-calibration` | the divergence gate had never been measured against a real model (`FINDINGS.md` test gap 7) | PR #76 open; the measurement found that the gate **cannot fire at all** against a real model (`FINDINGS.md` §12). The committed result is asserted by a test, the broken half of the promise is a *strict* xfail so a fix has to come back and remove the marker, and the calibration runs against a real model in CI. Branched off `main` at `f42721d`; no history rewrite, so nothing was force-pushed |
 | security | `fix/detector-reset-path` | the memory layer's administrative reset — the one action that erases the detector's history — had no tests on either side of the wire (`FINDINGS.md` test gap 4) | PR #75 open; eight tests on the module's side and seven on the dashboard's, each proved by mutating the behaviour back and watching the test that claims to hold it fail. One unrelated commit fixes a test that failed at random (the descendant test read a file that was still being written). Worktree `C:/Users/Abhi/Desktop/monolith-wt/reset-detection` |
+| gateway-review | `fix/gateway-review-fixes` | the eleven findings from the agent-gateway review: credential containment in the shield and the launcher, the reasoning layer's answer path, the memory layer's attribution rule, the dashboard's session report | all eleven fixed, one commit each; the findings are recorded in `FINDINGS.md` with the commit that fixes each and the residuals. Worktree `C:/Users/Abhi/Desktop/monolith-wt/gateway-fixes`; branched off `fix/credential-redaction-success-path` so the credential-redaction work is included. `origin/main` merged in (PR #65), no history rewrite, so nothing was force-pushed |
+| silent-defenses | `fix/silent-defense-failures` | the standing work that a failure turns a defence off without saying so: the shield's admin credential, the memory layer's truncated body, the Python outbox's oversized payload, the Rust outbox's fallback target, the dashboard's listener reconnect, and the revocation snapshot that stops being complete | worktree `C:/Users/Abhi/Desktop/monolith-wt/silent-defenses`, branched off `origin/main` (`1b6e8ed`) and rebased onto `f42721d`. One commit per finding, each proved by a test that fails before the fix. Six findings fixed (`FINDINGS.md` §3, §4, §7, §9, §10, §11); pushed, awaiting a merge |
 | integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI green on `b19513b` |
 | integrator | Dependabot | #24 merged (codeql-action); #15, #16 closed as superseded; #26 superseded by a direct hmac 0.13 migration | the queue is empty: **zero open PRs** |
+| credential-transport | `fix/trace-audit/model-credential-transport` | the transport rule for the model credential the Anthropic gateway forwards upstream: the rule the modules already apply to their own delivery, applied to the one credential that had none (`FINDINGS.md` test gap 5, and §12, which is the defect it was hiding) | two fixes and two records; every one proved by mutating the fix back and watching the new test fail. Stacked on `fix/gateway-review-fixes` as PR #77, so it rebases onto `main` after #65 merges. Worktree `C:/Users/Abhi/Desktop/monolith-wt/credential-transport` |
 
 The project is moving to user-facing features. The work below is the
 security and operations tail; the board is here so it is not lost.
@@ -251,6 +254,19 @@ proxy settings from its own environment. That is question 13 in
 
 | Path | Claimed by | Note |
 | --- | --- | --- |
+| `mcp-shield/src/proxy.rs` | gateway-review | the child environment. Overlaps the standing `mcp-shield/src/**` claim, whose batch merged on 2026-10-20; coordinate if `agent/security/fail-closed-config` lands in the same file |
+| `scripts/monolith_wrap.py` | gateway-review | the launcher's child environment and the plan redactor |
+| `trace-audit/src/anthropic_gateway.py`, `trace-audit/src/stream_proxy.py`, `trace-audit/src/pii_scanner.py`, `trace-audit/src/main.py` | gateway-review | the answer path: the cross-block credential leak, the citation delta, the Anthropic key pattern, the refusal stream, the baseline model, the token ceiling |
+| `vector-anchor/src/mcp_server.py`, `vector-anchor/src/retriever_proxy.py` | gateway-review | session attribution on the retrieve path |
+| `vector-anchor/tests/**`, `vector-anchor/fixtures/run_demo.sh`, `scripts/verify_recovery.sh`, `evaluation/real_models.py`, `docs/IDENTITY_AND_ACCESS.md` | gateway-review | the call sites that retrieve without naming a session, and the tests that exercise the retriever directly |
+| `dashboard/lib/session-report.ts`, `dashboard/app/api/sessions/[sessionId]/route.ts` | gateway-review | taken over from `add-agent-onboarding`, which offered it; the peer recorded it as "owned by peer session" and does not touch it |
+| `docs/FINDINGS.md` | gateway-review | the eleven findings land here, each with the commit that fixes it — done, plus the residuals |
+| `contracts/openapi.yaml` | gateway-review | overlapped with `security`'s claim (merged): `/admin/reload-baseline` gained a `model` request field and a `baseline_model` response field |
+| `mcp-shield/src/main.rs`, `mcp-shield/src/outbox.rs` | silent-defenses | the status listener's admin credential and the fallback delivery target. Overlaps the standing `mcp-shield/src/**` claim, whose batch merged on 2026-10-20 |
+| `python-common/monolith_events/events.py` | silent-defenses | the oversized payload and the paged revocation snapshot |
+| `dashboard/lib/live-event-listener.ts`, `dashboard/lib/event-stream-client.ts`, `dashboard/app/page.tsx` | silent-defenses | the reconnect after a failed LISTEN, and the browser-side reconnect — an `EventSource` that got a 503 never reconnects by itself |
+| `dashboard/lib/incident-store.ts`, `dashboard/app/api/ingest/route.ts`, `dashboard/app/api/sessions/revoked/route.ts` | silent-defenses | the revocation snapshot pagination. Overlaps the standing `dashboard/lib/incident-store.ts` / `dashboard/app/api/ingest/**` claim, whose batch merged on 2026-10-20 |
+| `vector-anchor/src/mcp_server.py` | silent-defenses | the truncated error body. **Note:** `gateway-review` also claims this file for session attribution; the two fixes touch different functions and the branches are separate, so whoever merges second should rebase |
 | `mcp-shield/src/**` | security | through the 2026-10-20 review batch |
 | `mcp-shield/README.md`, `crates/pbm-secret-boundary/README.md`, `docs/SECRET_BOUNDARY.md` | security | the stale test counts (documentation drift 6) |
 | `mcp-shield/src/**` | security | through the 2026-10-20 review batch; the spool's byte cap (documentation drift 1) on `fix/mcp-shield/spool-byte-cap-doc` |
@@ -262,7 +278,10 @@ proxy settings from its own environment. That is question 13 in
 | `vector-anchor/tests/test_embedding.py`, `vector-anchor/tests/test_frequency_tracker.py` | security | the memory layer's hot path. Reads `vector-anchor/src/embedding.py` and `vector-anchor/src/frequency_tracker.py` but does not modify either |
 | `scripts/monolith_wrap.py`, `scripts/tests/**` | security | the launcher's ambient-proxy rule (`FINDINGS.md` documentation drifts 2 and 3) |
 | `docs/FINDINGS.md`, `docs/OPEN_QUESTIONS.md`, `README.md` | security | the drift list, the new open question, and the launcher's section of the README |
+| `contracts/openapi.yaml` | security | corrected the revocation snapshot wording — that branch is merged; `gateway-review` has since touched the same file, so the two rows are both live |
 | `main` | integrator | Merges and verification only; branch work happens in a worktree. |
+| `python-common/monolith_events/events.py`, `trace-audit/src/config.py`, `trace-audit/src/main.py`, `trace-audit/src/events.py` | credential-transport | the model credential's transport rule: the rule the modules already apply to their own delivery, applied to the credential the Anthropic gateway forwards upstream. Stacked on `fix/gateway-review-fixes`, so it rebases onto `main` after that merges. `python-common/monolith_events/events.py` overlaps the `silent-defenses` claim, but the two touch different functions |
+| `scripts/monolith_wrap.py`, `scripts/tests/test_monolith_wrap.py` | credential-transport | the launcher's standard-library-only copy of the transport rule, brought into line with the shared one (`80f84f6`). Overlaps the `gateway-review` claim on the same file, and it is stacked on that branch, so the change rides on top of it rather than racing it |
 
 Free to claim: `vector-anchor/**` (apart from the detector's hot path, above),
 `trace-audit/**`, `dashboard/app/api/operations/**`,
@@ -280,6 +299,10 @@ Free to claim: `vector-anchor/**`, the rest of `trace-audit/**`,
 Free to claim: `vector-anchor/**` (apart from the reset path's tests, above),
 `dashboard/app/api/benchmarks/**`, `docs/OPEN_QUESTIONS.md`, the Dependabot
 queue.
+Free to claim: `vector-anchor/**` (apart from the two files above),
+`trace-audit/**` (apart from the four files above),
+`dashboard/app/api/operations/**`, `dashboard/app/api/benchmarks/**`,
+`docs/OPEN_QUESTIONS.md`, the Dependabot queue.
 
 ## Standing work
 
@@ -335,8 +358,107 @@ The fixtures are assembled at runtime, never written out: a contiguous
 secret scanner, and push protection blocks the push even though the value
 is the published AWS example. The bytes handed to the detector are
 identical either way.
+| 1 | ~~The reasoning layer's KL divergence is off in every shipped configuration: nothing ever writes the baseline's `model` key, so the gate can never open.~~ | `trace-audit/src/main.py` | **done** — `6041854`, see `FINDINGS.md` §1 |
+| 3 | ~~Every revocation snapshot is truncated at 64 KiB, so past ~1,700 live revocations the modules keep a stale set forever and the breaker fails open.~~ **Fixed** by `fix(revocation): page the snapshot so a large one is never half-read`: the snapshot is paged by a keyset cursor and both readers install it only once it has been read whole. | `dashboard/app/api/ingest/route.ts`, `python-common`, `mcp-shield` | **high** — see `FINDINGS.md` §3 |
+| 4 | ~~The MCP-Shield status listener falls back to the module's ingest token as its admin credential.~~ **Fixed** by `fix(mcp-shield): keep the ingest token out of the status listener`: the administrative endpoints answer 503 without an administrative credential. | `mcp-shield/src/main.rs` | medium — see `FINDINGS.md` §4 |
+| 5 | The ingest response carries the tenant's whole revocation set on every request, so the payload grows with the total number of quarantines. The fix needs the dashboard *and* `python-common` to agree on snapshot-versus-delta. **Bounded, not made a delta:** the ingest response carries the snapshot only while it fits in 16 KiB and otherwise carries the count alone, and the poll endpoint pages the whole set. The wire format is still a snapshot, so no module has to change its contract beyond the paging. | `dashboard/app/api/ingest/route.ts`, `python-common/monolith_events/events.py` | low — contract change |
 | 6 | The AWS secret access key has no detector. Deliberately: 40 characters of base64 has a false-positive rate that would hard-block ordinary calls. Needs a shape-aware detector, not a regex. | `mcp-shield/src/sanitizer.rs` | low |
 | 7 | The divergence gate **cannot fire against a real model**: the statistic's ceiling against a real model's baseline is 0.59 and the threshold is 1.0, so no answer can cross it. The threshold was calibrated to the ceiling of the *mock's* 36-token vocabulary (3.29), and a real model's 331-token vocabulary cuts the ceiling to a third. Compounds item 1 above — arming the gate without fixing this gives a gate that never fires, and it fails silently. | `trace-audit/src/divergence_monitor.py` | **high** — see `FINDINGS.md` §12 |
+
+The silent-defenses branch also closed four of the survey's own items while it
+was in the same files: the memory layer's truncated error body (`FINDINGS.md`
+§7), the Python outbox's oversized payload (§10), the Rust outbox's fallback
+delivery target (§11), and the dashboard listener's missing reconnect (§9).
+Each is one commit, and each is proved by a test that fails before the fix
+and passes after it.
+
+The credential-transport branch closed one more of the survey's items, and
+it is worth reading the way it was reported: test gap 5 said the rule
+deciding whether a credential may travel over plain HTTP to the upstream
+model was "neither present nor tested", and the half that matters was the
+first one. The rule did not exist. The model credential — the client's own
+`x-api-key`, or the operator's fallback key — went to whatever
+`MONOLITH_ANTHROPIC_BASE_URL` named, over whatever scheme that named, and
+every other credential this system sends is held to a rule it did not
+answer to. It is now held to the same rule, in the same place, and the
+launcher's copy of the rule was brought back into line with the shared one
+because the two had drifted. `FINDINGS.md` §12 has the detail.
+
+### The revocation snapshot is paged now (read this before touching it)
+
+`GET /api/sessions/revoked` answers with either the whole set or one page of
+it, and the answer says which:
+
+- `revoked_sessions_complete: true` — the array is the whole set. Adopt it.
+- `revoked_sessions_complete: false` — the array is one page. Follow
+  `next_cursor` (`?cursor=…`) until there is no cursor, and adopt the set
+  only then.
+
+The cursor is a keyset on `(session_id, agent_id)`, base64url-encoded, and it
+is the reader's job to validate it: only the base64url alphabet is put into
+a URL. A page is bounded by the number of ids **and** by the bytes they take.
+
+**A partial set is never adopted.** A reader that installs half a snapshot
+forgets every revocation that is not in it, and a forgotten revocation is a
+quarantined session that keeps working. Both readers therefore keep the set
+they had until the whole snapshot has been read.
+
+`POST /api/ingest` carries the snapshot only while it fits in 16 KiB, and
+otherwise carries `revoked_sessions_total` alone. An old module that reads
+that response keeps the set it had, which is what it already did; a module
+that understands the contract reads the paged snapshot.
+
+### One transport rule for every credential (read this before touching it)
+
+There is exactly one rule, and it is in one place:
+`credential_transport_is_trusted()` in `python-common/monolith_events/events.py`.
+It answers one question — *may a credential be sent to this address over this
+scheme?* — and the answer is: **HTTPS everywhere; plain HTTP only to a
+loopback address, and only when the operator has said the network is
+trusted.** A URL that carries credentials in it, or a fragment, is never
+trusted.
+
+Four callers now use it, and they are the four places a credential leaves
+this system:
+
+| Caller | Credential | Where |
+| --- | --- | --- |
+| `EventOutbox` | the module's ingest token | `python-common/monolith_events/events.py` |
+| `RevokedSessionPoller` | the module's ingest token | `python-common/monolith_events/events.py` |
+| the Anthropic gateway | the model's credential | `trace-audit/src/main.py` |
+| the launcher | the agent's endpoint | `scripts/monolith_wrap.py` |
+
+The Rust side has its own copy of the same rule, for the same reason it has
+its own copy of the outbox: `mcp-shield/src/outbox.rs` and
+`mcp-shield/src/http_transport.rs`.
+
+**Do not add a fifth rule and do not add a third copy of this one.** A new
+credential gets the shared function, not a regex of its own. A copy is a
+place where the rule can drift, and a drifted rule is a credential that
+thought it was safe.
+
+Two things to know when you touch the gateway's use of it:
+
+- **The check is on the URL that will actually be used**, not on the
+  configured base. `build_upstream_request()` derives the URL, and a
+  derivation that changed the host could otherwise step around a check made
+  against the base.
+- **The refusal happens before the request is built.** A request to an
+  untrusted upstream is answered `503` and never leaves; a ledger row
+  (`upstream_transport_refused`) says why, once per process, because the
+  cause is the operator's configuration and not the caller.
+
+The escape hatch is `MONOLITH_ALLOW_INSECURE_ANTHROPIC=true`, and it has to be
+spelled out by name. An operator whose model service is genuinely on a
+trusted network can say so; an operator who has mistyped a host cannot enable
+it by accident.
+
+The eleven findings from the agent-gateway review are all fixed and recorded in
+[`FINDINGS.md`](FINDINGS.md) under *The agent-gateway review*, with the commit
+that fixes each and the residuals left open. Two of them were HIGH and are
+worth reading twice: the shield's own credentials reached every MCP server it
+started (`84c2314`), and a credential split across a content block boundary
+reached the client whole (`cd42177`).
 
 Done: the module dead-letter replay is now scoped to one tenant across the
 dashboard, both module endpoints, the shared Python outbox and the Rust spool
@@ -446,6 +568,14 @@ count this repository used to carry was wrong — 45 where the suite ran
 144, 73 where it ran 79 — because a number does not update itself when the
 next test lands. Write the number with the date it was counted and point at
 the command, which prints the current one and is the authority.
+Two of the launcher's tests are timing-sensitive on Windows and fail
+intermittently when the machine is busy: `test_cleanup_stops_spawned_descendant`
+(spawns a real child, then asserts the port is closed the instant the child
+dies) and `test_an_oversized_body_is_refused_before_it_is_read` (waits on a
+loopback server with a 15-second timeout). This is pre-existing — it was
+observed on `fix/gateway-review-fixes` with none of the credential-transport
+changes on it — so a red `scripts` gate is worth re-running once before it
+is believed.
 
 ## Finding the other agents
 

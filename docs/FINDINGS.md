@@ -31,7 +31,8 @@ unconfirmed finding is a fix to the wrong thing.
 
 ### 1. The reasoning layer's KL divergence is off in every shipped configuration
 
-**Status:** verified. **Where:** `trace-audit/src/main.py`,
+**Status:** fixed by `fix(trace-audit): record the model a baseline was captured
+from`. **Where:** `trace-audit/src/main.py`,
 `trace-audit/fixtures/baseline_capture.py`. **Effort:** medium.
 
 `_load_baseline_model` is the only reader of the baseline file's `"model"`
@@ -56,6 +57,31 @@ format, or the model comparison would fail no test.
 baseline is captured from one backend and the request is answered by another.
 Then either write the key on capture or drop the gate, and cover both the
 armed and the disarmed path.
+
+**How it was settled.** The answer is: *a baseline names the model it was
+captured from, and it is matched against the model that is answering.* The
+capture writes the key, the reload keeps it, and a distribution that arrives
+without a name becomes model-agnostic rather than inheriting a provenance it
+does not have.
+
+Three things changed.
+
+- `fixtures/baseline_capture.py` records the model it captured from. The
+  offline backend records `"mock"` — not a model, so a baseline from it keeps
+  the gate shut for every real model, which is the correct direction. A new
+  `--anthropic` mode captures from the Messages API at the granularity the
+  auditor actually scores (the text deltas, not whole words), because a
+  baseline of whole words scored against a stream of deltas would fire on
+  ordinary traffic.
+- `_write_baseline_atomic` takes the model, and `/admin/reload-baseline`
+  preserves the recorded one instead of destroying it. A replacement
+  distribution that names no model is model-agnostic; one that names a model
+  is recorded as given.
+- The armed path is now tested for the first time, end to end: capture from
+  an Anthropic-shaped upstream, reload, and a stream that leaves the
+  distribution is cut short with a critical `reasoning_divergence_terminate`
+  event. The disarmed path is tested too — a mismatch leaves the answer alone
+  and records a one-shot `divergence_disabled` notice saying why.
 
 ### 2. A notification failure rolls back the evidence it was raised for
 
@@ -376,6 +402,101 @@ fail *silently*, because an answer that is never terminated looks exactly
 like an answer that is clean. §1's "what would settle it" has to answer this
 one too: a gate that is armed and cannot see is worse than one that is
 disarmed and says so.
+### 12. The model credential had no transport rule at all
+**Status:** fixed (`139aa0d`, `80f84f6`). **Where:**
+`trace-audit/src/anthropic_gateway.py`, `python-common/monolith_events/events.py`.
+**Effort:** medium. **Found as** test gap 5 below, whose "neither present"
+half was the real finding.
+Every credential this system sends is held to one rule: HTTPS everywhere,
+plain HTTP only to a loopback address, and only when the operator has said
+the network is trusted. The Python outbox applies it to the dashboard, the
+shared poller to the revocation endpoint, the Rust spool to its own
+delivery, and the launcher to the endpoint it points the agent at.
+**The model credential was the one with no rule.** The Anthropic gateway
+attaches the client's own `x-api-key` — or the operator's configured
+fallback key — to a request whose URL comes from
+`MONOLITH_ANTHROPIC_BASE_URL`, and forwards it. Nothing checked the
+transport. A mistyped base URL, or one naming a host that resolved
+somewhere else, put the credential on the wire in cleartext, in front of
+whoever answered.
+The rule is now applied to that credential too, on the URL that will
+actually be used rather than on the configured base, so a derivation that
+changed the host could not quietly step around it. A request to a
+plain-HTTP upstream that is not loopback is refused with `503` **before it
+leaves** — refusing after the bytes are on the wire is not refusing — and
+the refusal is recorded once as `upstream_transport_refused`, because the
+cause is the operator's configuration and a retrying agent would otherwise
+write a ledger row per retry. The escape hatch is
+`MONOLITH_ALLOW_INSECURE_ANTHROPIC=true`, spelled out by name, so a
+mistyped host cannot enable it by accident.
+The rule is not a new copy. `_safe_delivery_url` in the shared package
+became the public `credential_transport_is_trusted`, and the gateway
+imports it from there. The second commit (`80f84f6`) brought the
+launcher's standard-library-only copy into line with it: the two had
+drifted, and the launcher accepted a URL carrying a password in it that
+the shared rule refused.
+**Residual, stated honestly:** the rule is about the *transport*. A
+credential sent over HTTPS to a host the operator named is still a
+credential handed to that host, and the rule says nothing about whether
+that host deserves it. Pinning the upstream to a known address, and
+failing when it changes, is a larger change and is not done here.
+---
+## The agent-gateway review
+The thirteen commits on `feature/agent-gateway` were reviewed adversarially
+and came back with **eleven findings — two HIGH, nine MEDIUM**. Every one was
+re-verified by running the code, not by reading it; two candidate findings
+were dropped in the write-up (one had no reachable trigger, one's harm claim
+did not survive a 300-seed fuzz) and one older claim was retracted.
+All eleven are fixed on `fix/gateway-review-fixes`. Each row names the commit
+that fixes it, and each fix carries a test that fails against the code before
+The two HIGH findings are the same failure mode seen from two ends: a
+credential that should have stayed inside one process reached a process that
+had no business holding it. The shield's HMAC key and the ledger's ingest
+token reached every MCP server the launcher started, and a credential split
+across a content block boundary reached the client whole.
+| # | Severity | Finding | Fixed by |
+| --- | --- | --- | --- |
+| 1 | **high** | A credential split across a `content_block_stop` boundary was never scanned. The relay released the PII look-behind at every block boundary, and releasing it wiped the window: a key split across the boundary was let out in two halves, and neither half matched a pattern or a literal. The same key in one block was redacted; the same key in two blocks reached the client whole. | `cd42177` |
+| 2 | **high** | Every third-party MCP server inherited the shield's own credentials. Only `PBM_SECRET_*` was stripped from the child's environment, so `MCP_SHIELD_KEY` (the HMAC key a schema fingerprint is signed with) and `MONOLITH_EVENT_TOKEN` (the credential that writes into the incident ledger) reached the server the shield exists to defend the agent against. | `84c2314` |
+| 3 | medium | `citations_delta` was relayed verbatim. Only the delta kinds whose payload is a string field were audited, and a citation's quoted passage sits inside a nested object — so it was the one piece of model-authored text in the answer path that was never scanned. | `b5513f3` |
+| 4 | medium | No detector for an Anthropic key. The pattern `sk-[A-Za-z0-9]{20,}` stops at the first hyphen, so `sk-ant-…` never matched. | `0cbdbd9` |
+| 5 | medium | The divergence refusal left a content block open. The terminated branch returned without draining the queue, so the client was holding a block it never saw closed, and the refusal then opened a second one. | `545b530` |
+| 6 | medium | The session report merged two agents. It correlated on tenant + session, while the correlation boundary everywhere else is tenant + agent + session. The harm claim did not survive fuzzing, so this is a correctness fix: the report is what an operator reads to answer "what did this run trip". | `ac1b5f8` |
+| 7 | medium | The divergence gate could never be armed. The gate compares the model a baseline was captured from against the model answering, and nothing ever wrote the baseline's `model` key — so it was off in every shipped configuration. This is §1 above, found independently; fixed once, there. | `6041854` |
+| 8 | medium | The revocation gate was skipped when the session id was absent. The MCP server omitted the header when the variable was unset and the retriever skipped the check when the id was empty, so a retrieval that could not be attributed to a session could not be revoked. | `6f51f59` |
+| 9 | medium | The agent inherited the operator's exported credentials. The launcher handed the agent a copy of the whole process environment, including `MONOLITH_OPERATOR_TOKEN` and `MCP_SHIELD_KEY` — the thing the system defends against held the operator's keys. | `577908c` |
+| 10 | medium | The plan printer missed three secret flags. The flag list was a substring list, so `--pat`, `--bearer` and `--pw` were printed verbatim, while the file on disk kept them. | `d40cf05` |
+| 11 | medium | The operator's token ceiling was skipped when `max_tokens` was omitted. The ceiling was validated only when the request named a token count, so the upstream's own default applied and the operator's limit was not the limit. | `087a1e6` |
+### Residuals
+Recorded rather than hidden. None of them is a new hole; each is a limit of
+the fix that was landed, and each is stated so the next reader does not have
+to rediscover it.
+- **The remote-bridge token is deliberately not stripped.** In `--remote-url`
+  mode the child is the shield's own bridge and is configured entirely through
+  `MCP_SHIELD_REMOTE_TOKEN`, `MCP_SHIELD_PROTOCOL_VERSION` and
+  `MCP_SHIELD_REMOTE_TIMEOUT_SECS`, so removing them would stop that mode
+  from starting. The token therefore still travels into whatever the remote
+  bridge spawns, and that is a property of the remote deployment rather than
+  of the local spawn.
+- **The document path and the streaming path disagree about citations.** The
+  streaming path audits the passage a citation quotes and relays it with the
+  credential replaced; `collect_message` drops `citations_delta` entirely, so
+  a client that asked for one JSON document gets no citation at all. The
+  disagreement is recorded here and not fixed — the two paths are separate
+  code and a fix belongs with whoever next touches the document path.
+- **The plan redactor covers flags, not commands.** It redacts the `env`
+  block and the argument list, so a secret inside a `command` string —
+  `"command": "sh -c 'TOKEN=… run'"` — is printed as it is.
+- **The session id is still client-supplied.** The fix makes the sanctioned
+  path always attributable and makes a missing identity refuse, so the
+  circuit breaker can act. It does not make the session id unforgeable: a
+  caller that wants to escape the revocation check can still send a different
+  one. That needs a module-issued token, which is a larger change.
+- **A credential truncated by the end of the answer is released as its visible
+  prefix.** The scanner cannot match an incomplete key, and the look-behind
+  is released at EOF, so the first half of a key that the answer cut in half
+  is delivered. A credential that is cut is not a credential, but it is a
+  prefix of one.
 
 ---
 
@@ -386,12 +507,15 @@ regression would be invisible.
 
 | # | Gap | Where | Effort |
 | --- | --- | --- | --- |
-| 1 | The divergence gate is never tested in its **armed** state. | `trace-audit/tests/test_anthropic_gateway.py` | medium |
+| 1 | The divergence gate is never tested in its **armed** state. | `trace-audit/tests/test_anthropic_gateway.py` | **closed** — `6041854` |
 | 2 | The entire triage write path is untested: validation, state change, audit trail. | `dashboard/app/api/triage/**` | medium |
 | 3 | The incident-queue read path is untested: filter parsing, keyset pagination, counts. | `dashboard/lib/incident-store.ts` | medium |
 | 4 | ~~The detector-reset path is untested end to end, on both sides of the wire.~~ **closed** | `vector-anchor`, `dashboard` | medium |
 | 5 | The rule deciding whether a credential may travel over plain HTTP to the upstream model is neither present nor tested. | `trace-audit/src/anthropic_gateway.py` | medium |
 | 6 | ~~TraceAudit's prompt projection drops every non-text content block, and is never tested against one.~~ **closed** | `trace-audit/src/main.py` | medium |
+| 4 | The detector-reset path is untested end to end, on both sides of the wire. | `vector-anchor`, `dashboard` | medium |
+| 5 | The rule deciding whether a credential may travel over plain HTTP to the upstream model is neither present nor tested. | `trace-audit/src/anthropic_gateway.py` | **closed** — `139aa0d`; the rule was *missing*, not merely untested, and it now exists in one place and is applied to the model credential |
+| 6 | TraceAudit's prompt projection drops every non-text content block, and is never tested against one. | `trace-audit/src/anthropic_gateway.py` | medium |
 | 7 | The divergence detector's real-model behaviour is asserted by no committed result. | `trace-audit/fixtures/` | medium |
 | 8 | The production Postgres branch of the session list is never executed by any test. | `dashboard/app/api/sessions/route.ts` | medium |
 | 9 | The benchmark ledger's write and read paths are untested, route included. | `dashboard/lib/benchmark-store.ts` | small |

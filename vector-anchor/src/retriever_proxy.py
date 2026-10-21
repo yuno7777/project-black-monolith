@@ -69,7 +69,16 @@ class RetrieverProxy:
         # context is not trustworthy, so nothing from the corpus may be served
         # into it. Refuse before embedding or touching detector state.
         session_id = ctx.session_id if ctx else None
-        if session_id and is_session_revoked(session_id):
+        if not session_id:
+            # A retrieval that cannot be attributed to a session is a
+            # retrieval the circuit breaker cannot protect. The revocation
+            # registry works on a session id: there is nothing to look up
+            # and nothing to revoke, so the check that stood between the
+            # corpus and a compromised agent simply does not run. Fail
+            # closed, the way the registry itself fails when its refresh
+            # fails.
+            return self._refuse_unattributed_retrieval(query, ctx)
+        if is_session_revoked(session_id):
             return self._refuse_revoked_session(query, session_id, ctx)
 
         start = now_ms()
@@ -248,6 +257,71 @@ class RetrieverProxy:
             "quarantine_size": quarantine_size,
             "session_quarantined": True,
         }
+
+    def _refuse_unattributed_retrieval(
+        self, query: str, ctx: EventContext | None
+    ) -> dict[str, Any]:
+        """Serve nothing to a caller that cannot say which session it is.
+
+        The circuit breaker revokes a session, and the revocation registry
+        works on a session id. A retrieval with no session id therefore has
+        no session to revoke: the check that stands between the corpus and
+        a compromised agent cannot run at all. A caller that reaches the
+        corpus without an identity is a caller the breaker cannot act on,
+        so it is refused rather than served.
+
+        The refusal has the same shape as a revoked session's, because the
+        effect on the caller is the same -- no corpus text -- and the
+        response schema has one way to say that. The *event* carries a
+        different reason, so an operator can tell a misconfiguration from
+        a compromise: one is a broken deployment, the other is an attack.
+
+        The event is reported once per identity rather than once per
+        retrieval, so a caller that retries cannot flood the ledger.
+        """
+        key = self._unattributed_key(ctx)
+        with self._state_lock:
+            already_reported = key in self._refused_sessions
+            self._refused_sessions.add(key)
+            quarantine_size = len(self.quarantine)
+        if not already_reported:
+            query_sha256 = _content_fingerprint(query)
+            self.emit(
+                "session_quarantined",
+                "critical",
+                {
+                    "session_id": "",
+                    "refusal": "unattributed_retrieval",
+                    "reason": "the caller did not supply a session id",
+                },
+                ctx,
+                resource_type="retrieval_query",
+                resource_id=query_sha256,
+                outcome="refused",
+                policy_version=POLICY_VERSION,
+            )
+        return {
+            "query": query,
+            "results": [],
+            "withheld": [],
+            "quarantine_size": quarantine_size,
+            "session_quarantined": True,
+        }
+
+    @staticmethod
+    def _unattributed_key(ctx: EventContext | None) -> str:
+        """The identity a refusal without a session is reported under.
+
+        The session id is what is missing, so the key is built from what
+        the caller did send. Two callers that share an agent id are the
+        same misconfiguration, and one event says so; a caller that sent
+        nothing at all is the same again, under a fixed key.
+        """
+        tenant = (ctx.tenant_id if ctx else None) or ""
+        agent = (ctx.agent_id if ctx else None) or ""
+        if not tenant and not agent:
+            return "<unattributed>"
+        return f"<unattributed:{tenant}/{agent}>"
 
     def quarantine_snapshot(self) -> list[QuarantinedDoc]:
         with self._state_lock:

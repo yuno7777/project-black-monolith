@@ -124,6 +124,14 @@ answer is inspected as it arrives:
 - **The operator's token ceiling is a ceiling.** A request asking for more
   tokens than `MONOLITH_ANTHROPIC_MAX_TOKENS` is rejected with `400` rather
   than silently truncated.
+- **The credential is not sent over plain HTTP to a host that is not
+  loopback.** The same rule the modules apply to their own delivery applies
+  here: HTTPS everywhere, plain HTTP only to a loopback address. A request
+  to any other plain-HTTP upstream is refused with `503` before it leaves,
+  and the refusal is recorded once as `upstream_transport_refused`. An
+  operator whose model service is genuinely on a trusted network can say so
+  with `MONOLITH_ALLOW_INSECURE_ANTHROPIC=true`; nobody else can enable it
+  by accident.
 - **A revoked session is refused** before the upstream is contacted.
 
 To try it with no API key and no credits:
@@ -150,6 +158,7 @@ to anything.
 | `MONOLITH_ANTHROPIC_API_KEY`| *(unset)*  | fallback credential when the client sends none |
 | `MONOLITH_ANTHROPIC_MODEL`  | *(unset)*  | pin the upstream model regardless of the request |
 | `MONOLITH_ANTHROPIC_MAX_TOKENS` | `8192` | hard ceiling on `max_tokens` per request     |
+| `MONOLITH_ALLOW_INSECURE_ANTHROPIC` | *(unset)* | allow plain HTTP to a non-loopback model upstream on a trusted network |
 | `MONOLITH_BASELINE_PATH`    | `./baseline_distribution.json` | baseline distribution file |
 | `MONOLITH_KL_THRESHOLD`     | `1.0`      | divergence threshold for termination (derived; see above) |
 | `MONOLITH_TA_WINDOW`        | `20`       | rolling token window size                      |

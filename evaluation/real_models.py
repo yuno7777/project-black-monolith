@@ -206,9 +206,16 @@ def evaluate_vector(data):
     )
     times = []
     detected = set()
+    # A retrieval that cannot be attributed to a session is refused: the
+    # cross-layer circuit breaker works on a session id, so an unattributed
+    # retrieval is one it cannot protect. The evaluation is measuring the
+    # detector, so it runs as one named session.
+    from src.events import EventContext
+
+    session = EventContext(session_id="evaluation-" + uuid.uuid4().hex, agent_id="evaluation")
     for query in data["retrieval"]["queries"]:
         before = time.perf_counter()
-        result = proxy.retrieve(query)
+        result = proxy.retrieve(query, None, session)
         detected.update(doc["id"] for doc in result["withheld"])
         times.append((time.perf_counter() - before) * 1000)
     rows = [

@@ -30,7 +30,15 @@ import httpx
 
 from .config import Config
 from .events import EventContext
-from .stream_proxy import FLUSH, POLICY_VERSION, SAFE_REFUSAL, StreamAuditor
+from .pii_scanner import scan
+from .redaction import redact
+from .stream_proxy import (
+    FLUSH,
+    POLICY_VERSION,
+    SAFE_REFUSAL,
+    StreamAuditor,
+    secret_fingerprint,
+)
 
 # A single SSE line larger than this is a malformed (or hostile) upstream.
 MAX_SSE_LINE_BYTES = 256 * 1024
@@ -62,6 +70,12 @@ DELTA_PAYLOAD_FIELD = {
     "thinking_delta": "thinking",
 }
 
+# A citation delta carries the passage the model quoted, inside a nested
+# object rather than in a string field, so it cannot be audited by the same
+# rule as the delta kinds above. It is still model-authored text and it
+# still reaches the client, so it is audited on its own.
+CITATION_DELTA_KIND = "citations_delta"
+
 # The reason the auditor gives when it cut a stream short because the
 # reasoning diverged. Any other reason is a transport failure, and the two
 # must not be reported the same way: one is the defense working, the other
@@ -82,8 +96,13 @@ class UpstreamStreamError(RuntimeError):
     """The upstream stream ended in a failure rather than an answer."""
 
 
-def _delta_text(delta: dict[str, Any]) -> str:
-    """The model-authored payload of one delta, whatever kind it is."""
+def audited_delta_text(delta: dict[str, Any]) -> str:
+    """The model-authored payload of one delta, whatever kind it is.
+
+    Public because the baseline capture has to count fragments at the
+    same granularity the auditor counts them: a baseline of whole words
+    scored against a stream of deltas would fire on ordinary traffic.
+    """
     field = DELTA_PAYLOAD_FIELD.get(str(delta.get("type")), "text")
     value = delta.get(field)
     return value if isinstance(value, str) else ""
@@ -182,6 +201,10 @@ class AnthropicRelay:
         # stops at the first hyphen, so an Anthropic key would pass through
         # it untouched.
         self._literals = tuple(literals)
+        # One-way fingerprints of the credentials already reported in this
+        # answer. Shared with the auditor, so a credential that appears both
+        # in the prose and in a quoted passage is reported once.
+        self._reported_secrets: set[bytes] = set()
         # push index -> the content block that push belonged to
         self._block_of_push: list[int] = []
         # push index -> the delta kind that push arrived as
@@ -190,7 +213,7 @@ class AnthropicRelay:
         self._queue: list[_QueuedEvent] = []
         # how many text fragments have been pushed so far
         self._pushes = 0
-        # how many of them have been fully released
+        # how many of them the auditor says have been fully released
         self._released_pushes = 0
         self._open_blocks: list[int] = []
         self._block_kind: dict[int, str] = {}
@@ -219,9 +242,23 @@ class AnthropicRelay:
         """Turn the upstream SSE stream into auditable text fragments.
 
         Every upstream event is queued in order. Text fragments are pushed
-        into the auditor, and a block boundary asks the auditor to release
-        its look-behind so the block's text can be delivered before the
-        block is closed.
+        into the auditor, and the auditor holds a bounded look-behind so a
+        credential split across two fragments is still recognized as one.
+
+        The look-behind is deliberately **not** released at a block
+        boundary. Releasing it there wiped the window, so a credential
+        split across the boundary was let out in two halves and neither
+        half matched any pattern: the same key in one block was redacted
+        and the same key split across two blocks reached the client whole.
+        The window now carries across the boundary, and a credential that
+        straddles it is scanned as the single string it is.
+
+        The ordering the client needs does not depend on that release. A
+        block's stop event is queued with the number of fragments that
+        preceded it, and it is released only once those fragments have
+        been delivered — so a block's text still arrives before the block
+        is closed, and the next block's text still arrives after it was
+        opened.
         """
         async for name, data in upstream:
             kind = data.get("type") or name
@@ -237,7 +274,7 @@ class AnthropicRelay:
             elif kind == "content_block_delta":
                 delta = data.get("delta")
                 if isinstance(delta, dict) and delta.get("type") in AUDITED_DELTA_KINDS:
-                    text = _delta_text(delta)
+                    text = audited_delta_text(delta)
                     index = data.get("index")
                     block_index = index if isinstance(index, int) else 0
                     if text:
@@ -246,14 +283,13 @@ class AnthropicRelay:
                         self._pushes += 1
                         yield text
                     continue
+                if isinstance(delta, dict) and delta.get("type") == CITATION_DELTA_KIND:
+                    self._audit_citation(data)
             elif kind == "content_block_stop":
                 index = data.get("index")
                 if isinstance(index, int) and index in self._open_blocks:
                     self._open_blocks.remove(index)
                 self._queue.append(_QueuedEvent(name, data, self._pushes))
-                # The block is closed: release the held-back text now, so the
-                # client sees the block's content before its stop event.
-                yield FLUSH
                 continue
             self._queue.append(_QueuedEvent(name, data, self._pushes))
         # A final flush so the tail of the answer is delivered before the
@@ -265,6 +301,54 @@ class AnthropicRelay:
         while self._queue and self._queue[0].pushes_before <= through:
             ready.append(self._queue.pop(0))
         return ready
+
+    def _audit_citation(self, data: dict[str, Any]) -> None:
+        """Redact the passage a citation quotes, in place.
+
+        A citation delta is not one of the audited delta kinds because its
+        payload is not a string field: the quoted passage sits inside a
+        nested ``citation`` object, alongside the document title and the
+        character offsets. It is still text the model put in the answer,
+        and it still reaches the client, so leaving it alone would have been
+        the one place in the answer path where model-authored text was not
+        scanned.
+
+        The delta is rewritten rather than dropped, so the citation keeps
+        its shape: the client reads the same citation with the credential
+        replaced by a placeholder.
+        """
+        delta = data.get("delta")
+        citation = delta.get("citation") if isinstance(delta, dict) else None
+        if not isinstance(citation, dict):
+            return
+        cited = citation.get("cited_text")
+        if not isinstance(cited, str) or not cited:
+            return
+        matches = scan(cited, self._literals)
+        if not matches:
+            return
+        citation["cited_text"] = redact(cited, matches)
+        for match in matches:
+            fingerprint = secret_fingerprint(match.value)
+            if fingerprint in self._reported_secrets:
+                continue
+            self._reported_secrets.add(fingerprint)
+            self._redactions.append(match.label)
+            self.auditor.emit(
+                "pii_redacted",
+                "warning",
+                {
+                    "label": match.label,
+                    "redacted_as": f"[REDACTED:{match.label}]",
+                    "position_tokens": self._pushes,
+                    "delta_kind": CITATION_DELTA_KIND,
+                },
+                self.ctx,
+                resource_type="reasoning_trace",
+                resource_id=self.ctx.trace_id if self.ctx else None,
+                outcome="redacted",
+                policy_version=POLICY_VERSION,
+            )
 
     def _note_client_block(self, data: dict[str, Any]) -> None:
         """Remember a content block the client has been told about."""
@@ -292,6 +376,7 @@ class AnthropicRelay:
             divergence_enabled=self.divergence_enabled,
             emit_sync=True,
             literals=self._literals,
+            reported_secrets=self._reported_secrets,
         )
         async for evt in audit:
             kind = evt.get("type")
@@ -318,16 +403,36 @@ class AnthropicRelay:
             elif kind == "pii":
                 self._redactions.append(evt["label"])
             elif kind == "sync":
-                for queued in self._release_ready(self._released_pushes):
-                    self._note_client_block(queued.data)
-                    yield {"kind": "passthrough", "event": queued.name, "data": queued.data}
-            elif kind == "flush":
-                # Everything pushed so far is out of the buffer.
-                self._released_pushes = self._pushes
+                # The auditor says how far its look-behind has drained.
+                # Every fragment up to that index has been delivered, so
+                # the events queued behind them can go out now.
+                #
+                # An event queued with `pushes_before = P` may be released
+                # once fragment `P-1` has left the buffer, which is
+                # exactly `released_through >= P-1`. Before, this branch
+                # released only the events that were queued before the
+                # first fragment, and the count of released fragments was
+                # only ever advanced in a branch the auditor never took —
+                # so the queued events lagged behind the text they
+                # follow until the end of the answer.
+                self._released_pushes = evt["released_through"] + 1
                 for queued in self._release_ready(self._released_pushes):
                     self._note_client_block(queued.data)
                     yield {"kind": "passthrough", "event": queued.name, "data": queued.data}
             elif kind == "terminated":
+                # The queued events are released first, for the same reason
+                # the error path releases them. The divergence fires in the
+                # middle of an answer, so the block that was open when it
+                # fired is still open on the client — and the block's stop
+                # event is sitting in the queue, waiting for the text before
+                # it to be released. Releasing the queue hands the client
+                # the stop it is owed; not releasing it leaves the client
+                # holding a block it never saw the end of, and the refusal
+                # then opens a second block for an answer the client cannot
+                # assemble.
+                for queued in self._release_ready(self._pushes):
+                    self._note_client_block(queued.data)
+                    yield {"kind": "passthrough", "event": queued.name, "data": queued.data}
                 self._terminated = True
                 self._stop_reason = "refusal"
                 yield {"kind": "terminated", "reason": evt.get("reason", "terminated")}
@@ -505,7 +610,10 @@ def build_upstream_request(
 
     The body is forwarded byte-for-byte: the gateway is a security control,
     not a translator, and re-serializing the payload would quietly change
-    what the model is asked to do.
+    what the model is asked to do. The three mutations the gateway is
+    allowed to make — always stream, the operator's pinned model, and the
+    operator's token ceiling — are made by the caller, so the bytes that
+    arrive here already carry them.
     """
     base = cfg.anthropic_base_url.rstrip("/")
     # The operator may configure the API root ("https://api.anthropic.com"),
@@ -783,10 +891,12 @@ async def collect_message(
 
 __all__ = [
     "ANTHROPIC_VERSION",
+    "AUDITED_DELTA_KINDS",
     "AnthropicRelay",
     "DIVERGENCE_REASON",
     "POLICY_VERSION",
     "UpstreamStreamError",
+    "audited_delta_text",
     "build_upstream_request",
     "collect_message",
     "format_sse",

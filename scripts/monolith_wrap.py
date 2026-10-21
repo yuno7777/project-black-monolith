@@ -293,13 +293,30 @@ def credential_transport_is_trusted(url: str, allow_insecure: bool) -> bool:
     token, so it answers the same way. The default is to refuse: a
     credential sent in cleartext to a remote host is a credential on the
     wire, and no configuration mistake should turn that on by accident.
+
+    This is a copy of `credential_transport_is_trusted` in the shared
+    Python package, and it is a copy because the launcher is standard
+    library only: it runs on the agent's host, where the shared package
+    is not installed. Keep the two answers identical — a rule that has
+    drifted is a credential that thought it was safe.
     """
-    parsed = urllib.parse.urlparse(url)
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        host = parsed.hostname
+    except ValueError:
+        return False
+    # A URL that carries credentials in it is never trusted: the secret
+    # would end up in a log line, a proxy's request line and a process
+    # listing, and none of those are places a credential belongs. A
+    # fragment never reaches the server, so a credential there is a
+    # credential in the wrong place.
+    if not host or parsed.username or parsed.password or parsed.fragment:
+        return False
     if parsed.scheme == "https":
         return True
     if parsed.scheme != "http":
         return False
-    if _is_loopback_host(parsed.hostname or ""):
+    if _is_loopback_host(host):
         return True
     return allow_insecure
 
@@ -321,12 +338,25 @@ PLAN_VISIBLE_ENV = {
 
 # Argument flags whose value is a secret. A secret on the command line is
 # still a secret, and the plan is printed for a human to read.
+#
+# The long markers are matched as a substring, because a flag that contains
+# one of them is a secret flag whatever else it contains: ``--api-key-file``
+# names a key.
 SECRET_ARG_FLAGS = ("key", "token", "secret", "password", "passwd", "credential", "auth")
+
+# The short markers are matched as a *segment* instead. ``--pat`` carries a
+# personal access token and ``--path`` carries a directory, and a substring
+# match cannot tell them apart: adding "pat" to the list above would redact
+# every path the operator configured.
+SECRET_ARG_SEGMENTS = ("pat", "bearer", "pw", "pwd", "pass")
 
 
 def _is_secret_arg_flag(flag: str) -> bool:
-    lowered = flag.lower()
-    return any(marker in lowered for marker in SECRET_ARG_FLAGS)
+    lowered = flag.lower().lstrip("-")
+    if any(marker in lowered for marker in SECRET_ARG_FLAGS):
+        return True
+    segments = lowered.replace("_", "-").split("-")
+    return any(segment in SECRET_ARG_SEGMENTS for segment in segments)
 
 
 def redact_config_secrets(config: dict) -> dict:
@@ -793,6 +823,55 @@ def build_shield_env(
     return env
 
 
+# The credentials the operator's shell may hold, and that the agent must not
+# inherit.
+#
+# The agent is the thing this whole system defends against, and it starts
+# processes of its own: the MCP servers it runs, the tools it calls, the
+# scripts it writes. An exported credential reaches every one of them. The
+# operator's ledger credential would let the agent read and write the
+# incident record, and the shield's HMAC key would let it re-sign a poisoned
+# schema baseline, so the next agent to connect would trust it.
+#
+# Nothing is lost by taking these away: the launcher passes what the
+# shielded servers need explicitly, in the MCP configuration it writes.
+AGENT_HIDDEN_ENV = (
+    "MONOLITH_OPERATOR_TOKEN",
+    "MONOLITH_ADMIN_TOKEN",
+    "MONOLITH_EVENT_TOKEN",
+    "MCP_SHIELD_KEY",
+    "MCP_SHIELD_SECRET_BOUNDARY_CONFIG",
+    "MONOLITH_DASHBOARD_URL",
+    "MONOLITH_DASHBOARD_API_URL",
+    "MONOLITH_EVENT_OUTBOX_PATH",
+)
+
+# Prefixes for which every variable is a credential. The per-module ingest
+# tokens are named after the module they belong to
+# (``MONOLITH_EVENT_TOKEN_MCP_SHIELD``), so a list of exact names would
+# leave the other modules' tokens in place.
+AGENT_HIDDEN_ENV_PREFIXES = (
+    "MONOLITH_EVENT_TOKEN_",
+    "PBM_SECRET_",
+)
+
+
+def build_child_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment the agent runs with.
+
+    Everything the operator's shell exported, minus the credentials the
+    Monolith stack holds. The agent's own credential — the Anthropic API key
+    — is untouched: it is the agent's to spend, and the point of the
+    gateway is that the agent can still reach the provider.
+    """
+    env = dict(os.environ if base_env is None else base_env)
+    for name in list(env):
+        upper = name.upper()
+        if upper in AGENT_HIDDEN_ENV or upper.startswith(AGENT_HIDDEN_ENV_PREFIXES):
+            del env[name]
+    return env
+
+
 def build_mcp_config(
     servers: dict[str, dict],
     *,
@@ -854,6 +933,7 @@ def print_session_report(
     dashboard_url: str,
     session_id: str,
     operator_token: str | None,
+    agent_id: str | None = None,
     allow_insecure: bool = False,
     allow_credential_via_proxy: bool = False,
 ) -> None:
@@ -873,6 +953,13 @@ def print_session_report(
         )
         return
     url = dashboard_url.rstrip("/") + f"/api/sessions/{session_id}"
+    if agent_id:
+        # The correlation boundary is (tenant, agent, session), not (tenant,
+        # session). The launcher minted both the session id and the agent
+        # id for this run, so it can ask for exactly its own run; a session
+        # id another agent happened to share would otherwise merge two runs
+        # into one report about "what this run tripped".
+        url += "?agent_id=" + urllib.parse.quote(agent_id, safe="")
     # The operator token is a credential, so the request that carries it is
     # held to the credential's rule: an ambient proxy does not carry it
     # unless the operator has said that it may. A plain-HTTP dashboard would
@@ -899,6 +986,8 @@ def print_session_report(
     print("\n  Session report")
     print("  --------------")
     print(f"  session    {session_id}")
+    if agent_id:
+        print(f"  agent      {agent_id}")
     total = summary.get("total", 0)
     counted = summary.get("counted", total)
     print(f"  events     {total}")
@@ -1090,9 +1179,21 @@ def main(argv: list[str] | None = None) -> int:
     config_path = workdir / "mcp-config.json"
     config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
+    # The agent inherits the operator's environment, minus the credentials
+    # the Monolith stack holds. The agent is the thing this system defends
+    # against, and it starts processes of its own, so an exported credential
+    # would reach every one of them.
+    child_env = build_child_env()
+    hidden = sorted(set(os.environ) - set(child_env))
+
     print(f"  tool layer {len(config['mcpServers'])} MCP server(s) through MCP-Shield")
     print(f"  memory     VectorAnchor at {vector_anchor_url}")
     print(f"  reasoning  TraceAudit at {trace_audit_url}")
+    if hidden:
+        print(
+            f"  agent      {len(hidden)} operator credential(s) kept out of the "
+            "agent's environment"
+        )
     # A proxy that is configured but will not be used is worth a line: the
     # operator set it, and the reason it is not carrying the traffic is
     # not obvious from the outside.
@@ -1118,7 +1219,6 @@ def main(argv: list[str] | None = None) -> int:
     if agent_args and agent_args[0] == "--":
         agent_args = agent_args[1:]
 
-    child_env = dict(os.environ)
     child_env["ANTHROPIC_BASE_URL"] = ""  # replaced below, once the port is known
 
     with _Injector(
@@ -1162,6 +1262,7 @@ def main(argv: list[str] | None = None) -> int:
             dashboard_url,
             session_id,
             operator_token,
+            agent_id=agent_id,
             allow_insecure=allow_insecure_dashboard,
             allow_credential_via_proxy=allow_credential_via_proxy,
         )

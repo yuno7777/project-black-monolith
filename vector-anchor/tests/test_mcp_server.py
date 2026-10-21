@@ -436,3 +436,47 @@ def test_an_unreachable_service_is_an_error_result_not_a_crash():
         assert handle.call("ping", {}, request_id=2)["result"] == {}
     finally:
         handle.close()
+
+
+def test_a_call_without_a_session_id_is_an_error_result(fake_service):
+    """A retrieval that cannot be attributed to a session is refused.
+
+    The session id is what the cross-layer circuit breaker revokes, so a
+    retrieval without one is one the breaker cannot protect. The service
+    refuses those; saying so here means the operator is told which
+    variable is missing instead of watching the call fail downstream.
+    """
+    url = f"http://127.0.0.1:{fake_service.server_address[1]}"
+    handle = _Client(url, {"MONOLITH_SESSION_ID": ""})
+    try:
+        response = handle.call(
+            "tools/call",
+            {"name": "retrieve", "arguments": {"query": "anything"}},
+            request_id=1,
+        )
+        assert response["result"]["isError"] is True
+        assert "MONOLITH_SESSION_ID" in response["result"]["content"][0]["text"]
+        # The service was never asked: a call that cannot be attributed
+        # is not worth making.
+        assert _FakeVectorAnchor.received == []
+        # The server is still alive and still serving the protocol.
+        assert handle.call("ping", {}, request_id=2)["result"] == {}
+    finally:
+        handle.close()
+
+
+def test_a_call_with_a_blank_session_id_is_an_error_result(fake_service):
+    """A session id that is set but empty is no session id at all."""
+    url = f"http://127.0.0.1:{fake_service.server_address[1]}"
+    handle = _Client(url, {"MONOLITH_SESSION_ID": "   "})
+    try:
+        response = handle.call(
+            "tools/call",
+            {"name": "retrieve", "arguments": {"query": "anything"}},
+            request_id=1,
+        )
+        assert response["result"]["isError"] is True
+        assert "MONOLITH_SESSION_ID" in response["result"]["content"][0]["text"]
+        assert _FakeVectorAnchor.received == []
+    finally:
+        handle.close()

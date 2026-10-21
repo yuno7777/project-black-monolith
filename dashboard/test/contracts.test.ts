@@ -2187,6 +2187,106 @@ test("the session report gathers one agent run's events across all three layers"
   clearMemoryRevocations();
 });
 
+test("a session report names the agents it covers instead of merging two runs", async () => {
+  const { clearMemoryEvents } = await import("../lib/event-store");
+  const { clearMemoryRevocations } = await import("../lib/incident-store");
+  const { POST: ingestPost } = await import("../app/api/ingest/route");
+  const { GET: sessionReportGet } = await import("../app/api/sessions/[sessionId]/route");
+
+  delete process.env.DATABASE_URL;
+  clearMemoryEvents();
+  clearMemoryRevocations();
+
+  process.env.EVENT_INGEST_TOKENS_JSON = JSON.stringify({
+    "tenant-two-agents": { "mcp-shield": "mcp-shield-two-agents-01" },
+  });
+  process.env.OPERATOR_TOKENS_JSON = JSON.stringify({
+    watcher: { token: "watcher-two-agents-tok01", role: "viewer", tenant_id: "tenant-two-agents" },
+  });
+
+  // Two agents, one session id. The correlation boundary everywhere else is
+  // the triple (tenant, agent, session), so a report that filtered on
+  // (tenant, session) alone would merge two runs into one answer about
+  // "what this run tripped".
+  for (const agentId of ["agent-one", "agent-two"]) {
+    const response = await ingestPost(
+      new Request("http://localhost/api/ingest", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer mcp-shield-two-agents-01",
+        },
+        body: JSON.stringify({
+          module: "mcp-shield",
+          tenant_id: "tenant-two-agents",
+          agent_id: agentId,
+          session_id: "sess-two-agents",
+          event_type: "schema_mismatch",
+          severity: "critical",
+          outcome: "rewritten",
+          details: { agentId },
+        }),
+      }),
+    );
+    assert.equal(response.status, 201);
+  }
+
+  const read = async (query = "") => {
+    const response = await sessionReportGet(
+      new Request(`http://localhost/api/sessions/sess-two-agents${query}`, {
+        headers: { authorization: "Bearer watcher-two-agents-tok01" },
+      }),
+      { params: Promise.resolve({ sessionId: "sess-two-agents" }) },
+    );
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+
+  // Unscoped: every agent that used the session id, and the response says
+  // it is not scoped to one.
+  const unscoped = await read();
+  assert.equal(unscoped.scoped_to_agent, false);
+  assert.equal(unscoped.agent_id, null);
+  assert.deepEqual(unscoped.agent_ids, ["agent-one", "agent-two"]);
+  assert.equal(unscoped.total_events, 2);
+  assert.equal(unscoped.events.length, 2);
+
+  // Scoped: exactly one agent's run.
+  const scoped = await read("?agent_id=agent-one");
+  assert.equal(scoped.scoped_to_agent, true);
+  assert.equal(scoped.agent_id, "agent-one");
+  assert.deepEqual(scoped.agent_ids, ["agent-one"]);
+  assert.equal(scoped.total_events, 1);
+  assert.equal(scoped.events.length, 1);
+  assert.equal(scoped.events[0].agent_id, "agent-one");
+
+  // An agent that has nothing in this session gets an empty report rather
+  // than the other agent's events.
+  const absent = await read("?agent_id=agent-three");
+  assert.equal(absent.scoped_to_agent, true);
+  assert.deepEqual(absent.agent_ids, []);
+  assert.equal(absent.total_events, 0);
+  assert.equal(absent.events.length, 0);
+
+  // An agent id that is not an agent id is refused before it reaches the
+  // query, the same as a session id that is not a session id: ingest would
+  // never store a control character or an over-long id, so a report cannot
+  // be asked about one.
+  for (const shaped of ["agent\u0001one", "a".repeat(129)]) {
+    const malformed = await sessionReportGet(
+      new Request(
+        `http://localhost/api/sessions/sess-two-agents?agent_id=${encodeURIComponent(shaped)}`,
+        { headers: { authorization: "Bearer watcher-two-agents-tok01" } },
+      ),
+      { params: Promise.resolve({ sessionId: "sess-two-agents" }) },
+    );
+    assert.equal(malformed.status, 422, `agent id ${shaped} was not refused`);
+  }
+
+  clearMemoryEvents();
+  clearMemoryRevocations();
+});
+
 test("a session report that cannot hold every event says so", async () => {
   const { clearMemoryEvents } = await import("../lib/event-store");
   const { listSessionIncidents, summarizeSession } = await import("../lib/session-report");
@@ -2223,7 +2323,7 @@ test("a session report that cannot hold every event says so", async () => {
   }
 
   // A page that could not hold the whole session.
-  const page = await listSessionIncidents("tenant-truncated", "sess-truncated", 2);
+  const page = await listSessionIncidents("tenant-truncated", "sess-truncated", { limit: 2 });
   assert.equal(page.incidents.length, 2);
   // The session really has five events, and the page says so rather than
   // reading as a complete report of a two-event run.
@@ -2371,6 +2471,7 @@ test("the ledger path returns the same fields as the memory path", async () => {
               resolution: null,
               updated_ms: null,
               updated_by: null,
+              agent_ids: ["agent-pg"],
               total_count: "1",
             },
           ],
@@ -2393,6 +2494,9 @@ test("the ledger path returns the same fields as the memory path", async () => {
       assert.equal(incident.resource_type, "reasoning_trace");
       assert.equal(incident.resource_id, "trace-pg");
       assert.equal(incident.policy_version, "policy-v1");
+      // The agents the report covers, the same way the memory path reports
+      // them.
+      assert.deepEqual(page.agentIds, ["agent-pg"]);
     });
 
     // And the query asks the database for them: a mapping that reads a
@@ -2402,6 +2506,9 @@ test("the ledger path returns the same fields as the memory path", async () => {
     for (const column of ["e.source", "e.resource_type", "e.resource_id", "e.policy_version"]) {
       assert.ok(select.includes(column), `the query does not select ${column}`);
     }
+    // The agent filter is in the query, not only in the caller: the ledger
+    // path has to narrow to the same agent the memory path narrows to.
+    assert.match(select, /\$3::text is null or e\.agent_id = \$3/);
   } finally {
     globalRef.__monolithPool = previousPool;
   }

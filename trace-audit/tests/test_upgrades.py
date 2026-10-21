@@ -423,7 +423,7 @@ def test_admin_reload_baseline_updates_memory_and_disk_atomically(tmp_path):
         json={"distribution": new_dist},
     )
     assert resp.status_code == 200
-    assert resp.json() == {"reloaded": True, "vocab_size": 3}
+    assert resp.json() == {"reloaded": True, "vocab_size": 3, "baseline_model": None}
     assert set(app.state.baseline.keys()) == {"alpha", "beta", "gamma"}
     assert app.state.proxy.baseline_counts == app.state.baseline
     assert (tmp_path / "baseline.json").exists()
@@ -434,7 +434,106 @@ def test_admin_reload_baseline_updates_memory_and_disk_atomically(tmp_path):
         headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
     )
     assert resp2.status_code == 200
-    assert resp2.json() == {"reloaded": True, "vocab_size": 3}
+    assert resp2.json() == {"reloaded": True, "vocab_size": 3, "baseline_model": None}
+
+
+def test_a_baseline_reload_keeps_the_model_the_gate_compares(tmp_path):
+    """The reload must not destroy the baseline's provenance.
+
+    The model a baseline was captured from is the key that opens the
+    divergence gate: a KL score against a distribution from another model
+    means nothing, so the gateway refuses to use it. A reload that
+    rewrote the file without that key took the gate shut again, and the
+    operator had no way to see why the reasoning layer stopped firing.
+    """
+    baseline_file = tmp_path / "baseline.json"
+    baseline_file.write_text(
+        json.dumps(
+            {"counts": {"alpha": 5, "beta": 5}, "total": 10, "vocab": 2, "model": "claude-x"}
+        ),
+        encoding="utf-8",
+    )
+    _setup_app_state(tmp_path)
+    client = TestClient(app, raise_server_exceptions=True)
+    auth = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
+
+    # A reload that posts no distribution re-reads the file: the model
+    # survives, and the response says which model the gate compares.
+    resp = client.post("/admin/reload-baseline", headers=auth)
+    assert resp.status_code == 200
+    assert resp.json()["baseline_model"] == "claude-x"
+    assert app.state.baseline_model == "claude-x"
+
+    # Re-posting the same distribution keeps the model too: the operator
+    # is refreshing the counts, not changing where they came from.
+    resp = client.post(
+        "/admin/reload-baseline",
+        headers=auth,
+        json={"distribution": {"alpha": 0.5, "beta": 0.5}},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["baseline_model"] == "claude-x"
+
+    # A distribution from somewhere else is model-agnostic. Claiming the
+    # old model's provenance for it would score one model's distribution
+    # against another and terminate ordinary traffic.
+    resp = client.post(
+        "/admin/reload-baseline",
+        headers=auth,
+        json={"distribution": {"alpha": 0.9, "beta": 0.1}},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["baseline_model"] is None
+    assert app.state.baseline_model is None
+
+    # A named model is recorded as given.
+    resp = client.post(
+        "/admin/reload-baseline",
+        headers=auth,
+        json={"distribution": {"alpha": 0.9, "beta": 0.1}, "model": "claude-y"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["baseline_model"] == "claude-y"
+    on_disk = json.loads(baseline_file.read_text(encoding="utf-8"))
+    assert on_disk["model"] == "claude-y"
+
+    # And a model that is not a usable name is refused rather than stored.
+    resp = client.post(
+        "/admin/reload-baseline",
+        headers=auth,
+        json={"distribution": {"alpha": 0.9, "beta": 0.1}, "model": 42},
+    )
+    assert resp.status_code == 400
+    assert "string" in resp.json()["detail"]
+
+    resp = client.post(
+        "/admin/reload-baseline",
+        headers=auth,
+        json={"distribution": {"alpha": 0.9, "beta": 0.1}, "model": "x" * 200},
+    )
+    assert resp.status_code == 400
+    assert "printable" in resp.json()["detail"]
+
+
+def test_the_baseline_capture_records_the_model_it_captured_from(tmp_path, monkeypatch):
+    """The model is the key that opens the divergence gate.
+
+    A baseline that does not say where it came from cannot be matched
+    against the model answering a request, so the reasoning layer can
+    never terminate anything. The capture writes it — including for the
+    offline backend, whose identity is "mock": not a model, and so a
+    baseline that keeps the gate shut for every real one.
+    """
+    baseline_file = tmp_path / "baseline_distribution.json"
+    monkeypatch.setenv("MONOLITH_BASELINE_PATH", str(baseline_file))
+    monkeypatch.setenv("MONOLITH_MODEL_BACKEND", "mock")
+
+    baseline_capture.main(["--force"])
+
+    captured = json.loads(baseline_file.read_text(encoding="utf-8"))
+    assert captured["model"] == baseline_capture.MOCK_MODEL_NAME
+    assert captured["counts"], "the capture recorded no tokens at all"
+
 
 
 def test_admin_replay_dead_letters_endpoint(tmp_path):

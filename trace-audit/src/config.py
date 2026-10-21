@@ -80,6 +80,12 @@ class Config:
     # rejects the request, because truncating an answer mid-way would leave
     # the client with a half-message it cannot parse.
     anthropic_max_tokens: int = 8192
+    # Whether the model upstream may be plain HTTP to a host that is not
+    # loopback. The default is no: the gateway forwards the client's own
+    # credential upstream, and a credential in cleartext is a credential on
+    # the wire. The escape hatch exists for an operator whose model service
+    # is genuinely on a trusted network, and it has to be asked for by name.
+    anthropic_allow_insecure: bool = False
 
 
 def _valid_bearer_token(value: str) -> bool:
@@ -217,6 +223,9 @@ def load_config() -> Config:
         anthropic_model=os.environ.get("MONOLITH_ANTHROPIC_MODEL") or None,
         anthropic_max_tokens=int(
             os.environ.get("MONOLITH_ANTHROPIC_MAX_TOKENS", "8192")
+        ),
+        anthropic_allow_insecure=(
+            os.environ.get("MONOLITH_ALLOW_INSECURE_ANTHROPIC") == "true"
         ),
     )
     return _validate_config(cfg)

@@ -48,8 +48,13 @@ echo
 echo "=============================================="
 echo "2. GENERATE DETECTIONS WHILE IT IS DOWN"
 echo "=============================================="
+# Every retrieval names the session it belongs to: a retrieval that cannot be
+# attributed to a session is one the cross-layer circuit breaker cannot
+# revoke, so the service refuses it.
+SESSION_ID="recovery-probe-$$"
 for q in "how do I prune tomato plants" "what is a red giant star" "how long to boil pasta" "emergency fund budget"; do
   curl -fsS -X POST http://localhost:8001/retrieve -H 'Content-Type: application/json' \
+    -H "X-Monolith-Session-Id: $SESSION_ID" \
     -d "{\"query\":\"$q\",\"k\":3}" >/dev/null && echo "  queried: $q"
 done
 sleep 3

@@ -208,3 +208,44 @@ def test_complete_match_does_not_release_a_second_secret_prefix():
     text = ''.join(t.token for t in output)
     assert 'sk-abc' not in text
     assert text == '[REDACTED:aws_access_key_id] [REDACTED:openai_style_api_key]'
+
+
+def test_a_split_anthropic_key_is_redacted_whole():
+    """An Anthropic key split across fragments goes as one credential.
+
+    The openai-style pattern stops at the first hyphen and there was no
+    pattern for the Anthropic shape at all, so a key split across two
+    fragments was released in two halves and neither half matched
+    anything.
+    """
+    key = 'sk-ant-api03-' + 'A1b2C3d4' * 5
+    buffer = PiiStreamBuffer()
+    outputs = []
+    for fragment in (key[:26], key[26:], ' and that is all'):
+        outputs += buffer.push(fragment, None).outputs
+    outputs += buffer.finish().outputs
+    text = ''.join(t.token for t in outputs)
+    assert key not in text
+    assert 'A1b2C3d4' not in text
+    assert text == '[REDACTED:anthropic_api_key] and that is all'
+
+
+def test_an_anthropic_key_is_held_back_until_its_end_is_known():
+    """The key has no end marker, so its tail has to be waited for.
+
+    The patterns that are exempt from the hold-back are the self-delimiting
+    ones: a fixed length with a word boundary, so there is nothing more of
+    the credential to come. An Anthropic key is a run of characters with no
+    marker at the end, so a match that reaches the end of the buffer may
+    continue in the next fragment. Releasing it as if it were complete would
+    redact the first part and hand the rest to the client.
+    """
+    key = 'sk-ant-api03-' + 'A1b2C3d4' * 5
+    buffer = PiiStreamBuffer()
+    assert buffer.push(key[:26], None).outputs == []
+    # The key is complete, and the buffer cannot know it is the end until
+    # the text after it says so.
+    assert buffer.push(key[26:], None).outputs == []
+    text = ''.join(t.token for t in buffer.finish().outputs)
+    assert key not in text
+    assert text == '[REDACTED:anthropic_api_key]'
