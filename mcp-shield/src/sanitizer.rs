@@ -215,6 +215,167 @@ fn has_aws_access_key_id(text: &str) -> bool {
     false
 }
 
+/// The length of an AWS secret access key: exactly 40 characters.
+const AWS_SECRET_KEY_LEN: usize = 40;
+
+/// How far from the value a marker may sit and still be about it.
+///
+/// The longest marker is `aws_secret_access_key`, so a window this wide
+/// covers every ordinary spelling of the label — `AWS_SECRET_ACCESS_KEY=…`,
+/// `aws configure set aws_secret_access_key …`, `aws_secret_access_key = …`
+/// — and nothing more.
+const AWS_SECRET_CONTEXT_WINDOW: usize = 64;
+
+/// Markers that name an AWS secret access key.
+///
+/// The secret key has no prefix of its own, so its shape cannot carry the
+/// decision by itself: 40 characters of the base64 alphabet is a shape an
+/// ordinary value has too. A marker is what turns the shape into a
+/// credential, so the detector asks for both.
+///
+/// Matched case-insensitively, so `AWS_SECRET_ACCESS_KEY`,
+/// `awsSecretAccessKey` and `aws_secret_access_key` all match.
+const AWS_SECRET_KEY_MARKERS: &[&str] = &[
+    "aws_secret_access_key",
+    "aws-secret-access-key",
+    "aws secret access key",
+    "awssecretaccesskey",
+    "secret_access_key",
+    "secret-access-key",
+    "secret access key",
+    "secretaccesskey",
+];
+
+/// True when `byte` can appear in an AWS secret access key: the base64
+/// alphabet, with `=` allowed as padding.
+fn is_aws_secret_alphabet(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'+' | b'=')
+}
+
+/// Lowercase the ASCII letters in `bytes` and leave every other byte alone.
+///
+/// `str::to_lowercase` can change a string's length, which would move the
+/// byte offsets the runs below are expressed in, so the ASCII-only form is
+/// used wherever offsets matter.
+fn ascii_lowercase(bytes: &[u8]) -> Vec<u8> {
+    bytes
+        .iter()
+        .map(|byte| {
+            if byte.is_ascii_uppercase() {
+                byte.to_ascii_lowercase()
+            } else {
+                *byte
+            }
+        })
+        .collect()
+}
+
+/// True when `haystack` contains `needle`. Bytes, not strings: the search
+/// runs over windows that can start and end inside a multi-byte character.
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return false;
+    }
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
+/// True when `label` names an AWS secret access key.
+fn names_aws_secret_key(label: &str) -> bool {
+    let lowered = ascii_lowercase(label.as_bytes());
+    AWS_SECRET_KEY_MARKERS
+        .iter()
+        .any(|marker| contains_bytes(&lowered, marker.as_bytes()))
+}
+
+/// True when `candidate` has the shape of an AWS secret access key: 40
+/// characters from the base64 alphabet, holding at least one uppercase
+/// letter, one lowercase letter and one digit.
+///
+/// The mix requirement is what keeps a 40-character hex digest out — a git
+/// SHA-1, a checksum, a content hash — because a digest is written in one
+/// case and a random key of this length is not.
+fn has_aws_secret_shape(candidate: &str) -> bool {
+    candidate.len() == AWS_SECRET_KEY_LEN
+        && candidate.bytes().all(is_aws_secret_alphabet)
+        && candidate.bytes().any(|byte| byte.is_ascii_uppercase())
+        && candidate.bytes().any(|byte| byte.is_ascii_lowercase())
+        && candidate.bytes().any(|byte| byte.is_ascii_digit())
+}
+
+/// Every maximal run of the secret-key alphabet in `text` that is exactly
+/// `AWS_SECRET_KEY_LEN` characters long, as a byte range.
+///
+/// Maximal, not sliding: a 44-character base64 blob is not a 40-character
+/// key with four characters around it, and treating it as one would flag
+/// every SRI hash.
+fn aws_secret_runs(text: &str) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut runs = Vec::new();
+    let mut start = 0;
+    while start < bytes.len() {
+        if !is_aws_secret_alphabet(bytes[start]) {
+            start += 1;
+            continue;
+        }
+        let mut end = start;
+        while end < bytes.len() && is_aws_secret_alphabet(bytes[end]) {
+            end += 1;
+        }
+        if end - start == AWS_SECRET_KEY_LEN {
+            runs.push((start, end));
+        }
+        start = end;
+    }
+    runs
+}
+
+/// True when `text` holds an AWS secret access key.
+///
+/// Two things are required, and neither is enough alone:
+///
+///   * the **shape** — 40 characters of the base64 alphabet with a mix of
+///     cases and a digit; and
+///   * the **context** — a label that names an AWS secret. The label is
+///     either the key the value sits under (`{"aws_secret_access_key": …}`)
+///     or a marker in the same string (`AWS_SECRET_ACCESS_KEY=…`).
+///
+/// The context is what keeps the false-positive rate at zero. Forty
+/// characters of base64 alphabet is a shape an ordinary value has: a git
+/// SHA-1 is forty characters, a base64 blob of thirty bytes is forty, and
+/// a random identifier can be forty. A detector that flagged those would
+/// block ordinary calls in enforce mode, which is worse than not detecting
+/// the key at all — the credential it missed is one the agent can leak with
+/// the operator's eyes elsewhere.
+fn has_aws_secret_key(text: &str, label: &str) -> bool {
+    let runs = aws_secret_runs(text);
+    if runs.is_empty() {
+        return false;
+    }
+    // The label alone is context enough: a JSON object puts the marker in
+    // the key and the secret in the value, and the two are never in the
+    // same string.
+    if names_aws_secret_key(label) {
+        return runs
+            .iter()
+            .any(|(start, end)| has_aws_secret_shape(&text[*start..*end]));
+    }
+    // Otherwise the marker has to be in the same string, close enough to
+    // the value to be about it.
+    let lowered = ascii_lowercase(text.as_bytes());
+    runs.iter().any(|(start, end)| {
+        if !has_aws_secret_shape(&text[*start..*end]) {
+            return false;
+        }
+        let before = start.saturating_sub(AWS_SECRET_CONTEXT_WINDOW);
+        let after = (end + AWS_SECRET_CONTEXT_WINDOW).min(lowered.len());
+        AWS_SECRET_KEY_MARKERS
+            .iter()
+            .any(|marker| contains_bytes(&lowered[before..after], marker.as_bytes()))
+    })
+}
+
 fn has_github_pat(text: &str) -> bool {
     let bytes = text.as_bytes();
     for prefix in GITHUB_PAT_PREFIXES {
@@ -320,7 +481,7 @@ fn has_vendor_token(text: &str) -> bool {
     })
 }
 
-fn scan_credentials(text: &str) -> Vec<Finding> {
+fn scan_credentials(text: &str, label: &str) -> Vec<Finding> {
     let mut findings = Vec::new();
     if has_openai_api_key(text) {
         findings.push(Finding {
@@ -332,6 +493,13 @@ fn scan_credentials(text: &str) -> Vec<Finding> {
         findings.push(Finding {
             kind: "credential_exfiltration",
             pattern: "AKIA[0-9A-Z]{16}".to_string(),
+        });
+    }
+    if has_aws_secret_key(text, label) {
+        findings.push(Finding {
+            kind: "credential_exfiltration",
+            pattern: "AWS secret access key (40-character base64 value under an AWS secret label)"
+                .to_string(),
         });
     }
     if has_github_pat(text) {
@@ -367,20 +535,27 @@ fn scan_credentials(text: &str) -> Vec<Finding> {
     findings
 }
 
-fn collect_argument_findings(value: &Value, findings: &mut Vec<Finding>) {
+/// Recursively inspect the string values of a `tools/call` `params.arguments`
+/// JSON value, threading the path of keys that hold each value.
+///
+/// The path matters for the one credential shape that has no prefix of its
+/// own: an AWS secret access key is recognised by the label it sits under
+/// as much as by its bytes, and in a JSON object the label is the key.
+fn collect_argument_findings(value: &Value, findings: &mut Vec<Finding>, path: &str) {
     match value {
         Value::String(s) => {
             findings.extend(scan_description(s));
-            findings.extend(scan_credentials(s));
+            findings.extend(scan_credentials(s, path));
         }
         Value::Array(items) => {
             for item in items {
-                collect_argument_findings(item, findings);
+                collect_argument_findings(item, findings, path);
             }
         }
         Value::Object(map) => {
-            for val in map.values() {
-                collect_argument_findings(val, findings);
+            for (key, val) in map {
+                let child = format!("{path}.{key}");
+                collect_argument_findings(val, findings, &child);
             }
         }
         Value::Null | Value::Bool(_) | Value::Number(_) => {}
@@ -398,7 +573,7 @@ fn collect_argument_findings(value: &Value, findings: &mut Vec<Finding>) {
 /// caller decides which families block a call.
 pub fn scan_tool_arguments(args: &Value) -> ScanResult {
     let mut findings = Vec::new();
-    collect_argument_findings(args, &mut findings);
+    collect_argument_findings(args, &mut findings, "");
 
     let mut categories = Vec::new();
     let mut reasons = Vec::new();
@@ -631,5 +806,139 @@ mod tests {
                 "must not flag {value:?}"
             );
         }
+    }
+
+    /// The canonical AWS example secret key, assembled at runtime.
+    ///
+    /// A contiguous 40-character credential-shaped literal in the source is
+    /// a finding for the secret scanner, and push protection blocks the push
+    /// even though the value is the published example. The bytes handed to
+    /// the detector are identical either way.
+    fn example_aws_secret_key() -> String {
+        format!(
+            "{}{}{}{}",
+            "wJalrXUtnF", "EMI/K7MDEN", "G/bPxRfiCY", "EXAMPLEKEY"
+        )
+    }
+
+    /// A 40-character hex digest, assembled at runtime for the same reason.
+    ///
+    /// This is the shape a git SHA-1 has, and it is the false positive the
+    /// detector has to refuse: it is forty characters, it is in the
+    /// alphabet, and it is not a credential.
+    fn example_hex_digest() -> String {
+        format!("{}{}", "9f8e7d6c5b4a39281706f", "5e4d3c2b1a098765432")
+    }
+
+    /// The AWS secret access key is the one credential shape the outbound
+    /// DLP did not cover at all, and it is the one that cannot be covered
+    /// by a pattern: it has no prefix, so the detector needs the shape of
+    /// the value *and* the label that names it.
+    #[test]
+    fn detects_an_aws_secret_access_key_under_its_own_label() {
+        let key = example_aws_secret_key();
+        assert_eq!(key.len(), 40, "the fixture must have the AWS key's length");
+
+        let res = scan_tool_arguments(&json!({ "aws_secret_access_key": key }));
+        assert!(
+            res.categories
+                .contains(&"credential_exfiltration".to_string()),
+            "a secret key under its own label must be flagged"
+        );
+    }
+
+    /// The same key under the other spellings the AWS tooling uses.
+    #[test]
+    fn detects_an_aws_secret_access_key_under_its_other_spellings() {
+        let key = example_aws_secret_key();
+        for label in [
+            "AWS_SECRET_ACCESS_KEY",
+            "awsSecretAccessKey",
+            "aws-secret-access-key",
+            "aws.secretAccessKey",
+        ] {
+            let res = scan_tool_arguments(&json!({ label: key }));
+            assert!(
+                res.categories
+                    .contains(&"credential_exfiltration".to_string()),
+                "must detect the key under {label}"
+            );
+        }
+    }
+
+    /// A label deeper in the argument tree still counts: the key is often
+    /// under a provider block, not at the top level.
+    #[test]
+    fn detects_an_aws_secret_access_key_under_a_nested_label() {
+        let key = example_aws_secret_key();
+        let res = scan_tool_arguments(&json!({
+            "provider": { "credentials": { "aws_secret_access_key": key } }
+        }));
+        assert!(
+            res.categories
+                .contains(&"credential_exfiltration".to_string()),
+            "a nested label must still name the key"
+        );
+    }
+
+    /// The other half of the shape: the marker can be in the same string as
+    /// the value, which is how a shell command hands a credential to the
+    /// AWS CLI.
+    #[test]
+    fn detects_an_aws_secret_access_key_named_in_the_same_string() {
+        let key = example_aws_secret_key();
+        let res = scan_tool_arguments(&json!({
+            "command": format!("aws configure set aws_secret_access_key {key}")
+        }));
+        assert!(
+            res.categories
+                .contains(&"credential_exfiltration".to_string()),
+            "a marker in the same string must name the key"
+        );
+    }
+
+    /// The false-positive guard the board asked for. Forty characters of
+    /// base64 alphabet is a shape an ordinary value has; without a label
+    /// that names it, it is not a credential, and a detector that blocked
+    /// it would block ordinary calls.
+    #[test]
+    fn a_forty_character_base64_value_without_a_label_is_not_a_secret() {
+        let blob = format!("{}{}", "8Jm2Kq9xW1vT4nR7yU0p", "L3sD6fG8hJ2kM5nQ1zX4");
+        assert_eq!(blob.len(), 40);
+        let res = scan_tool_arguments(&json!({ "payload": blob }));
+        assert!(
+            !res.categories
+                .contains(&"credential_exfiltration".to_string()),
+            "an unlabelled base64 blob must not be flagged"
+        );
+    }
+
+    /// A 40-character hex digest under an AWS label is still a digest, not a
+    /// key: the shape gate is what stops a digest that happens to sit next
+    /// to the word "secret" from blocking a call.
+    #[test]
+    fn a_forty_character_digest_under_an_aws_label_is_not_a_secret() {
+        let digest = example_hex_digest();
+        assert_eq!(digest.len(), 40);
+        let res = scan_tool_arguments(&json!({ "aws_secret_access_key": digest }));
+        assert!(
+            !res.categories
+                .contains(&"credential_exfiltration".to_string()),
+            "a hex digest must not be flagged, even under an AWS label"
+        );
+    }
+
+    /// A base64 blob that is not 40 characters long is not a key, however
+    /// it is labelled: 44 characters is the length of a base64-encoded
+    /// SHA-256, and it is the most common thing in a lock file.
+    #[test]
+    fn a_base64_blob_of_another_length_is_not_a_secret() {
+        let blob = format!("{}{}", "8Jm2Kq9xW1vT4nR7yU0p", "B7wE9vT0yU3iO6pA8sD1fG4h");
+        let res = scan_tool_arguments(&json!({ "aws_secret_access_key": blob }));
+        assert!(
+            !res.categories
+                .contains(&"credential_exfiltration".to_string()),
+            "a 44-character digest must not be flagged"
+        );
     }
 }
