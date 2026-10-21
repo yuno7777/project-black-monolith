@@ -46,6 +46,7 @@ Read it before starting work. Write to it while you work.
 | security | `fix/mcp-shield/malformed-tool-entry` | one malformed tool entry voided the whole `tools/list` defence for that server (`FINDINGS.md` §6) | merged into `main` as PR #66 (`f42721d`); the fix is proved by mutating it back to the old behaviour — one defective entry rejecting the whole listing — and watching all six new tests fail. Branched off `main` at `1b6e8ed`; no history rewrite, so nothing was force-pushed |
 | security | `fix/vector-anchor/truncated-error-body` | the memory layer's MCP server died on a truncated error body (`FINDINGS.md` §7) | PR #67 open; the fix is proved by mutating it back — the old read of the error body — and watching the new test fail because the server never answers. Branched off `main` at `1b6e8ed` |
 | security | `fix/trace-audit/cold-model-timeout` | one read timeout did two jobs, so a cold model was read as a dead backend (`FINDINGS.md` §12) | PR #70 open; the fix is proved by mutating it back and watching the new tests fail. The tests drive a real local HTTP server, because the deadlines under test are enforced by the HTTP stack and a mock transport enforces nothing |
+| security | `fix/trace-audit/prompt-projection` | the reasoning layer's prompt projection dropped every content block it could not represent, in silence (`FINDINGS.md` test gap 6) | PR #74 open; 14 tests, each proved by mutating the behaviour back and watching the test that claims to hold it fail. Worktree `C:/Users/Abhi/Desktop/monolith-wt/prompt-projection` |
 | integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI green on `b19513b` |
 | integrator | Dependabot | #24 merged (codeql-action); #15, #16 closed as superseded; #26 superseded by a direct hmac 0.13 migration | the queue is empty: **zero open PRs** |
 
@@ -108,6 +109,22 @@ time. So a `ReadTimeout` here is still a statement about the runner, and
 the rerun is the right next step — but read the traceback first, because a
 timeout in a *test* is the branch's and a timeout in the backend client is
 not.
+### The OpenAI-compatible endpoint speaks text, and says so
+`/v1/chat/completions` projects the client's messages into one text prompt,
+because the backend behind it is text-only. A content block that carries
+anything else — an image, a tool result — cannot be projected into the
+audited prompt, and until PR #73 it was dropped in silence: the model
+answered a question it had never been asked, and the ledger recorded an
+ordinary completion. It is refused now, with a message that names the
+block's type.
+Two shapes are still accepted, and both are deliberate.
+- **A null content.** That is how an assistant turn carrying tool calls is
+  written. There is nothing there to lose, so it is not refused.
+- **A blank text block.** It carries nothing, so it contributes nothing.
+Neither endpoint scans a non-text block — the auditor works on text. The
+difference is what happens to it: the Anthropic gateway forwards the body
+byte for byte, so the model receives the block, while this endpoint
+refuses it rather than pretending it was never sent.
 
 ### Requirement floors now match their locks (resolved)
 
@@ -194,6 +211,9 @@ Free to claim: `vector-anchor/**` (apart from the detector's hot path, above),
 | `trace-audit/src/stream_proxy.py` | security | the backend client's deadlines — the first-byte budget and the per-chunk deadline. Only the timeout handling changed; the rest of the layer is not claimed |
 Free to claim: `vector-anchor/**`, `trace-audit/**` (apart from the backend
 client's deadlines, above), `dashboard/app/api/operations/**`,
+| `trace-audit/src/main.py`, `trace-audit/tests/test_prompt_projection.py` | security | the reasoning layer's prompt projection — the OpenAI-compatible endpoint's projection of the client's messages into one audited text prompt |
+Free to claim: `vector-anchor/**`, `trace-audit/**` (apart from the prompt projection, above),
+`dashboard/app/api/operations/**`,
 `dashboard/app/api/benchmarks/**`, `docs/OPEN_QUESTIONS.md`, the Dependabot
 queue.
 

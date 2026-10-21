@@ -160,6 +160,24 @@ class GenerateRequest(BaseModel):
         return value
 
 
+def _unrepresentable_block(item: Any) -> str:
+    """Why a content block cannot be projected into a text prompt.
+
+    The backend behind this endpoint speaks text, and the auditor scans
+    text. A block that carries something else cannot be audited and cannot
+    be represented, and dropping it in silence would answer a question the
+    client did not ask — so it is refused instead.
+    """
+    if isinstance(item, dict):
+        kind = item.get("type")
+        name = kind if isinstance(kind, str) and kind else "unknown"
+        return (
+            f"content block of type {name!r} cannot be audited: this endpoint "
+            "accepts text content blocks only"
+        )
+    return "each content block must be an object with a text field"
+
+
 def _messages_to_prompt(messages: list[dict[str, Any]]) -> str:
     parts: list[str] = []
     for msg in messages:
@@ -171,12 +189,18 @@ def _messages_to_prompt(messages: list[dict[str, Any]]) -> str:
                 parts.append(content)
         elif isinstance(content, list):
             for item in content:
-                if (
-                    isinstance(item, dict)
-                    and isinstance(item.get("text"), str)
-                    and item["text"].strip()
-                ):
-                    parts.append(item["text"])
+                if isinstance(item, dict) and isinstance(item.get("text"), str):
+                    # A text block that is blank carries nothing, so it
+                    # contributes nothing. A block that carries something
+                    # else is refused rather than dropped.
+                    if item["text"].strip():
+                        parts.append(item["text"])
+                    continue
+                raise ValueError(_unrepresentable_block(item))
+        elif content is not None:
+            raise ValueError(
+                "message content must be a string or a list of content blocks"
+            )
     prompt = "\n".join(parts)
     if not prompt.strip():
         raise ValueError("messages must contain non-blank content")
