@@ -38,11 +38,33 @@ Read it before starting work. Write to it while you work.
 | security | `feature/video-explainer` | the AEOS Guard explainer, rescued off a branch that was about to be deleted | pushed, 1 commit |
 | security | `fix/mcp-shield/baseline-persist-failure` | the tool layer's fail-open path discarded enforcement it had already computed (`FINDINGS.md` §5) | merged into `main` as PR #64 (`1b6e8ed`); the fix is proved by mutating it back to the old behaviour and watching the new test fail. The branch was rebased onto `main` after #60 and #62 merged, so its history was rewritten and it was force-pushed |
 | security | `fix/mcp-shield/malformed-tool-entry` | one malformed tool entry voided the whole `tools/list` defence for that server (`FINDINGS.md` §6) | PR #66 open; the fix is proved by mutating it back to the old behaviour — one defective entry rejecting the whole listing — and watching all six new tests fail. Branched off `main` at `1b6e8ed`; no history rewrite, so nothing was force-pushed |
+| security | `fix/trace-audit/prompt-projection` | the reasoning layer's prompt projection dropped every content block it could not represent, in silence (`FINDINGS.md` test gap 6) | PR #73 open; 14 tests, each proved by mutating the behaviour back and watching the test that claims to hold it fail. Worktree `C:/Users/Abhi/Desktop/monolith-wt/prompt-projection` |
 | integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI green on `b19513b` |
 | integrator | Dependabot | #24 merged (codeql-action); #15, #16 closed as superseded; #26 superseded by a direct hmac 0.13 migration | the queue is empty: **zero open PRs** |
 
 The project is moving to user-facing features. The work below is the
 security and operations tail; the board is here so it is not lost.
+
+### The OpenAI-compatible endpoint speaks text, and says so
+
+`/v1/chat/completions` projects the client's messages into one text prompt,
+because the backend behind it is text-only. A content block that carries
+anything else — an image, a tool result — cannot be projected into the
+audited prompt, and until PR #73 it was dropped in silence: the model
+answered a question it had never been asked, and the ledger recorded an
+ordinary completion. It is refused now, with a message that names the
+block's type.
+
+Two shapes are still accepted, and both are deliberate.
+
+- **A null content.** That is how an assistant turn carrying tool calls is
+  written. There is nothing there to lose, so it is not refused.
+- **A blank text block.** It carries nothing, so it contributes nothing.
+
+Neither endpoint scans a non-text block — the auditor works on text. The
+difference is what happens to it: the Anthropic gateway forwards the body
+byte for byte, so the model receives the block, while this endpoint
+refuses it rather than pretending it was never sent.
 
 ### Requirement floors now match their locks (resolved)
 
@@ -92,9 +114,11 @@ to `main` by ref. Use a dedicated worktree for every branch.
 | `dashboard/lib/login-rate-limit.ts`, `dashboard/scripts/dispatch-alerts.mjs` | security | rate limiting and alert delivery |
 | `supabase/migrations/**` | security | retention scoping migration |
 | `contracts/openapi.yaml` | security | corrected the revocation snapshot wording |
+| `trace-audit/src/main.py`, `trace-audit/tests/test_prompt_projection.py` | security | the reasoning layer's prompt projection — the OpenAI-compatible endpoint's projection of the client's messages into one audited text prompt |
 | `main` | integrator | Merges and verification only; branch work happens in a worktree. |
 
-Free to claim: `vector-anchor/**`, `trace-audit/**`, `dashboard/app/api/operations/**`,
+Free to claim: `vector-anchor/**`, `trace-audit/**` (apart from the prompt projection, above),
+`dashboard/app/api/operations/**`,
 `dashboard/app/api/benchmarks/**`, `docs/OPEN_QUESTIONS.md`, the Dependabot
 queue.
 

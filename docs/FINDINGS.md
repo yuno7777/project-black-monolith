@@ -256,11 +256,48 @@ regression would be invisible.
 | 3 | The incident-queue read path is untested: filter parsing, keyset pagination, counts. | `dashboard/lib/incident-store.ts` | medium |
 | 4 | The detector-reset path is untested end to end, on both sides of the wire. | `vector-anchor`, `dashboard` | medium |
 | 5 | The rule deciding whether a credential may travel over plain HTTP to the upstream model is neither present nor tested. | `trace-audit/src/anthropic_gateway.py` | medium |
-| 6 | TraceAudit's prompt projection drops every non-text content block, and is never tested against one. | `trace-audit/src/anthropic_gateway.py` | medium |
+| 6 | ~~TraceAudit's prompt projection drops every non-text content block, and is never tested against one.~~ **closed** | `trace-audit/src/main.py` | medium |
 | 7 | The divergence detector's real-model behaviour is asserted by no committed result. | `trace-audit/fixtures/` | medium |
 | 8 | The production Postgres branch of the session list is never executed by any test. | `dashboard/app/api/sessions/route.ts` | medium |
 | 9 | The benchmark ledger's write and read paths are untested, route included. | `dashboard/lib/benchmark-store.ts` | small |
 | 10 | The two functions the memory-layer detector's hot path depends on are untested; the one that is tested is not on the hot path. | `vector-anchor/src/frequency_tracker.py` | small |
+
+### The prompt projection (gap 6)
+
+`trace-audit/tests/test_prompt_projection.py` — fourteen tests over the
+OpenAI-compatible endpoint's projection of the client's messages into one
+text prompt.
+
+**The gap's location was wrong.** The projection is not in
+`anthropic_gateway.py`; that gateway forwards the client's body byte for
+byte, so an Anthropic client's content blocks reach the model exactly as
+they were sent. The projection is in `main.py`, in the OpenAI-compatible
+`/v1/chat/completions` endpoint, and it existed to turn a list of messages
+into the single string a text backend takes.
+
+**The behaviour it had was a silent loss.** A content block that carried
+text was projected. A content block that carried anything else — an image,
+a tool result, a block whose `text` was not a string — was *dropped*, with
+no event, no log line and nothing in the answer to say so. The backend
+behind that endpoint is text-only, so the model was then answering a
+question it had never been asked, and the operator's ledger recorded an
+ordinary completion. A text block that was blank was also dropped, but
+that one carries nothing, so nothing was lost.
+
+**It now refuses what it cannot audit.** A block that cannot be projected
+into the audited prompt is refused with a message that names its type, so
+the client is told which block was the problem rather than being answered
+about a different question. The reasoning layer is a security layer: an
+input it cannot scan is an input it will not accept. A malformed content
+field — neither a string, nor a list of blocks, nor null — is refused for
+the same reason. A null content is not refused: that is how an assistant
+turn carrying tool calls is written, and there is nothing there to lose.
+
+Seven mutations prove it: dropping the refusal, refusing a blank text
+block, accepting a malformed content again, refusing a null content,
+refusing a plain string content, refusing without naming the type, and
+stopping the request model from checking the messages at all — each breaks
+exactly the test that claims to hold that guarantee.
 
 ---
 
@@ -346,3 +383,12 @@ up.
   PR #66: each tool is inspected on its own, a tool the shield cannot vouch
   for is withheld, a tool that only breaks the spec is still fully checked
   and served, and the rest of the listing keeps its protection.
+- **The reasoning layer's prompt projection dropped what it could not
+  audit** (test gap 6 above). The OpenAI-compatible endpoint projected the
+  client's messages into one text prompt for a text-only backend, and a
+  content block that carried anything else — an image, a tool result — was
+  dropped without an event, a log line or anything in the answer to say so.
+  The model was then answering a question it had never been asked, and the
+  ledger recorded an ordinary completion. Fixed in PR #73: a content block
+  the projection cannot represent is refused, with a message that names
+  its type, and a malformed content field is refused too.
