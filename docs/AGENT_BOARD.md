@@ -38,6 +38,7 @@ Read it before starting work. Write to it while you work.
 | security | `feature/video-explainer` | the AEOS Guard explainer, rescued off a branch that was about to be deleted | pushed, 1 commit |
 | security | `fix/mcp-shield/baseline-persist-failure` | the tool layer's fail-open path discarded enforcement it had already computed (`FINDINGS.md` §5) | merged into `main` as PR #64 (`1b6e8ed`); the fix is proved by mutating it back to the old behaviour and watching the new test fail. The branch was rebased onto `main` after #60 and #62 merged, so its history was rewritten and it was force-pushed |
 | security | `fix/mcp-shield/malformed-tool-entry` | one malformed tool entry voided the whole `tools/list` defence for that server (`FINDINGS.md` §6) | PR #66 open; the fix is proved by mutating it back to the old behaviour — one defective entry rejecting the whole listing — and watching all six new tests fail. Branched off `main` at `1b6e8ed`; no history rewrite, so nothing was force-pushed |
+| security | `fix/mcp-shield/spool-byte-cap-doc` | the Rust spool's byte cap claimed to bound the spool and bounded one file at a time (`FINDINGS.md` documentation drift 1) | PR #79 open; the two budgets are held apart by a test, and the test fails when they are shared |
 | integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI green on `b19513b` |
 | integrator | Dependabot | #24 merged (codeql-action); #15, #16 closed as superseded; #26 superseded by a direct hmac 0.13 migration | the queue is empty: **zero open PRs** |
 
@@ -83,11 +84,37 @@ happened: a branch was switched in the shared `main` worktree while another
 agent was merging, so the merge landed on the new branch and had to be moved
 to `main` by ref. Use a dedicated worktree for every branch.
 
+### The spool's byte cap bounds one file, on purpose
+
+Documentation drift 1 was a comment that said one thing and the code did
+another. `MAX_SPOOL_BYTES` was documented as "an upper bound on spooled
+bytes across `outbox.jsonl` and `outbox.dead`", and it was applied to each
+file separately, so the spool directory could hold twice what the comment
+promised.
+
+The code is right and the comment was wrong, and the reason is worth
+writing down because the other way round is a bug waiting to happen. A
+budget shared across the two files would let a full dead-letter file starve
+the pending spool: `outbox.jsonl` would find no room for a new event, drop
+the oldest to make room, and find the new event too large for what was
+left. What the pending spool drops when it runs out is a detection that has
+not been delivered yet, which is the one loss this outbox must never make.
+The dead-letter file exists to keep evidence the dashboard will never
+take; it is not a place to take a budget from the live spool.
+
+So the cap says what it is — a bound on one file, applied to each — and a
+test holds the two budgets apart. The test fails if the budget is shared:
+it was proved by making the pending spool charge for the dead-letter file's
+bytes and watching the newest detection disappear.
+
+The operator-visible consequence is one number to remember: **the spool
+directory holds at most twice the cap**, 32 MiB by default.
+
 ## Claims
 
 | Path | Claimed by | Note |
 | --- | --- | --- |
-| `mcp-shield/src/**` | security | through the 2026-10-20 review batch |
+| `mcp-shield/src/**` | security | through the 2026-10-20 review batch; the spool's byte cap (documentation drift 1) on `fix/mcp-shield/spool-byte-cap-doc` |
 | `dashboard/lib/incident-store.ts`, `dashboard/app/api/ingest/**` | security | circuit breaker and ingest path |
 | `dashboard/lib/login-rate-limit.ts`, `dashboard/scripts/dispatch-alerts.mjs` | security | rate limiting and alert delivery |
 | `supabase/migrations/**` | security | retention scoping migration |

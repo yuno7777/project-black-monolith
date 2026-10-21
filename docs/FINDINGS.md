@@ -268,7 +268,7 @@ regression would be invisible.
 
 | # | Drift | Where | Effort |
 | --- | --- | --- | --- |
-| 1 | The Rust spool's byte cap is documented as covering both spool files but is enforced independently on each. | `mcp-shield/src/outbox.rs` | small |
+| 1 | The Rust spool's byte cap is documented as covering both spool files but is enforced independently on each. **Fixed** — the cap bounds one file, and the two files keep budgets of their own; see "Already fixed" below. | `mcp-shield/src/outbox.rs` | small |
 | 2 | The launcher's ambient-proxy rule is weaker than the secret-boundary rule it cites, and its safety argument fails for the Windows system proxy it was written for. | `scripts/monolith_wrap.py` | medium |
 | 3 | The proxy default change silently alters the preflight health checks, which can now abort the launcher. | `scripts/monolith_wrap.py` | small |
 | 4 | `generation_truncated` reaches the feed but is counted as an "attack" by the overview KPI, and is named in no documentation. | `dashboard/app/page.tsx` | medium |
@@ -346,3 +346,13 @@ up.
   PR #66: each tool is inspected on its own, a tool the shield cannot vouch
   for is withheld, a tool that only breaks the spec is still fully checked
   and served, and the rest of the listing keeps its protection.
+- **The Rust spool's byte cap claimed to bound the spool and bounded one
+  file at a time** (documentation drift 1 above). The constant's own comment
+  said it was an upper bound "across `outbox.jsonl` and `outbox.dead`", and
+  the code applied it to each file separately, so the spool directory could
+  hold twice what the comment promised. The code is the right one and the
+  comment was wrong: a budget shared across the two files would let a full
+  dead-letter file starve the pending spool, and what the pending spool
+  drops when it runs out is a detection that has not been delivered yet. The
+  cap now says what it is — a bound on one file — and a test holds the two
+  budgets apart, so the property cannot be given away by accident.
