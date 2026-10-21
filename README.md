@@ -166,6 +166,25 @@ correlation headers are not forwarded to the model provider: the run is
 attributed at the layer that audits it, and the provider has no business
 knowing which session it is serving.
 
+**The launcher's own network rules are the strict ones.** A proxy you did
+not name for a request — the machine's `http_proxy`, or on Windows the
+system proxy in the registry — does not carry a credential unless you say
+so with `MONOLITH_ALLOW_CREDENTIAL_VIA_PROXY=true`. That is the secret
+boundary's rule, and the launcher used to cite it without applying it: a
+proxy that terminates TLS can read what it carries, whatever the tunnel
+says. The launcher names the proxy it found and what it will and will not
+carry, so the decision is yours:
+
+```
+  proxy       http://proxy.corp.example:8080 is configured; the launcher's
+              request to api.anthropic.com carries the client's credential and
+              will not go through it. Set
+              MONOLITH_ALLOW_CREDENTIAL_VIA_PROXY=true to allow that.
+```
+
+A health check carries no credential, so it is not held to that rule: it
+reaches a service the way the rest of your machine reaches it.
+
 **What it needs:** the stack up (`docker compose up -d --build`), and
 `cargo build --release` in `mcp-shield/` so the host has the shield binary the
 MCP servers are started through.

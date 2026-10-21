@@ -266,13 +266,13 @@ regression would be invisible.
 
 ## Documentation drift
 
-| # | Drift | Where | Effort |
-| --- | --- | --- | --- |
-| 1 | The Rust spool's byte cap is documented as covering both spool files but is enforced independently on each. | `mcp-shield/src/outbox.rs` | small |
-| 2 | The launcher's ambient-proxy rule is weaker than the secret-boundary rule it cites, and its safety argument fails for the Windows system proxy it was written for. | `scripts/monolith_wrap.py` | medium |
-| 3 | The proxy default change silently alters the preflight health checks, which can now abort the launcher. | `scripts/monolith_wrap.py` | small |
-| 4 | `generation_truncated` reaches the feed but is counted as an "attack" by the overview KPI, and is named in no documentation. | `dashboard/app/page.tsx` | medium |
-| 5 | The dashboard fix corrected the session report; the console's headline detection number still counts operational failures. | `dashboard/app/page.tsx` | small |
+| # | Drift | Where | Effort | State |
+| --- | --- | --- | --- | --- |
+| 1 | The Rust spool's byte cap is documented as covering both spool files but is enforced independently on each. | `mcp-shield/src/outbox.rs` | small | open |
+| 2 | The launcher's ambient-proxy rule is weaker than the secret-boundary rule it cites, and its safety argument fails for the Windows system proxy it was written for. | `scripts/monolith_wrap.py` | medium | fixed |
+| 3 | The proxy default change silently alters the preflight health checks, which can now abort the launcher. | `scripts/monolith_wrap.py` | small | fixed |
+| 4 | `generation_truncated` reaches the feed but is counted as an "attack" by the overview KPI, and is named in no documentation. | `dashboard/app/page.tsx` | medium | open |
+| 5 | The dashboard fix corrected the session report; the console's headline detection number still counts operational failures. | `dashboard/app/page.tsx` | small | open |
 
 ---
 
@@ -346,3 +346,21 @@ up.
   PR #66: each tool is inspected on its own, a tool the shield cannot vouch
   for is withheld, a tool that only breaks the spec is still fully checked
   and served, and the rest of the listing keeps its protection.
+- **The launcher let a proxy the operator never named carry a credential**
+  (documentation drifts 2 and 3 above). The rule it applied was weaker than
+  the rule it cited — the secret boundary disables the ambient proxy
+  outright for a resolved secret, while the launcher allowed one for a remote
+  HTTPS target — and the argument it gave for that was not true of the proxy
+  it was written for: the request is tunnelled end to end, "so the proxy
+  cannot read the credential", which holds for a proxy that relays and not
+  for one that terminates TLS, and a corporate inspection proxy is what a
+  Windows system proxy usually is. The same change also made the preflight
+  inherit the credential's rule, so a service that was only reachable
+  through the proxy reported as down and the launcher refused to start,
+  naming the service and saying nothing about the proxy. Fixed: the rule is
+  now the secret boundary's — an ambient proxy does not carry a credential
+  unless the operator says so with `MONOLITH_ALLOW_CREDENTIAL_VIA_PROXY=true`
+  — the health check is no longer held to it, the console names the proxy and
+  says what it will and will not carry, and a failed health check says which
+  proxy carried the request. The residual is recorded as an open question:
+  the auditor's own provider request is not the launcher's to govern.

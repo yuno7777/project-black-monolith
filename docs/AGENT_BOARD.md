@@ -37,6 +37,7 @@ Read it before starting work. Write to it while you work.
 | security | `fix/security-hardening` | retention scoping, evidence verification, fail-closed admin, DLP coverage, breaker batching, baseline locking | merged into `main` (`3634d23`); branch kept until cleanup |
 | security | `feature/video-explainer` | the AEOS Guard explainer, rescued off a branch that was about to be deleted | pushed, 1 commit |
 | security | `fix/mcp-shield/baseline-persist-failure` | the tool layer's fail-open path discarded enforcement it had already computed (`FINDINGS.md` §5) | merged into `main` as PR #64 (`1b6e8ed`); the fix is proved by mutating it back to the old behaviour and watching the new test fail. The branch was rebased onto `main` after #60 and #62 merged, so its history was rewritten and it was force-pushed |
+| security | `fix/scripts/ambient-proxy-rule` | the launcher's ambient-proxy rule: weaker than the secret-boundary rule it cited, and the proxy default silently changed the preflight (`FINDINGS.md` documentation drifts 2 and 3) | pushed, 1 commit; the rule is proved by mutating it back to the old one and watching the new tests fail |
 | security | `fix/mcp-shield/malformed-tool-entry` | one malformed tool entry voided the whole `tools/list` defence for that server (`FINDINGS.md` §6) | PR #66 open; the fix is proved by mutating it back to the old behaviour — one defective entry rejecting the whole listing — and watching all six new tests fail. Branched off `main` at `1b6e8ed`; no history rewrite, so nothing was force-pushed |
 | integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI green on `b19513b` |
 | integrator | Dependabot | #24 merged (codeql-action); #15, #16 closed as superseded; #26 superseded by a direct hmac 0.13 migration | the queue is empty: **zero open PRs** |
@@ -83,6 +84,37 @@ happened: a branch was switched in the shared `main` worktree while another
 agent was merging, so the merge landed on the new branch and had to be moved
 to `main` by ref. Use a dedicated worktree for every branch.
 
+### The launcher's proxy rule is now the secret boundary's
+
+`FINDINGS.md` documentation drifts 2 and 3 were both about one function,
+`_should_use_ambient_proxy` in `scripts/monolith_wrap.py`, and both are fixed
+on `fix/scripts/ambient-proxy-rule`.
+
+The rule was weaker than the rule it cited. The secret boundary disables the
+ambient proxy outright for a resolved secret; the launcher allowed one for a
+remote HTTPS target, on the argument that the request is tunnelled end to end
+"so the proxy cannot read the credential". That holds for a proxy that
+relays and not for one that terminates TLS, and a corporate inspection proxy
+is what a Windows *system* proxy usually is — the case the rule was written
+for. The rule is now the boundary's: an ambient proxy does not carry a
+credential unless the operator says so with
+`MONOLITH_ALLOW_CREDENTIAL_VIA_PROXY=true`, which is also the answer for a
+corporate network where the proxy is the only route to the model provider.
+The console names the proxy it found and what it will and will not carry.
+
+The same change had made the preflight inherit the credential's rule, so a
+service that was only reachable through a proxy reported as down and the
+launcher refused to start — naming the service and saying nothing about the
+proxy. A health check carries no credential, so it is not held to that rule
+any more, and a failed one says which proxy carried the request.
+
+**The residual is an open question, not a fix.** The hop that carries the
+client's credential to the model provider is not the launcher's to govern:
+for `/v1/messages` the launcher forwards to the local auditor, and the
+auditor makes the provider request itself, with a client that reads the
+proxy settings from its own environment. That is question 13 in
+`docs/OPEN_QUESTIONS.md`.
+
 ## Claims
 
 | Path | Claimed by | Note |
@@ -93,6 +125,7 @@ to `main` by ref. Use a dedicated worktree for every branch.
 | `supabase/migrations/**` | security | retention scoping migration |
 | `contracts/openapi.yaml` | security | corrected the revocation snapshot wording |
 | `scripts/monolith_wrap.py`, `scripts/tests/**` | security | the launcher's ambient-proxy rule (`FINDINGS.md` documentation drifts 2 and 3) |
+| `docs/FINDINGS.md`, `docs/OPEN_QUESTIONS.md`, `README.md` | security | the drift list, the new open question, and the launcher's section of the README |
 | `main` | integrator | Merges and verification only; branch work happens in a worktree. |
 
 Free to claim: `vector-anchor/**`, `trace-audit/**`, `dashboard/app/api/operations/**`,
