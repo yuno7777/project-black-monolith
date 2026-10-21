@@ -41,6 +41,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 import urllib.error
@@ -154,30 +155,133 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
-def _should_use_ambient_proxy(url: str) -> bool:
-    """Whether an ambient proxy may carry this request.
+def _ambient_proxy_for(url: str) -> str | None:
+    """The proxy urllib would use for this URL, or None if it goes direct.
 
-    A proxy is a second destination the operator did not name, and two
-    cases rule it out.
-
-    A loopback target. urllib does not bypass loopback on Windows — it
-    reads the registry's ProxyEnable and ProxyServer instead — so a
-    machine with a system proxy sends a request meant for 127.0.0.1 to a
-    remote host. The credential on that request goes with it.
-
-    A plain-HTTP target. The credential is then readable by whoever
-    answers, and a proxy is a whoever. This is the same rule the secret
-    boundary applies to a resolved secret, for the same reason.
-
-    An HTTPS request to a remote host is left alone: it is tunnelled
-    through the proxy end to end, so the proxy cannot read the
-    credential, and a corporate network is often the only route to the
-    model provider at all.
+    Read from the environment and, on Windows, from the registry: a
+    machine with a system proxy has one whether or not anybody exported
+    ``http_proxy`` into this shell.
     """
     parsed = urllib.parse.urlparse(url)
-    if parsed.scheme != "https":
+    proxies = urllib.request.getproxies()
+    if parsed.scheme == "https":
+        return proxies.get("https") or proxies.get("all")
+    if parsed.scheme == "http":
+        return proxies.get("http") or proxies.get("all")
+    return None
+
+
+def _should_use_ambient_proxy(
+    url: str,
+    *,
+    carries_credential: bool = True,
+    allow_credential_via_proxy: bool = False,
+) -> bool:
+    """Whether an ambient proxy may carry this request.
+
+    A proxy is a second destination the operator did not name, and what
+    the request is carrying decides the answer.
+
+    A loopback target, always. urllib does not bypass loopback on
+    Windows — it reads the registry's ProxyEnable and ProxyServer
+    instead — so a machine with a system proxy sends a request meant for
+    127.0.0.1 to a remote host. A proxy cannot reach the operator's own
+    machine, so there is nothing to gain by letting it try and a
+    credential to lose.
+
+    A plain-HTTP target, when the request carries a credential. The
+    credential is then readable by whoever answers, and a proxy is a
+    whoever.
+
+    A remote HTTPS target, when the request carries a credential: only
+    if the operator says so. The request is tunnelled through the proxy
+    end to end, so a proxy that only relays cannot read the credential
+    — but a proxy that *terminates* TLS can, and the launcher cannot
+    tell the two apart. A corporate network is also often the only route
+    to the model provider at all, which is why this is a setting and not
+    a refusal.
+
+    A request that carries no credential is not this function's
+    business. The proxy may carry it to any target it can reach, which
+    is sometimes the only route there is: the preflight's health check
+    has to reach a service the way the rest of the machine reaches it.
+
+    This is the rule the secret boundary applies to a resolved secret —
+    it disables the ambient proxy outright and pins the connection. The
+    launcher is standard-library only, cannot pin, and has to work on a
+    network where the proxy is the only route out, so the operator
+    chooses instead of the launcher guessing.
+    """
+    parsed = urllib.parse.urlparse(url)
+    if _is_loopback_host(parsed.hostname or ""):
         return False
-    return not _is_loopback_host(parsed.hostname or "")
+    if not carries_credential:
+        return True
+    if not allow_credential_via_proxy:
+        return False
+    return parsed.scheme == "https"
+
+
+def _proxy_advisory(
+    destinations: list[tuple[str, str]], *, allow_credential_via_proxy: bool
+) -> list[str]:
+    """What to tell the operator about a proxy that is configured.
+
+    ``destinations`` is a list of ``(url, credential)`` pairs: the
+    requests the launcher is about to make, and what each one carries.
+    Empty when no proxy would carry any of them: the common case is a
+    local stack, and a line about a proxy that is not there is noise.
+    """
+    grouped: dict[str, list[tuple[str, str]]] = {}
+    for url, credential in destinations:
+        proxy = _ambient_proxy_for(url)
+        if not proxy:
+            continue
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme != "https" or _is_loopback_host(parsed.hostname or ""):
+            continue
+        grouped.setdefault(proxy, []).append((parsed.hostname or "", credential))
+    lines: list[str] = []
+    for proxy, entries in grouped.items():
+        where = ", ".join(host for host, _ in entries)
+        carries = ", ".join(credential for _, credential in entries)
+        if allow_credential_via_proxy:
+            message = (
+                f"{proxy} will carry the launcher's request to {where}. It carries "
+                f"{carries}, and a proxy that terminates TLS can read it."
+            )
+        else:
+            message = (
+                f"{proxy} is configured; the launcher's request to {where} carries "
+                f"{carries} and will not go through it. Set "
+                "MONOLITH_ALLOW_CREDENTIAL_VIA_PROXY=true to allow that."
+            )
+        lines.extend(
+            textwrap.wrap(
+                message,
+                width=78,
+                initial_indent="  proxy       ",
+                subsequent_indent="              ",
+                break_long_words=False,
+                break_on_hyphens=False,
+            )
+        )
+    return lines
+
+
+def _unreachable(what: str, url: str) -> str:
+    """Why a service did not answer, naming the proxy when one carried it.
+
+    A health check goes out the way the rest of the machine reaches a
+    service, so when a proxy was in the path the operator has to be told:
+    the stack may be up and working, and the proxy may be the reason
+    nothing answered.
+    """
+    message = f"{what} is not answering at {url}"
+    proxy = _ambient_proxy_for(url)
+    if proxy and _should_use_ambient_proxy(url, carries_credential=False):
+        message += f" (the request went through the ambient proxy {proxy})"
+    return message
 
 
 def credential_transport_is_trusted(url: str, allow_insecure: bool) -> bool:
@@ -322,6 +426,9 @@ def http_get_json(
     timeout: float = 5.0,
     headers: dict[str, str] | None = None,
     use_proxy: bool | None = None,
+    *,
+    carries_credential: bool = True,
+    allow_credential_via_proxy: bool = False,
 ):
     """Fetch a JSON document.
 
@@ -333,7 +440,11 @@ def http_get_json(
     credential in that request would go with it.
     """
     if use_proxy is None:
-        use_proxy = _should_use_ambient_proxy(url)
+        use_proxy = _should_use_ambient_proxy(
+            url,
+            carries_credential=carries_credential,
+            allow_credential_via_proxy=allow_credential_via_proxy,
+        )
     request = urllib.request.Request(url, headers=headers or {})
     with _opener(use_proxy).open(request, timeout=timeout) as response:
         body = response.read()
@@ -341,8 +452,16 @@ def http_get_json(
 
 
 def service_healthy(url: str) -> bool:
+    """Whether a service answers.
+
+    A health check carries no credential, so it is not held to the
+    credential's rule: the ambient proxy may carry it, because on a
+    corporate network the proxy is sometimes the only route to a service,
+    and a health check that cannot reach the service would report a stack
+    that is up and working as one that is down.
+    """
     try:
-        http_get_json(url, timeout=3.0)
+        http_get_json(url, timeout=3.0, carries_credential=False)
         return True
     except (urllib.error.URLError, OSError, ValueError):
         return False
@@ -369,6 +488,9 @@ class _InjectorHandler(BaseHTTPRequestHandler):
     upstream_url: str = DEFAULT_UPSTREAM_URL
     correlation: dict[str, str] = {}
     read_timeout: float = 600.0
+    # Whether the operator has said that an ambient proxy may carry the
+    # client's own credential. It has not, by default.
+    allow_credential_via_proxy: bool = False
     # The bounds on what a client can ask this proxy to hold in memory.
     max_forward_bytes: int = MAX_FORWARD_BYTES
     request_read_timeout: float = REQUEST_READ_TIMEOUT_SECONDS
@@ -467,9 +589,13 @@ class _InjectorHandler(BaseHTTPRequestHandler):
             # the client's own credential, and a request meant for the
             # local auditor would otherwise be handed to whatever proxy
             # the host happens to be configured with.
-            response = _opener(use_proxy=_should_use_ambient_proxy(target)).open(
-                request, timeout=self.read_timeout
-            )
+            response = _opener(
+                use_proxy=_should_use_ambient_proxy(
+                    target,
+                    carries_credential=True,
+                    allow_credential_via_proxy=self.allow_credential_via_proxy,
+                )
+            ).open(request, timeout=self.read_timeout)
         except urllib.error.HTTPError as error:
             payload = error.read()
             self.send_response(error.code)
@@ -542,7 +668,13 @@ class _InjectorHandler(BaseHTTPRequestHandler):
 
 
 class _Injector:
-    def __init__(self, trace_audit_url: str, upstream_url: str, correlation: dict[str, str]):
+    def __init__(
+        self,
+        trace_audit_url: str,
+        upstream_url: str,
+        correlation: dict[str, str],
+        allow_credential_via_proxy: bool = False,
+    ):
         handler = type(
             "BoundInjectorHandler",
             (_InjectorHandler,),
@@ -550,6 +682,7 @@ class _Injector:
                 "trace_audit_url": trace_audit_url,
                 "upstream_url": upstream_url,
                 "correlation": correlation,
+                "allow_credential_via_proxy": allow_credential_via_proxy,
             },
         )
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -722,6 +855,7 @@ def print_session_report(
     session_id: str,
     operator_token: str | None,
     allow_insecure: bool = False,
+    allow_credential_via_proxy: bool = False,
 ) -> None:
     if not operator_token:
         print(
@@ -739,19 +873,18 @@ def print_session_report(
         )
         return
     url = dashboard_url.rstrip("/") + f"/api/sessions/{session_id}"
-    # A plain-HTTP dashboard means the operator token travels in cleartext,
-    # and urllib would hand the request to an ambient http_proxy on the way
-    # out — to a host that is not the loopback address the guard just
-    # approved. A loopback dashboard has the same problem on a machine with
-    # a system proxy, because urllib does not bypass loopback on Windows.
-    # An HTTPS request to a remote host is tunnelled through the proxy
-    # instead, which cannot read the token, so the proxy is left alone
-    # there.
+    # The operator token is a credential, so the request that carries it is
+    # held to the credential's rule: an ambient proxy does not carry it
+    # unless the operator has said that it may. A plain-HTTP dashboard would
+    # put the token on the wire in the clear, and a loopback dashboard is
+    # still hijacked by a machine's system proxy, because urllib does not
+    # bypass loopback on Windows.
     try:
         report = http_get_json(
             url,
             timeout=15.0,
             headers={"authorization": f"Bearer {operator_token}"},
+            allow_credential_via_proxy=allow_credential_via_proxy,
         )
     except urllib.error.HTTPError as error:
         print(f"\n  The session report could not be read: HTTP {error.code}.")
@@ -860,6 +993,14 @@ def main(argv: list[str] | None = None) -> int:
     allow_insecure_dashboard = (
         resolve_setting("MONOLITH_ALLOW_INSECURE_DASHBOARD", dotenv) == "true"
     )
+    # Whether an ambient proxy may carry a credential. It may not, unless
+    # the operator says so: a proxy is a second destination they did not
+    # name for this request, and one that terminates TLS can read what it
+    # carries. A corporate network is sometimes the only route to the model
+    # provider, so the setting exists and the console says when it matters.
+    allow_credential_via_proxy = (
+        resolve_setting("MONOLITH_ALLOW_CREDENTIAL_VIA_PROXY", dotenv) == "true"
+    )
 
     # The upstream the agent was already pointed at. The injector sends
     # everything that is not /v1/messages straight there.
@@ -886,11 +1027,11 @@ def main(argv: list[str] | None = None) -> int:
     # --- preflight -------------------------------------------------------
     problems: list[str] = []
     if not service_healthy(dashboard_url.rstrip("/") + "/api/ingest"):
-        problems.append(f"the dashboard is not answering at {dashboard_url}")
+        problems.append(_unreachable("the dashboard", dashboard_url))
     if not service_healthy(vector_anchor_url.rstrip("/") + "/health"):
-        problems.append(f"VectorAnchor is not answering at {vector_anchor_url}")
+        problems.append(_unreachable("VectorAnchor", vector_anchor_url))
     if not service_healthy(trace_audit_url.rstrip("/") + "/health"):
-        problems.append(f"TraceAudit is not answering at {trace_audit_url}")
+        problems.append(_unreachable("TraceAudit", trace_audit_url))
     shield = find_mcp_shield()
     if shield is None and not args.no_mcp:
         problems.append(
@@ -952,6 +1093,17 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  tool layer {len(config['mcpServers'])} MCP server(s) through MCP-Shield")
     print(f"  memory     VectorAnchor at {vector_anchor_url}")
     print(f"  reasoning  TraceAudit at {trace_audit_url}")
+    # A proxy that is configured but will not be used is worth a line: the
+    # operator set it, and the reason it is not carrying the traffic is
+    # not obvious from the outside.
+    for line in _proxy_advisory(
+        [
+            (upstream_url, "the client's credential"),
+            (dashboard_url, "the operator token"),
+        ],
+        allow_credential_via_proxy=allow_credential_via_proxy,
+    ):
+        print(line)
 
     if args.plan:
         print(f"\n  The MCP configuration would be written to {config_path}:\n")
@@ -969,7 +1121,12 @@ def main(argv: list[str] | None = None) -> int:
     child_env = dict(os.environ)
     child_env["ANTHROPIC_BASE_URL"] = ""  # replaced below, once the port is known
 
-    with _Injector(trace_audit_url, upstream_url, correlation) as injector:
+    with _Injector(
+        trace_audit_url,
+        upstream_url,
+        correlation,
+        allow_credential_via_proxy=allow_credential_via_proxy,
+    ) as injector:
         child_env["ANTHROPIC_BASE_URL"] = injector.base_url
         # The MCP flags go after the agent's own arguments, not before: an
         # agent that takes a script path would otherwise have its flags read
@@ -1006,6 +1163,7 @@ def main(argv: list[str] | None = None) -> int:
             session_id,
             operator_token,
             allow_insecure=allow_insecure_dashboard,
+            allow_credential_via_proxy=allow_credential_via_proxy,
         )
     return exit_code
 

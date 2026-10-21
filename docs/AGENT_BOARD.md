@@ -38,6 +38,7 @@ Read it before starting work. Write to it while you work.
 | security | `fix/security-hardening` | retention scoping, evidence verification, fail-closed admin, DLP coverage, breaker batching, baseline locking | merged into `main` (`3634d23`); branch kept until cleanup |
 | security | `feature/video-explainer` | the AEOS Guard explainer, rescued off a branch that was about to be deleted | pushed, 1 commit |
 | security | `fix/mcp-shield/baseline-persist-failure` | the tool layer's fail-open path discarded enforcement it had already computed (`FINDINGS.md` §5) | merged into `main` as PR #64 (`1b6e8ed`); the fix is proved by mutating it back to the old behaviour and watching the new test fail. The branch was rebased onto `main` after #60 and #62 merged, so its history was rewritten and it was force-pushed |
+| security | `fix/scripts/ambient-proxy-rule` | the launcher's ambient-proxy rule: weaker than the secret-boundary rule it cited, and the proxy default silently changed the preflight (`FINDINGS.md` documentation drifts 2 and 3) | PR #78 open, 2 commits; the rule is proved by mutating it back to the old one and watching the new tests fail, and the end-to-end gateway demo passes against the running stack |
 | security | `fix/mcp-shield/malformed-tool-entry` | one malformed tool entry voided the whole `tools/list` defence for that server (`FINDINGS.md` §6) | PR #66 open; the fix is proved by mutating it back to the old behaviour — one defective entry rejecting the whole listing — and watching all six new tests fail. Branched off `main` at `1b6e8ed`; no history rewrite, so nothing was force-pushed |
 | security | `docs/stale-test-counts` | every test count the documentation carried was wrong (`FINDINGS.md` documentation drift 6) | PR #81 open; the numbers are dated snapshots and the command is the authority |
 | security | `fix/mcp-shield/spool-byte-cap-doc` | the Rust spool's byte cap claimed to bound the spool and bounded one file at a time (`FINDINGS.md` documentation drift 1) | PR #80 open; the two budgets are held apart by a test, and the test fails when they are shared |
@@ -191,6 +192,32 @@ bytes and watching the newest detection disappear.
 
 The operator-visible consequence is one number to remember: **the spool
 directory holds at most twice the cap**, 32 MiB by default.
+### The launcher's proxy rule is now the secret boundary's
+`FINDINGS.md` documentation drifts 2 and 3 were both about one function,
+`_should_use_ambient_proxy` in `scripts/monolith_wrap.py`, and both are fixed
+on `fix/scripts/ambient-proxy-rule`.
+The rule was weaker than the rule it cited. The secret boundary disables the
+ambient proxy outright for a resolved secret; the launcher allowed one for a
+remote HTTPS target, on the argument that the request is tunnelled end to end
+"so the proxy cannot read the credential". That holds for a proxy that
+relays and not for one that terminates TLS, and a corporate inspection proxy
+is what a Windows *system* proxy usually is — the case the rule was written
+for. The rule is now the boundary's: an ambient proxy does not carry a
+credential unless the operator says so with
+`MONOLITH_ALLOW_CREDENTIAL_VIA_PROXY=true`, which is also the answer for a
+corporate network where the proxy is the only route to the model provider.
+The console names the proxy it found and what it will and will not carry.
+The same change had made the preflight inherit the credential's rule, so a
+service that was only reachable through a proxy reported as down and the
+launcher refused to start — naming the service and saying nothing about the
+proxy. A health check carries no credential, so it is not held to that rule
+any more, and a failed one says which proxy carried the request.
+**The residual is an open question, not a fix.** The hop that carries the
+client's credential to the model provider is not the launcher's to govern:
+for `/v1/messages` the launcher forwards to the local auditor, and the
+auditor makes the provider request itself, with a client that reads the
+proxy settings from its own environment. That is question 13 in
+`docs/OPEN_QUESTIONS.md`.
 
 ## Claims
 
@@ -205,6 +232,8 @@ directory holds at most twice the cap**, 32 MiB by default.
 | `supabase/migrations/**` | security | retention scoping migration |
 | `contracts/openapi.yaml` | security | corrected the revocation snapshot wording |
 | `vector-anchor/tests/test_embedding.py`, `vector-anchor/tests/test_frequency_tracker.py` | security | the memory layer's hot path. Reads `vector-anchor/src/embedding.py` and `vector-anchor/src/frequency_tracker.py` but does not modify either |
+| `scripts/monolith_wrap.py`, `scripts/tests/**` | security | the launcher's ambient-proxy rule (`FINDINGS.md` documentation drifts 2 and 3) |
+| `docs/FINDINGS.md`, `docs/OPEN_QUESTIONS.md`, `README.md` | security | the drift list, the new open question, and the launcher's section of the README |
 | `main` | integrator | Merges and verification only; branch work happens in a worktree. |
 
 Free to claim: `vector-anchor/**` (apart from the detector's hot path, above),

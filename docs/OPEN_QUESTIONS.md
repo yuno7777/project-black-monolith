@@ -8,12 +8,15 @@ Nothing here is a bug. Every item is either a deliberate trade-off that a
 future contributor might reasonably want to revisit, or a genuine ambiguity
 that the code currently resolves one way and could resolve another.
 
-**Last refreshed 2026-10-20** against `main` after the production-upgrades
-merge. All twelve decisions still describe the current code. Two were
-re-checked specifically: the ingest endpoint still has no rate limit (#8),
-and `npm audit` still reports five high-severity development-only findings
-through `braces` 3.0.3 (#9), so the `--omit=dev` gate stays. Revisit a
-question when its decision is made, not when a merge lands.
+**Last refreshed 2026-10-21.** Thirteen decisions now. #13 was added
+alongside the launcher's ambient-proxy rule (`FINDINGS.md`, documentation
+drift 2), which is on a branch and not yet on `main`; the other twelve were
+re-checked against `main` on 2026-10-20 and still describe the current code.
+Two of them were re-checked specifically: the ingest endpoint still has no
+rate limit (#8), and `npm audit` still reports five high-severity
+development-only findings through `braces` 3.0.3 (#9), so the `--omit=dev`
+gate stays. Revisit a question when its decision is made, not when a merge
+lands.
 
 ---
 
@@ -280,3 +283,43 @@ also be a breaking contract change requiring a schema version bump.
 
 **What would settle it:** whether the dashboard wants a separate panel for
 the boundary, which is a product decision rather than a technical one.
+
+---
+
+## 13. Should the reasoning layer's own provider request refuse an ambient proxy?
+
+**Status:** open. **Affects:** `trace-audit/src/main.py`,
+`trace-audit/src/anthropic_gateway.py`.
+
+The launcher no longer lets an ambient proxy carry a credential — that is
+the secret boundary's rule, and the launcher's was weaker
+(`FINDINGS.md`, documentation drift 2) — and the console says so when a
+proxy is configured. The hop that carries the client's credential to the
+model provider, though, is not the launcher's to govern. For
+`/v1/messages` the launcher forwards to the local auditor, and the auditor
+makes the provider request itself, with an HTTP client that reads the proxy
+settings from its own environment.
+
+So a credential can still travel through an ambient proxy — through the
+auditor rather than through the launcher. In the Compose deployment the
+auditor runs in a container whose environment has no proxy in it, so it does
+not; on a host deployment where the operator exported `HTTPS_PROXY`, it
+does.
+
+**The argument for refusing it there too:** the same argument as the
+launcher's. A proxy is a second destination the operator did not name for
+this request, and one that terminates TLS can read the credential. The
+auditor is the component that actually holds the client's key on the way
+upstream, so the rule that matters most is the one it applies.
+
+**The argument against:** the client would have made that request itself,
+with its own client and its own proxy settings, if the launcher were not in
+the path. Refusing it in the auditor changes the deployment's reachability
+rather than its exposure: a corporate network where the proxy is the only
+route to the provider stops working, and the operator has to be told which
+setting to change.
+
+**What would settle it:** whether the auditor is meant to be a transparent
+relay or a component that decides for itself how a credential may travel. A
+transparent relay inherits the client's route; a component that decides
+needs the same setting the launcher now has, and the same console line.
