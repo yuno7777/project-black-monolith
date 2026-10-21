@@ -39,6 +39,7 @@ import http.client
 import json
 import os
 import sys
+import traceback
 import urllib.error
 import urllib.request
 
@@ -143,6 +144,24 @@ def _correlation_headers() -> dict[str, str]:
     return headers
 
 
+def _error_detail(error: urllib.error.HTTPError) -> str:
+    """Whatever the service managed to say about the failure.
+
+    The body of an error response is read here, inside the handler, and
+    reading it can fail: a service that stops mid-body raises
+    ``IncompleteRead``, and one that drops the connection raises
+    ``OSError``. An exception raised inside an ``except`` block is not
+    caught by the sibling clauses of the same ``try``, so it would escape
+    this function, escape the tool call, and take the server down
+    mid-session — over a detail the agent does not need. The status code is
+    the fact; the body is a nicety.
+    """
+    try:
+        return error.read().decode("utf-8", errors="replace")[:400]
+    except (OSError, http.client.HTTPException):
+        return "(the response body could not be read)"
+
+
 def _call_service(payload: dict) -> dict:
     url = _service_url() + "/retrieve"
     try:
@@ -164,8 +183,9 @@ def _call_service(payload: dict) -> dict:
         with urllib.request.urlopen(request, timeout=_timeout_seconds()) as response:
             body = response.read()
     except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", errors="replace")[:400]
-        raise RuntimeError(f"VectorAnchor returned HTTP {error.code}: {detail}") from error
+        raise RuntimeError(
+            f"VectorAnchor returned HTTP {error.code}: {_error_detail(error)}"
+        ) from error
     except urllib.error.URLError as error:
         raise RuntimeError(
             f"VectorAnchor is unreachable at {_service_url()}: {error.reason}. "
@@ -261,6 +281,21 @@ def _handle_call(request_id, params: dict) -> None:
         response = _call_service(payload)
     except RuntimeError as error:
         _result_text(request_id, str(error), is_error=True)
+        return
+    except Exception as error:
+        # The service is a network peer, and anything it does can surface
+        # here as an exception the clause above does not name. An unhandled
+        # one kills the server and takes the agent's retrieve tool with it —
+        # a whole agent session loses its memory layer over one bad
+        # response. The traceback goes to stderr, where an operator will
+        # find it, and the agent is told the call failed rather than being
+        # left waiting on an answer that will never come.
+        #
+        # Deliberately broad, and deliberately not `BaseException`: a
+        # KeyboardInterrupt must still stop the server.
+        _log(f"unexpected failure serving a retrieve call: {error!r}")
+        traceback.print_exc(file=sys.stderr)
+        _result_text(request_id, "VectorAnchor did not answer.", is_error=True)
         return
     # A revoked session is a refusal, not an answer. It has to say so on the
     # wire: an agent that reads a refusal as a successful retrieval of zero
