@@ -254,13 +254,67 @@ regression would be invisible.
 | 1 | The divergence gate is never tested in its **armed** state. | `trace-audit/tests/test_anthropic_gateway.py` | medium |
 | 2 | The entire triage write path is untested: validation, state change, audit trail. | `dashboard/app/api/triage/**` | medium |
 | 3 | The incident-queue read path is untested: filter parsing, keyset pagination, counts. | `dashboard/lib/incident-store.ts` | medium |
-| 4 | The detector-reset path is untested end to end, on both sides of the wire. | `vector-anchor`, `dashboard` | medium |
+| 4 | ~~The detector-reset path is untested end to end, on both sides of the wire.~~ **closed** | `vector-anchor`, `dashboard` | medium |
 | 5 | The rule deciding whether a credential may travel over plain HTTP to the upstream model is neither present nor tested. | `trace-audit/src/anthropic_gateway.py` | medium |
 | 6 | TraceAudit's prompt projection drops every non-text content block, and is never tested against one. | `trace-audit/src/anthropic_gateway.py` | medium |
 | 7 | The divergence detector's real-model behaviour is asserted by no committed result. | `trace-audit/fixtures/` | medium |
 | 8 | The production Postgres branch of the session list is never executed by any test. | `dashboard/app/api/sessions/route.ts` | medium |
 | 9 | The benchmark ledger's write and read paths are untested, route included. | `dashboard/lib/benchmark-store.ts` | small |
 | 10 | The two functions the memory-layer detector's hot path depends on are untested; the one that is tested is not on the hot path. | `vector-anchor/src/frequency_tracker.py` | small |
+
+### The detector-reset path (gap 4)
+
+`vector-anchor/tests/test_reset_detection.py` and
+`dashboard/test/reset-detection.test.ts` — eight tests on the module's side
+of the wire and seven on the dashboard's.
+
+`POST /admin/reset-detection` is the one administrative action that erases
+evidence: it clears the memory layer's frequency history and its quarantine,
+so the next attack starts from a clean slate, and the dashboard's onboarding
+page can call it. Neither half of that was tested, on either side of the
+wire.
+
+- **The route refuses a caller without the configured bearer,** and refuses
+  outright when no bearer is configured at all. An unconfigured
+  administrative credential must not become an open door, and the module
+  answers `503` for that case rather than `401`: the two are different
+  faults, and an operator has to be able to tell them apart.
+- **The reset clears the history and the quarantine and leaves the corpus
+  alone.** It is a *detector* reset, not a wipe: the documents are still
+  there to be detected again, and a bait that was being withheld is served
+  again once the reset is through.
+- **The detector that comes back is the one that was configured.** A reset
+  must not silently re-tune the thresholds — not the number of distinct
+  topics, not the topic similarity, not the retention horizon, not the
+  per-document cap, and not the cap on tracked documents.
+- **The cleared state reaches the disk immediately.** A reset that only
+  marked the state dirty would be undone by the next periodic write, which
+  would put back exactly the history the operator asked to erase; a
+  restarted process must not bring the bait back.
+- **On the dashboard's side the reset is an administrator's action,** it
+  crosses the wire as a `POST` to `/admin/reset-detection` carrying the
+  module credential, and the browser never sees that credential.
+- **A memory layer that refuses or cannot be reached is a failure, not a
+  reset.** The dashboard answers `503` and does not report that the
+  detector was cleared when it was not.
+- **An action the route does not handle cannot reach the reset.** The
+  route's last branch cleared the detector, so an action added to the list
+  without a branch would have erased the memory layer's history instead of
+  doing whatever it was meant to do. The list now lives in
+  `dashboard/lib/onboarding-actions.ts`, where a test can enumerate it, and
+  the route dispatches every action explicitly.
+
+Fourteen mutations prove it: eight on the module's side — the route
+dropping its credential check, an unconfigured credential answered as a
+wrong one, the route answering a shape the dashboard does not read, the
+reset keeping the old tracker, keeping the old quarantine, rebuilding the
+tracker with hard-coded thresholds, not forcing the state to disk, and
+wiping the corpus as well — and six on the dashboard's: the route dropping
+the administrator role, the store sending the reset to the wrong endpoint,
+sending it without the module credential, sending it with a body the module
+does not take, swallowing the module's refusal, and an action added to the
+list that nothing handles. Each breaks exactly the test that claims to hold
+that guarantee.
 
 ---
 
@@ -346,3 +400,13 @@ up.
   PR #66: each tool is inspected on its own, a tool the shield cannot vouch
   for is withheld, a tool that only breaks the spec is still fully checked
   and served, and the rest of the listing keeps its protection.
+- **The detector-reset path had no tests on either side of the wire**
+  (test gap 4 above). The memory layer's administrative reset — the one
+  action that erases the detector's history and its quarantine — was
+  reachable from the dashboard and exercised by nothing, so the credential
+  check, the clearing, the thresholds the reset came back with, and the
+  write to disk were all untested. Fixed in PR #75: eight tests on the
+  module's side and seven on the dashboard's, each proved by mutating the
+  behaviour back and watching the test that claims to hold it fail, and the
+  route's dispatch is now explicit so an unhandled action cannot reach the
+  branch that clears the detector.

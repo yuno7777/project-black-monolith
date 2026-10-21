@@ -38,11 +38,44 @@ Read it before starting work. Write to it while you work.
 | security | `feature/video-explainer` | the AEOS Guard explainer, rescued off a branch that was about to be deleted | pushed, 1 commit |
 | security | `fix/mcp-shield/baseline-persist-failure` | the tool layer's fail-open path discarded enforcement it had already computed (`FINDINGS.md` §5) | merged into `main` as PR #64 (`1b6e8ed`); the fix is proved by mutating it back to the old behaviour and watching the new test fail. The branch was rebased onto `main` after #60 and #62 merged, so its history was rewritten and it was force-pushed |
 | security | `fix/mcp-shield/malformed-tool-entry` | one malformed tool entry voided the whole `tools/list` defence for that server (`FINDINGS.md` §6) | PR #66 open; the fix is proved by mutating it back to the old behaviour — one defective entry rejecting the whole listing — and watching all six new tests fail. Branched off `main` at `1b6e8ed`; no history rewrite, so nothing was force-pushed |
+| security | `fix/detector-reset-path` | the memory layer's administrative reset — the one action that erases the detector's history — had no tests on either side of the wire (`FINDINGS.md` test gap 4) | PR #75 open; eight tests on the module's side and seven on the dashboard's, each proved by mutating the behaviour back and watching the test that claims to hold it fail. One unrelated commit fixes a test that failed at random (the descendant test read a file that was still being written). Worktree `C:/Users/Abhi/Desktop/monolith-wt/reset-detection` |
 | integrator | `main` | upstream sync, security merges, Dependabot triage, verification | merged and pushed; CI green on `b19513b` |
 | integrator | Dependabot | #24 merged (codeql-action); #15, #16 closed as superseded; #26 superseded by a direct hmac 0.13 migration | the queue is empty: **zero open PRs** |
 
 The project is moving to user-facing features. The work below is the
 security and operations tail; the board is here so it is not lost.
+
+### The detector-reset path is the one action that erases evidence
+
+`POST /admin/reset-detection` clears the memory layer's frequency history
+and its quarantine. The dashboard's onboarding page can call it, so it is
+reachable by anyone who can authenticate to the dashboard as an
+administrator — and until PR #75 nothing tested either half of it.
+
+What the tests hold, on the module's side: the route refuses a caller
+without the configured bearer, and refuses outright when no bearer is
+configured at all (an unconfigured administrative credential must not
+become an open door); the reset clears the history and the quarantine and
+leaves the corpus alone, because it is a *detector* reset and not a wipe;
+the detector that comes back is the one that was configured, so a reset
+cannot silently re-tune the thresholds; and the cleared state reaches the
+disk immediately, because a reset that only marked the state dirty would be
+undone by the next periodic write and would put back exactly the history
+the operator asked to erase.
+
+On the dashboard's side: the reset is an administrator's action, it crosses
+the wire as a `POST` to `/admin/reset-detection` carrying the module
+credential, the browser never sees that credential, and a memory layer that
+refuses or cannot be reached is a failure rather than a reset — the
+dashboard answers `503` and does not claim the detector was cleared.
+
+One thing changed in the route to make the last of those durable. The
+action list now lives in `dashboard/lib/onboarding-actions.ts`, where a
+test can enumerate it, and the route dispatches every action explicitly.
+It used to fall through to the reset: an action added to the list without a
+branch would have erased the memory layer's history instead of doing
+whatever it was meant to do, and the branch that erases evidence is not one
+to reach by accident.
 
 ### Requirement floors now match their locks (resolved)
 
@@ -92,9 +125,12 @@ to `main` by ref. Use a dedicated worktree for every branch.
 | `dashboard/lib/login-rate-limit.ts`, `dashboard/scripts/dispatch-alerts.mjs` | security | rate limiting and alert delivery |
 | `supabase/migrations/**` | security | retention scoping migration |
 | `contracts/openapi.yaml` | security | corrected the revocation snapshot wording |
+| `vector-anchor/tests/test_reset_detection.py` | security | the memory layer's administrative reset — the credential check, the clearing, the thresholds the reset comes back with, and the write to disk |
+| `dashboard/app/api/onboarding/**`, `dashboard/lib/onboarding-actions.ts`, `dashboard/test/reset-detection.test.ts` | security | the dashboard's half of the reset path, and the action list it dispatches from |
 | `main` | integrator | Merges and verification only; branch work happens in a worktree. |
 
-Free to claim: `vector-anchor/**`, `trace-audit/**`, `dashboard/app/api/operations/**`,
+Free to claim: `vector-anchor/**` (apart from the reset path's tests, above),
+`trace-audit/**`, `dashboard/app/api/operations/**`,
 `dashboard/app/api/benchmarks/**`, `docs/OPEN_QUESTIONS.md`, the Dependabot
 queue.
 
