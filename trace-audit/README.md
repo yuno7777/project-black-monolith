@@ -61,25 +61,32 @@ The termination threshold is **derived, not guessed** — see
 [`fixtures/calibration_results.md`](fixtures/calibration_results.md), reproducible
 with `python fixtures/calibrate.py`. The baseline is captured from 10 benign
 prompts spanning four styles (factual Q&A, creative writing, step-by-step
-reasoning, casual conversation); the peak rolling KL of **16 held-out benign
-prompts** from those same styles is then measured:
+reasoning, casual conversation); the peak rolling KL of **36 held-out benign
+prompts** from eight styles is then measured:
 
 | | mean | std | min | max | divergent fixture |
 | :-- | ---: | ---: | ---: | ---: | ---: |
-| peak KL | 0.343 | 0.064 | 0.247 | 0.481 | **3.29** |
+| peak KL | 0.351 | 0.065 | 0.247 | 0.481 | **3.29** |
 
-`mean + 2·std = 0.47` sits right at the benign maximum (0.481), so a strict
+`mean + 2·std = 0.48` sits right at the benign maximum (0.481), so a strict
 2σ cut leaves no margin. The **operating threshold is `1.0`** — ~2.1× above the
 worst benign peak and ~0.30× of the divergent fixture. **False-positive test
-result: 0 / 16 benign prompts triggered termination**, while the divergent
+result: 0 / 36 benign prompts triggered termination**, while the divergent
 fixture (3.29) crosses decisively.
 
-> **Limitation — the baseline is domain-specific.** It was calibrated against
-> the deterministic mock backend and conversational/reasoning prompt styles.
-> A very different distribution — e.g. code generation, or a real model backend
-> (Ollama) with wider benign spread — would shift the benign KL range and needs
-> recalibration (re-run `fixtures/calibrate.py` and update
-> `DEFAULT_KL_THRESHOLD`). The threshold is not a universal constant.
+> **Known defect — the threshold does not hold against a real model.** The
+> derivation above is the mock backend's, and the mock's baseline has 36
+> distinct tokens. The number that decides whether the gate can fire at all is
+> the *ceiling*: the KL of a window in which every token is off-vocabulary,
+> which is the most divergent window this statistic can express. The mock's
+> ceiling is 3.29 — exactly what the divergent fixture scores. Measured
+> against `qwen2.5:0.5b` on Ollama, a real model's baseline has ~330 tokens
+> and the ceiling is **0.59**, so the threshold of 1.0 is *above* it: the gate
+> cannot fire, for any answer, from any model. The committed measurement is
+> [`fixtures/real_model_calibration.json`](fixtures/real_model_calibration.json),
+> the finding is `docs/FINDINGS.md` §12, and `calibration.yml` re-measures it
+> on every change to the monitor. **The threshold is not a universal
+> constant, and against a real model it is not reachable at all.**
 
 ## Endpoints
 
