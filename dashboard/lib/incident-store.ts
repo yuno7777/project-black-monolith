@@ -302,6 +302,9 @@ function encodeIncidentCursor(incident: Incident): string {
 }
 
 export async function listIncidents(query: IncidentQuery): Promise<IncidentPage> {
+  if (!process.env.DATABASE_URL) {
+    return { incidents: [], next_cursor: undefined };
+  }
   const where: string[] = [];
   const params: unknown[] = [];
   const add = (value: unknown) => `$${params.push(value)}`;
@@ -1340,6 +1343,9 @@ export async function exportIncidentEvidence(
 
 /** Sessions that more than one defense layer has flagged. */
 export async function crossLayerSessionCount(tenantId: string): Promise<number> {
+  if (!process.env.DATABASE_URL) {
+    return 0;
+  }
   return withTenantDb(tenantId, async (db) => {
     const result = await db.query<{ n: string }>(
       `select count(*)::bigint as n from (
@@ -1424,6 +1430,9 @@ export async function observedAccuracy(tenantId: string): Promise<ObservedAccura
 
 /** Counts for the queue's status tabs, in one round trip. */
 export async function incidentCounts(tenantId: string): Promise<Record<string, number>> {
+  if (!process.env.DATABASE_URL) {
+    return { new: 0, acknowledged: 0, resolved: 0, total: 0 };
+  }
   return withTenantDb(tenantId, async (db) => {
     const result = await db.query<{ status: string; n: string }>(
       `select coalesce(t.status, 'new') as status, count(*)::bigint as n

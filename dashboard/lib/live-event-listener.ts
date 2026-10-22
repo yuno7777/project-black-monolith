@@ -154,6 +154,9 @@ export class LiveEventListener {
 const globalRef = globalThis as unknown as { __monolithLiveListener?: LiveEventListener };
 
 export function ensureLiveEventListener(): Promise<void> {
+  if (!process.env.DATABASE_URL) {
+    return Promise.resolve();
+  }
   if (!globalRef.__monolithLiveListener) {
     globalRef.__monolithLiveListener = new LiveEventListener();
   }

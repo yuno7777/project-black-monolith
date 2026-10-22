@@ -298,7 +298,7 @@ export default function Page() {
           {hasSessions === false && !pointerDismissed && events.length === 0 ? (
             <div className="onb-firstrun">
               <div className="onb-firstrun-text">
-                <strong>No agent is behind Black Monolith yet</strong>
+                <strong>No agent is behind AEOS Guard yet</strong>
                 <span>
                   The stack is up, but nothing has been filed. The onboarding page
                   checks each layer and tells you the one thing to do next.
