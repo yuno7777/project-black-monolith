@@ -247,7 +247,7 @@ export default function ControlRoomPage() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `monolith-forensics-${exportSessionId}-${Date.now()}.json`;
+      a.download = `aeos-guard-forensics-${exportSessionId}-${Date.now()}.json`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);

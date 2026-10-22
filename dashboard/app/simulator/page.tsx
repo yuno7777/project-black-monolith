@@ -239,7 +239,7 @@ export default function SimulatorPage() {
         latencyMs: 0.9,
         detection: "aws_secret_key_exfiltration",
         action: "redact_in_place",
-        details: "Shannon entropy match on AWS secret key pattern. Wire-proxy replaced with [REDACTED_BY_MONOLITH].",
+        details: "Shannon entropy match on AWS secret key pattern. Wire-proxy replaced with [REDACTED_BY_AEOS_GUARD].",
       };
     } else {
       step3 = {
@@ -272,7 +272,7 @@ export default function SimulatorPage() {
         latency: totalLatency,
         sanitizedOutput: payloadText.replace(
           /wJalrXUtnFEMI\/K7MDENG\/bPxRfiCYEXAMPLEKEY|sk-ant-[a-zA-Z0-9_-]+/g,
-          "[REDACTED_BY_MONOLITH]"
+          "[REDACTED_BY_AEOS_GUARD]"
         ),
       });
     } else {
@@ -310,7 +310,7 @@ export default function SimulatorPage() {
               <div>
                 <h2>Adversarial Payload Evaluation Sandbox</h2>
                 <p>
-                  Test adversarial jailbreaks, RAG bait queries, tool rug-pulls, and credential leaks against Monolith&apos;s multi-layered defense pipeline.
+                  Test adversarial jailbreaks, RAG bait queries, tool rug-pulls, and credential leaks against AEOS Guard&apos;s multi-layered defense pipeline.
                 </p>
               </div>
               <div style={{ display: "flex", gap: "8px" }}>

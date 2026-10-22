@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Project Black Monolith — Threat Dashboard",
+  title: "AEOS Guard — Threat & Security Dashboard",
   description:
-    "Unified real-time threat feed for the Project Black Monolith agent-security modules.",
+    "Agent Execution Operations Security — Unified autonomous agent defense console.",
 };
 
 // Runs before first paint: stamps the theme on <html> so it is painted

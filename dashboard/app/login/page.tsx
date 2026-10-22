@@ -55,7 +55,7 @@ function LoginForm() {
       <form className="card login-card" onSubmit={submit}>
         <span className="login-logo"><Logo size={66} /></span>
         <div>
-          <div className="login-kicker">Project Black Monolith</div>
+          <div className="login-kicker">AEOS Guard</div>
           <h1>Operator sign in</h1>
           <p>
             Exchange your operator credential for an expiring, revocable browser

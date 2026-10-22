@@ -313,7 +313,7 @@ export default function JourneyPage() {
           <div className="topbar">
             <div>
               <h1>Attack Journey & Execution Graph</h1>
-              <div className="crumb">Cross-Layer Autonomous Agent Execution Flow & Interactive Forensics</div>
+              <div className="crumb">AEOS Guard · Autonomous Agent Execution Flow & Interactive Forensics</div>
             </div>
             <div className="topbar-right">
               <OperatorBadge />

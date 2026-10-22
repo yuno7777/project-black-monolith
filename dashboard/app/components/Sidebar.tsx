@@ -113,12 +113,12 @@ export default function Sidebar({
   return (
     <aside className="sidebar">
       <div className="brand">
-        <span className="brand-logo"><Logo size={52} /></span>
+        <span className="brand-logo"><Logo size={46} /></span>
         <div className="brand-name">
-          <span className="brand-project">Project</span>
-          Black Monolith
+          <span className="brand-project">AEOS</span>
+          Guard
         </div>
-        <div className="brand-sub">Sleepers Research</div>
+        <div className="brand-sub">Agent Execution Operations Security</div>
       </div>
 
       <div className="nav-label">Overview</div>

@@ -393,7 +393,7 @@ export default function CompliancePage() {
 
   const handleExportReport = () => {
     const payload = {
-      project: "Project Black Monolith",
+      project: "AEOS Guard",
       type: "Compliance & Security Matrix Audit Report",
       generated_at: new Date().toISOString(),
       framework: activeFramework.toUpperCase(),
@@ -421,7 +421,7 @@ export default function CompliancePage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `monolith-compliance-matrix-${activeFramework}-${Date.now()}.json`;
+    a.download = `aeos-guard-compliance-matrix-${activeFramework}-${Date.now()}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -659,7 +659,7 @@ export default function CompliancePage() {
 
                             <div>
                               <span style={{ fontSize: "10px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.8px", color: "var(--ink-faint)" }}>
-                                Active Monolith Security Policy / AST Rule:
+                                Active AEOS Guard Policy / AST Rule:
                               </span>
                               <pre style={{ margin: "4px 0 0", padding: "8px 10px", background: "var(--canvas)", border: "1px solid var(--line-soft)", borderRadius: "6px", fontSize: "11px", color: "var(--mod-trace)", fontFamily: "ui-monospace, monospace", overflowX: "auto" }}>
                                 {item.policyRule}

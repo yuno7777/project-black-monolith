@@ -15,21 +15,47 @@ const base = (size: number): React.SVGProps<SVGSVGElement> => ({
   strokeLinejoin: "round" as const,
 });
 
-// Brand mark: the PBM monogram. Two theme-specific artworks — a light glyph for
-// the dark UI, a dark glyph for the light UI — keyed to transparent PNGs so they
-// blend seamlessly on either canvas (no logo-square seam). Both are rendered and
-// CSS shows the one matching the active theme, so there is no swap flash. `size`
-// is the rendered HEIGHT in px; width follows the artwork's aspect ratio.
+// Brand mark: the AEOS Guard monogram and badge.
 export function Logo({ size = 30 }: { size?: number }) {
   return (
     <span
       className="logo"
       style={{ ["--logo-h" as string]: `${size}px` }}
       role="img"
-      aria-label="Project Black Monolith"
+      aria-label="AEOS Guard"
     >
-      <img className="logo-img logo-dark" src="/logo-dark.png" alt="" aria-hidden />
-      <img className="logo-img logo-light" src="/logo-light.png" alt="" aria-hidden />
+      <svg
+        width={Math.round(size * 1.35)}
+        height={size}
+        viewBox="0 0 76 44"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+        style={{ display: "inline-block" }}
+      >
+        <rect
+          x="1.5"
+          y="1.5"
+          width="73"
+          height="41"
+          rx="10"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeOpacity="0.35"
+          fill="color-mix(in srgb, currentColor 6%, transparent)"
+        />
+        <text
+          x="38"
+          y="28"
+          fill="currentColor"
+          fontSize="17"
+          fontWeight="850"
+          fontFamily="system-ui, -apple-system, sans-serif"
+          letterSpacing="1.8px"
+          textAnchor="middle"
+        >
+          AEOS
+        </text>
+      </svg>
     </span>
   );
 }

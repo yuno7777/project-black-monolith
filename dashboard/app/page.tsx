@@ -271,7 +271,7 @@ export default function Page() {
           <div className="topbar">
             <div>
               <h1>Threat overview</h1>
-              <div className="crumb">Unified agent-security detection · tool · memory · reasoning</div>
+              <div className="crumb">AEOS Guard · unified agent-security detection · tool · memory · reasoning</div>
             </div>
 
             <div className="search">
