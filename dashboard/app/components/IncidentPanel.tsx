@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { AuditEntry, Incident, IncidentStatus, Resolution, SessionView } from "@/lib/types";
+import { predictIncidentTriage } from "@/lib/ml-triage";
 import {
   MODULE_ACCENT,
   MODULE_LABELS,
@@ -50,9 +51,10 @@ export default function IncidentPanel({
 }) {
   const status = incident.triage?.status ?? "new";
   const accent = MODULE_ACCENT[incident.module] ?? "var(--ink-faint)";
+  const mlTriage = predictIncidentTriage(incident);
 
   const [note, setNote] = useState("");
-  const [resolution, setResolution] = useState<Resolution>("true_positive");
+  const [resolution, setResolution] = useState<Resolution>(mlTriage.resolutionHint);
   const [busy, setBusy] = useState(false);
   const [sessionBusy, setSessionBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -63,11 +65,11 @@ export default function IncidentPanel({
   // must never be carried into another.
   useEffect(() => {
     setNote("");
-    setResolution("true_positive");
+    setResolution(mlTriage.resolutionHint);
     setError(null);
     setAudit(null);
     setSession(null);
-  }, [incident.event_id]);
+  }, [incident.event_id, mlTriage.resolutionHint]);
 
   // What else this agent session did. A 404 means the event carries no session
   // and simply cannot be correlated — not an error worth showing.
@@ -178,6 +180,40 @@ export default function IncidentPanel({
 
         <div className="panel-type">{incident.event_type}</div>
         <div className="panel-when">Detected {stamp(incident.timestamp_ms)}</div>
+
+        {/* Statistical ML Threat Classifier & Remediation Assistant */}
+        <div className="ml-triage-box">
+          <div className="ml-triage-header">
+            <div className="ml-triage-title">
+              <span className="ml-sparkle">✦</span>
+              <span>ML Triage Assistant</span>
+            </div>
+            <span className="ml-conf-badge">{mlTriage.confidencePercent}% confidence</span>
+          </div>
+
+          <div className="ml-triage-category">
+            <span className="ml-threat-label">{mlTriage.categoryLabel}</span>
+            <span
+              className="ml-urgency-pill"
+              style={{
+                color: mlTriage.urgencyBadgeColor,
+                borderColor: `color-mix(in srgb, ${mlTriage.urgencyBadgeColor} 40%, transparent)`,
+                background: `color-mix(in srgb, ${mlTriage.urgencyBadgeColor} 10%, transparent)`,
+              }}
+            >
+              {mlTriage.urgency}
+            </span>
+          </div>
+
+          <div className="ml-triage-action-box">
+            <div className="ml-action-lead">Predicted Action:</div>
+            <div className="ml-action-text">{mlTriage.recommendedAction}</div>
+          </div>
+
+          <div className="ml-triage-rationale">
+            <strong>Signal:</strong> {mlTriage.rationale}
+          </div>
+        </div>
 
         {incident.triage?.assignee ? (
           <div className="panel-assignee">

@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import { getDb, withTenantDb } from "@/lib/db";
 import type { MonolithEvent, Severity } from "@/lib/types";
@@ -17,6 +16,14 @@ const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 // 422 instead. A malformed id is not silently replaced with a fresh one:
 // event_id is the idempotency key, so regenerating it on every retry would
 // let a redelivered event insert duplicates.
+//
+// A *missing* id is refused for the same reason, and the published contract
+// already says so: `contracts/schemas/event-envelope.v2.schema.json` lists
+// `event_id` as required. Minting one here would be the dashboard inventing
+// an identity the module is supposed to own, and it would invent a different
+// one on every redelivery — so a delivery whose answer was lost would be
+// filed twice, under two identities, and the ledger's `on conflict
+// (event_id) do nothing` would not catch it. The id is the module's.
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const memoryRef = globalThis as unknown as {
@@ -107,13 +114,11 @@ export function normalizeEvent(raw: unknown): MonolithEvent {
   if (value.details !== undefined && !isDetails(value.details)) {
     throw new Error("event.details must be a JSON object");
   }
-  let eventId: string = randomUUID();
-  if (value.event_id !== undefined && value.event_id !== null) {
-    if (typeof value.event_id !== "string" || !UUID_PATTERN.test(value.event_id)) {
-      throw new Error("event.event_id must be a UUID");
-    }
-    eventId = value.event_id;
+  let eventId: string;
+  if (typeof value.event_id !== "string" || !UUID_PATTERN.test(value.event_id)) {
+    throw new Error("event.event_id must be a UUID");
   }
+  eventId = value.event_id;
 
   return {
     event_id: eventId,

@@ -320,6 +320,16 @@ jobs:
           exit "$compose_status"
       - name: Verify the ingestion contract
         run: bash scripts/verify_ingest.sh
+      - name: Verify the strict envelope contract (live stack)
+        # This test needs a running dashboard and the real module
+        # credentials, so it cannot live in the unit suite — and it was
+        # written without being wired into anything, which is how the
+        # strict validation contract went unverified for as long as it
+        # existed. The wiring check in dashboard/scripts/check-test-wiring.mjs
+        # fails if this step is ever removed.
+        run: |
+          set -a; . ./.env; set +a
+          node dashboard/test/malformed-event.test.mjs
       - name: Verify outage recovery (spool -> drain)
         run: bash scripts/verify_recovery.sh
       - name: Verify the incident lifecycle

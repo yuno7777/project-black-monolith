@@ -4,10 +4,9 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { MonolithEvent } from "@/lib/types";
 import { KNOWN_MODULES, MODULE_ACCENT, MODULE_LABELS, MODULE_LAYER } from "@/lib/types";
-import { Logo, ModuleGlyph, IconActivity, IconGrid, IconLedger, IconGauge, IconGear, IconPlug } from "./Icons";
+import { Logo, ModuleGlyph, IconActivity, IconGrid, IconLedger, IconGauge, IconGear, IconPlug, IconBolt, IconCheck, IconIntercept } from "./Icons";
 
-/** The narrow icon rail. Settings does not exist yet, so it is not presented
- *  as if it does. */
+/** The narrow icon rail. */
 export function Rail() {
   const path = usePathname();
   return (
@@ -39,6 +38,42 @@ export function Rail() {
         title="Detection benchmarks"
       >
         <IconGauge />
+      </Link>
+      <Link
+        href="/simulator"
+        className={`rail-btn${path === "/simulator" ? " on" : ""}`}
+        aria-label="Attack Simulator"
+        aria-current={path === "/simulator" ? "page" : undefined}
+        title="Attack Simulator"
+      >
+        <IconBolt />
+      </Link>
+      <Link
+        href="/journey"
+        className={`rail-btn${path === "/journey" ? " on" : ""}`}
+        aria-label="Attack Journey Graph"
+        aria-current={path === "/journey" ? "page" : undefined}
+        title="Attack Journey Graph"
+      >
+        <IconActivity />
+      </Link>
+      <Link
+        href="/compliance"
+        className={`rail-btn${path === "/compliance" ? " on" : ""}`}
+        aria-label="Compliance Matrix"
+        aria-current={path === "/compliance" ? "page" : undefined}
+        title="Compliance Matrix"
+      >
+        <IconCheck />
+      </Link>
+      <Link
+        href="/control-room"
+        className={`rail-btn${path === "/control-room" ? " on" : ""}`}
+        aria-label="Incident Control Room"
+        aria-current={path === "/control-room" ? "page" : undefined}
+        title="Incident Control Room"
+      >
+        <IconIntercept />
       </Link>
       <div className="rail-foot">
         <Link

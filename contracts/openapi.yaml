@@ -226,14 +226,71 @@ paths:
           description: |
             Events accepted for the tenant-scoped ledger. `revoked_sessions`
             lists the sessions currently quarantined for this tenant. It is a
-            snapshot, not a delta: emitters replace their local mirror with
-            it, so a session that was quarantined earlier is still listed.
-            The same set is available without an event flow from
+            snapshot, not a delta, so a session that was quarantined earlier
+            is still listed.
+            The list is bounded — it carries the newest 128 live revocations,
+            because the response body is read with a 64 KiB cap and a body
+            that does not fit is cut short, fails to parse, and leaves the
+            emitter holding the set it already had. The same set, with the
+            bounds stated, is available without an event flow from
             `GET /api/sessions/revoked`.
+            `revoked_sessions_complete` says whether the list is the whole
+            set. An emitter that is told it is whole replaces its local
+            mirror with it; an emitter that is told it is bounded adds to
+            what it already holds, because a bounded list that claimed to be
+            whole would drop every revocation the dashboard holds past the
+            bound — and the session quarantined a moment ago would be served
+            again.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/IngestResponse"
+  /api/sessions/revoked:
+    get:
+      operationId: readRevocationSnapshot
+      description: |
+        The tenant's live revoked sessions, newest first, bounded.
+
+        The body is bounded because every module reads it with a 64 KiB cap.
+        An unbounded set of live revocations is cut short by that cap, fails
+        to parse, and leaves the module holding the set it already had — so a
+        session revoked a moment ago is still served. The body therefore
+        carries at most 128 revocations, and says whether that is all of
+        them.
+
+        A module applies the body according to `complete`:
+
+          complete: true  -> replace the local revoked set with this one
+          complete: false -> add to the local revoked set and keep what it has
+
+        A truncated read, an unparseable body, or a failed request leaves the
+        local set exactly as it was and is reported as an error. The
+        revocation path fails closed: only an authoritative snapshot can
+        lift a revocation.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: x-monolith-tenant-id
+          in: header
+          required: true
+          schema: { "$ref": "#/components/schemas/CorrelationIdentity" }
+        - name: x-monolith-module
+          in: header
+          required: true
+          schema:
+            type: string
+            enum: ["mcp-shield", "vector-anchor", "trace-audit"]
+      responses:
+        "200":
+          description: The tenant's live revoked sessions, bounded.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/revocation-snapshot.v1.schema.json"
+        "401":
+          description: The caller is not a known module of that tenant.
+        "503":
+          description: The ledger could not be read; the caller keeps the set it has.
   /api/operations:
     get:
       operationId: readOperationsHealth
@@ -354,7 +411,15 @@ components:
       pattern: "^[^\\u0000-\\u001f\\u007f]+$"
     IngestResponse:
       type: object
-      required: ["accepted", "duplicates", "event_ids", "revoked_sessions"]
+      required:
+        [
+          "accepted",
+          "duplicates",
+          "event_ids",
+          "revoked_sessions",
+          "revoked_sessions_complete",
+          "revoked_sessions_truncated",
+        ]
       properties:
         accepted: { "type": "integer", "minimum": 0 }
         duplicates: { "type": "integer", "minimum": 0 }
@@ -364,6 +429,18 @@ components:
         revoked_sessions:
           type: array
           items: { "type": "string", "minLength": 1, "maxLength": 128 }
+        revoked_sessions_complete:
+          type: boolean
+          description: |
+            True when `revoked_sessions` is the tenant's entire live revoked
+            set. An emitter that is told the list is whole replaces its local
+            mirror with it; an emitter that is told it is bounded adds to the
+            set it already holds.
+        revoked_sessions_truncated:
+          type: boolean
+          description: |
+            The same fact from the other side: the set did not fit the bound
+            the body is read under, so the list is a part of the set.
     OperationsReplayResponse:
       type: object
       required: ["tenant_id", "alerts_replayed", "total_replayed", "modules"]

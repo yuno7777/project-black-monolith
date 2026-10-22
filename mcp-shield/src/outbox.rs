@@ -82,6 +82,13 @@ fn valid_event_token(token: &str) -> bool {
 /// snapshot. The real response (ids plus a session list) is a few kilobytes.
 const MAX_INGEST_RESPONSE_BYTES: usize = 64 * 1024;
 
+/// The event id of the single dead-letter record that names a missing
+/// dashboard configuration.
+///
+/// It is not a UUID because it is not an event: it is the receipt for a
+/// configuration that was never made.
+const UNCONFIGURED_DELIVERY_ID: &str = "delivery-unconfigured";
+
 /// Sessions the dashboard's cross-layer circuit breaker revoked.
 ///
 /// The dashboard is the authority and does not expire revocations, so neither
@@ -91,6 +98,34 @@ const MAX_INGEST_RESPONSE_BYTES: usize = 64 * 1024;
 fn revoked_session_store() -> &'static RwLock<HashSet<String>> {
     static REVOKED_SESSIONS: OnceLock<RwLock<HashSet<String>>> = OnceLock::new();
     REVOKED_SESSIONS.get_or_init(|| RwLock::new(HashSet::new()))
+}
+
+/// The lock a test must hold to touch the process-wide revoked-session state.
+///
+/// The revoked-session mirror and the `MONOLITH_SESSION_ID` environment
+/// variable are process-wide, and the test harness runs the tests of a crate
+/// in one process on several threads. A test that emptied the mirror while
+/// another was asserting on it would fail for a reason that has nothing to
+/// do with the code under test — and the failure would be intermittent, which
+/// is the worst kind: it would be blamed on the defence rather than on the
+/// test.
+///
+/// So every test that touches either takes this lock, and a test that can
+/// make its assertions against a local store does that instead, which is
+/// better than locking: nothing shared, nothing to race with.
+#[cfg(test)]
+pub(crate) static MIRROR_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Take the process-wide lock, ignoring a poisoned one.
+///
+/// A test that panicked while holding it must not turn every other test into
+/// a failure of its own: the state it guarded is process-wide and the next
+/// test has to be able to set it up again.
+#[cfg(test)]
+pub(crate) fn mirror_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    MIRROR_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Whether `session_id` is currently revoked; an empty id is never revoked.
@@ -108,15 +143,84 @@ pub(crate) fn is_session_revoked(session_id: &str) -> bool {
 /// Read a response body with a hard byte cap; the revocation snapshot is
 /// small, and a compromised or misconfigured target must not be able to make
 /// the proxy buffer an unbounded body.
-async fn read_bounded_response(mut response: reqwest::Response) -> String {
+///
+/// Reading one byte past the cap is what makes the difference between a
+/// complete body and a cut-short one. A truncated body can parse as JSON and
+/// look authoritative while describing only part of the revoked set, so an
+/// over-cap body is an error: the caller keeps the snapshot it had, and the
+/// operator is told why.
+async fn read_bounded_response(mut response: reqwest::Response) -> Result<String, String> {
     let mut body: Vec<u8> = Vec::new();
-    while let Ok(Some(chunk)) = response.chunk().await {
-        if body.len() + chunk.len() > MAX_INGEST_RESPONSE_BYTES {
-            break;
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                if body.len() + chunk.len() > MAX_INGEST_RESPONSE_BYTES {
+                    return Err(format!(
+                        "the response body exceeded the {MAX_INGEST_RESPONSE_BYTES}-byte cap"
+                    ));
+                }
+                body.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Err(error) => {
+                return Err(format!("the response body could not be read: {error}"));
+            }
         }
-        body.extend_from_slice(&chunk);
     }
-    String::from_utf8_lossy(&body).into_owned()
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+/// Whether a revocation snapshot carries the whole live set.
+///
+/// The publisher says so with `complete`: true when the response carries
+/// every revoked session, false when it was bounded. A publisher that says
+/// nothing about bounding is taken at its word — the snapshot is the whole
+/// set — and `truncated` is honoured when `complete` is absent, so a
+/// publisher that reports the bound the other way is still believed.
+fn snapshot_is_complete(value: &Value) -> bool {
+    // The ingest response carries the same fact under names of its own
+    // (`revoked_sessions_complete` and `revoked_sessions_truncated`),
+    // because that body is about an ingest and a bare `complete` on it would
+    // say nothing about which part of it is complete. Those are read first:
+    // they are the more specific statement, and the body that carries them is
+    // the body that knows.
+    if let Some(Value::Bool(complete)) = value.get("revoked_sessions_complete") {
+        return *complete;
+    }
+    match value.get("complete") {
+        Some(Value::Bool(complete)) => *complete,
+        _ => {
+            if let Some(Value::Bool(truncated)) = value.get("revoked_sessions_truncated") {
+                return !truncated;
+            }
+            match value.get("truncated") {
+                Some(Value::Bool(truncated)) => !truncated,
+                _ => true,
+            }
+        }
+    }
+}
+
+/// Adopt a revocation snapshot into `store`, honouring the publisher's bound.
+///
+/// A complete snapshot replaces the local set: a restored session is lifted
+/// and the set cannot grow without bound. A bounded snapshot only adds,
+/// because the module cannot see the whole picture and must not drop what it
+/// already knows — over-blocking is the safe direction, and dropping a
+/// revocation the dashboard did not mention is not. Returns the number of
+/// revoked sessions now known.
+fn adopt_revoked_sessions(
+    store: &RwLock<HashSet<String>>,
+    ids: HashSet<String>,
+    complete: bool,
+) -> usize {
+    let mut sessions = store.write().unwrap_or_else(|e| e.into_inner());
+    if complete {
+        *sessions = ids;
+    } else {
+        sessions.extend(ids);
+    }
+    sessions.len()
 }
 
 /// Adopt the `revoked_sessions` snapshot of an ingest response.
@@ -125,6 +229,14 @@ async fn read_bounded_response(mut response: reqwest::Response) -> String {
 /// empty, which correctly lifts local revocations), and `None` when it did
 /// not — in which case the previous snapshot stands.
 pub(crate) fn observe_revoked_sessions(body: &str) -> Option<usize> {
+    observe_revoked_sessions_in(revoked_session_store(), body)
+}
+
+/// The same, against a specific store.
+///
+/// The store is a parameter so a test can exercise the rule without
+/// disturbing the process-wide mirror another test is reading.
+fn observe_revoked_sessions_in(store: &RwLock<HashSet<String>>, body: &str) -> Option<usize> {
     let value: Value = serde_json::from_str(body).ok()?;
     let ids = value.get("revoked_sessions")?.as_array()?;
     let cleaned: HashSet<String> = ids
@@ -134,12 +246,11 @@ pub(crate) fn observe_revoked_sessions(body: &str) -> Option<usize> {
         .filter(|id| !id.is_empty() && id.len() <= 128 && id.chars().all(|c| !c.is_control()))
         .map(str::to_string)
         .collect();
-    let count = cleaned.len();
-    let mut store = revoked_session_store()
-        .write()
-        .unwrap_or_else(|e| e.into_inner());
-    *store = cleaned;
-    Some(count)
+    Some(adopt_revoked_sessions(
+        store,
+        cleaned,
+        snapshot_is_complete(&value),
+    ))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -211,7 +322,11 @@ pub struct Outbox {
     path: PathBuf,
     lock_path: PathBuf,
     dead_path: PathBuf,
-    target: reqwest::Url,
+    /// Where events are delivered. `None` when no dashboard is configured:
+    /// there is nowhere to deliver to, and posting to a guessed endpoint
+    /// would dead-letter every event against a credential that does not
+    /// exist.
+    target: Option<reqwest::Url>,
     client: reqwest::Client,
     token: String,
     /// Serializes every read-modify-write of the spool file. Held only across
@@ -232,12 +347,13 @@ impl Outbox {
             .timeout(RESPONSE_TIMEOUT)
             .build()
             .map_err(io::Error::other)?;
-        let target = reqwest::Url::parse("http://127.0.0.1:3000/api/events").expect("static url");
         Ok(Self {
             dead_path: path.with_extension("dead"),
             lock_path: path.with_extension("lock"),
             path,
-            target,
+            // No dashboard is configured here, and this outbox is for local
+            // file operations. It must not guess an endpoint.
+            target: None,
             client,
             token: String::new(),
             file_lock: Mutex::new(()),
@@ -245,29 +361,8 @@ impl Outbox {
     }
 
     fn from_env() -> Option<Arc<Outbox>> {
-        let url = std::env::var("MONOLITH_DASHBOARD_URL").ok()?;
         let allow_insecure_http =
             std::env::var("MONOLITH_ALLOW_INSECURE_DASHBOARD").is_ok_and(|value| value == "true");
-        let target = match parse_dashboard_url(&url, allow_insecure_http) {
-            Some(t) => t,
-            None => {
-                tracing::warn!(url = %url, "MONOLITH_DASHBOARD_URL must use HTTPS (HTTP is loopback-only unless explicitly enabled) and contain no credentials or fragment; dashboard forwarding disabled");
-                return None;
-            }
-        };
-        // The ingest endpoint requires a per-module bearer token. Without one
-        // every POST would 401 and be dead-lettered on arrival, so spooling
-        // would only burn disk — fail loudly instead.
-        let token = match std::env::var("MONOLITH_EVENT_TOKEN") {
-            Ok(token) if valid_event_token(&token) => token,
-            _ => {
-                tracing::warn!(
-                    min_length = MIN_EVENT_TOKEN_LENGTH,
-                    "MONOLITH_DASHBOARD_URL is set but MONOLITH_EVENT_TOKEN is missing, too short, or not a valid bearer token; dashboard forwarding disabled (events still go to stderr)"
-                );
-                return None;
-            }
-        };
         let path = PathBuf::from(
             std::env::var("MONOLITH_EVENT_OUTBOX_PATH")
                 .unwrap_or_else(|_| "/var/lib/monolith/outbox.jsonl".to_string()),
@@ -287,6 +382,36 @@ impl Outbox {
             Err(error) => {
                 tracing::warn!(%error, "cannot initialize dashboard HTTP client; forwarding disabled");
                 return None;
+            }
+        };
+        // A dashboard that is not configured is not a delivery to retry
+        // against a guessed endpoint: there is nowhere to deliver to. The
+        // spool still takes the events, so they survive until the operator
+        // configures one, and one dead-letter record names what is missing.
+        let (target, token) = match std::env::var("MONOLITH_DASHBOARD_URL") {
+            Ok(url) => match parse_dashboard_url(&url, allow_insecure_http) {
+                Some(target) => match std::env::var("MONOLITH_EVENT_TOKEN") {
+                    Ok(token) if valid_event_token(&token) => (Some(target), token),
+                    _ => {
+                        // The ingest endpoint requires a per-module bearer
+                        // token. Without one every POST would 401 and be
+                        // dead-lettered on arrival, so spooling would only
+                        // burn disk — fail loudly instead.
+                        tracing::warn!(
+                            min_length = MIN_EVENT_TOKEN_LENGTH,
+                            "MONOLITH_DASHBOARD_URL is set but MONOLITH_EVENT_TOKEN is missing, too short, or not a valid bearer token; dashboard forwarding disabled (events still go to stderr)"
+                        );
+                        (None, String::new())
+                    }
+                },
+                None => {
+                    tracing::warn!(url = %url, "MONOLITH_DASHBOARD_URL must use HTTPS (HTTP is loopback-only unless explicitly enabled) and contain no credentials or fragment; dashboard forwarding disabled");
+                    (None, String::new())
+                }
+            },
+            Err(_) => {
+                tracing::warn!("MONOLITH_DASHBOARD_URL is not set; dashboard forwarding disabled (events still go to stderr and are spooled)");
+                (None, String::new())
             }
         };
         Some(Arc::new(Outbox {
@@ -322,9 +447,67 @@ impl Outbox {
             last_error: None,
             created_ms: now,
         };
+        {
+            let _guard = self.file_lock.lock().unwrap_or_else(|e| e.into_inner());
+            let _process_guard = self.acquire_process_lock()?;
+            append_record_bounded(&self.path, &record, MAX_SPOOL_RECORDS, MAX_SPOOL_BYTES)?;
+        }
+        if self.target.is_none() {
+            // The operator needs to know that the spool is filling and that
+            // nothing is leaving it. One record names the missing
+            // configuration and counts what is waiting, instead of one dead
+            // letter per event against an endpoint that does not exist.
+            self.record_unconfigured_delivery(event_id)?;
+        }
+        Ok(())
+    }
+
+    /// Record, in the dead-letter spool, that events cannot be delivered.
+    ///
+    /// One record names the missing configuration and counts the events
+    /// waiting in the spool. A dead letter per event would bury the evidence
+    /// the record is meant to preserve, and every one of them would be a
+    /// delivery failure against an endpoint that was never configured.
+    fn record_unconfigured_delivery(&self, event_id: &str) -> io::Result<()> {
         let _guard = self.file_lock.lock().unwrap_or_else(|e| e.into_inner());
         let _process_guard = self.acquire_process_lock()?;
-        append_record_bounded(&self.path, &record, MAX_SPOOL_RECORDS, MAX_SPOOL_BYTES)
+        let mut dead = read_records(&self.dead_path)?;
+        let now = now_ms();
+        let previous = dead
+            .iter()
+            .find(|record| record.event_id == UNCONFIGURED_DELIVERY_ID)
+            .and_then(|record| serde_json::from_str::<Value>(&record.payload).ok());
+        let count = previous
+            .as_ref()
+            .and_then(|value| value.get("events_not_delivered"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            + 1;
+        let record = SpoolRecord {
+            event_id: UNCONFIGURED_DELIVERY_ID.to_string(),
+            payload: json!({
+                "delivery": "unconfigured",
+                "reason": "MONOLITH_DASHBOARD_URL is not configured; the spool is filling and nothing is leaving it",
+                "events_not_delivered": count,
+                "last_event_id": event_id,
+                "updated_ms": now as u64,
+            })
+            .to_string(),
+            attempts: 0,
+            next_attempt_ms: now,
+            last_error: Some("MONOLITH_DASHBOARD_URL is not configured".to_string()),
+            created_ms: now,
+        };
+        dead.retain(|existing| existing.event_id != UNCONFIGURED_DELIVERY_ID);
+        dead.push(record);
+        let dropped = enforce_spool_bounds(&mut dead, MAX_SPOOL_RECORDS, MAX_SPOOL_BYTES);
+        if dropped > 0 {
+            tracing::warn!(
+                dropped,
+                "dead-letter spool exceeded cap; dropping oldest dead-letter records"
+            );
+        }
+        write_records_atomically(&self.dead_path, &dead)
     }
 
     /// Move records from `outbox.dead` back into `outbox.jsonl` with
@@ -339,11 +522,14 @@ impl Outbox {
         let _guard = self.file_lock.lock().unwrap_or_else(|e| e.into_inner());
         let _process_guard = self.acquire_process_lock()?;
 
-        let dead_records = read_records(&self.dead_path)?;
+        let (mut unconfigured, dead_records): (Vec<SpoolRecord>, Vec<SpoolRecord>) =
+            read_records(&self.dead_path)?
+                .into_iter()
+                .partition(|record| record.event_id == UNCONFIGURED_DELIVERY_ID);
         if dead_records.is_empty() {
             return Ok(0);
         }
-        let (selected, left_behind): (Vec<SpoolRecord>, Vec<SpoolRecord>) = match tenant {
+        let (selected, mut left_behind): (Vec<SpoolRecord>, Vec<SpoolRecord>) = match tenant {
             Some(scope) => dead_records
                 .into_iter()
                 .partition(|record| record_tenant(record).as_deref() == Some(scope)),
@@ -395,7 +581,10 @@ impl Outbox {
         }
         write_records_atomically(&self.path, &pending)?;
         // The dead file is rewritten with what is left, not emptied: the
-        // records that belong to another tenant are still evidence.
+        // records that belong to another tenant are still evidence, and so
+        // is the receipt for a configuration that was never made — it is not
+        // an event, so it is never replayed.
+        left_behind.append(&mut unconfigured);
         write_records_atomically(&self.dead_path, &left_behind)?;
         Ok(replayed)
     }
@@ -421,10 +610,17 @@ impl Outbox {
         }
     }
 
-    async fn post(&self, body: &str) -> Result<(u16, String), String> {
+    async fn post(&self, body: &str) -> Result<u16, String> {
+        let Some(target) = self.target.clone() else {
+            // There is nowhere to deliver to. Posting to a guessed endpoint
+            // would dead-letter every event against a credential that does
+            // not exist, and the operator would be reading a spool full of
+            // failures instead of one record naming what is missing.
+            return Err("no dashboard URL is configured; the event was not delivered".to_string());
+        };
         let response = self
             .client
-            .post(self.target.clone())
+            .post(target)
             .bearer_auth(&self.token)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body.to_owned())
@@ -432,17 +628,31 @@ impl Outbox {
             .await
             .map_err(|error| error.to_string())?;
         let status = response.status().as_u16();
-        let text = read_bounded_response(response).await;
         if (200..300).contains(&status) {
             // Ingest responses carry the circuit breaker's revocations; the
             // background poller covers the idle case where no event is sent.
-            if let Some(count) = observe_revoked_sessions(&text) {
-                if count > 0 {
-                    tracing::warn!(revoked_sessions = count, "dashboard revoked sessions");
+            match read_bounded_response(response).await {
+                Ok(body) => {
+                    if let Some(count) = observe_revoked_sessions(&body) {
+                        if count > 0 {
+                            tracing::warn!(revoked_sessions = count, "dashboard revoked sessions");
+                        }
+                    }
+                }
+                Err(reason) => {
+                    // The event was delivered; only the snapshot could not be
+                    // read. The previous snapshot stands, and the failure is
+                    // loud — a snapshot that could not be read is not a
+                    // snapshot that says nothing is revoked.
+                    tracing::warn!(
+                        reason = %reason,
+                        cap_bytes = MAX_INGEST_RESPONSE_BYTES,
+                        "the dashboard response body could not be read; the revoked-session snapshot was not updated"
+                    );
                 }
             }
         }
-        Ok((status, text))
+        Ok(status)
     }
 
     /// Attempt delivery of spooled records within `budget`.
@@ -451,6 +661,13 @@ impl Outbox {
     /// exit, where a last attempt now beats a scheduled attempt that will
     /// never happen.
     pub(crate) async fn drain(&self, budget: Duration, force: bool) {
+        if self.target.is_none() {
+            // No dashboard is configured: there is nowhere to deliver, so
+            // nothing is attempted. The records stay in the spool for a run
+            // that does have a dashboard, and one dead-letter record names
+            // the missing configuration.
+            return;
+        }
         let started = Instant::now();
         let pending = match self.load_pending() {
             Ok(p) => p,
@@ -476,11 +693,11 @@ impl Outbox {
                 continue;
             }
             match self.post(&record.payload).await {
-                Ok((status, _)) if (200..300).contains(&status) => {
+                Ok(status) if (200..300).contains(&status) => {
                     delivered.insert(record.event_id);
                     continue;
                 }
-                Ok((status, _)) if is_permanent(status) => {
+                Ok(status) if is_permanent(status) => {
                     record.last_error = Some(format!("http {status}"));
                     tracing::error!(
                         event_id = %record.event_id,
@@ -490,7 +707,7 @@ impl Outbox {
                     dead.push(record);
                     continue;
                 }
-                Ok((status, _)) => record.defer(format!("http {status}")),
+                Ok(status) => record.defer(format!("http {status}")),
                 Err(e) => record.defer(e),
             }
             if record.attempts >= MAX_ATTEMPTS {
@@ -772,8 +989,15 @@ pub async fn drain(budget: Duration, force: bool) {
 
 /// Background flusher: drains the backlog left by previous runs immediately,
 /// then keeps delivering this run's events as they are emitted.
+///
+/// `None` when delivery is not configured, so the caller can say so loudly
+/// instead of running a drainer that has nowhere to deliver to.
 pub fn spawn_flusher() -> Option<tokio::task::JoinHandle<()>> {
     let outbox = outbox()?;
+    // Without a dashboard there is nowhere to deliver, so there is nothing to
+    // flush: the caller says so loudly instead of running a drainer that has
+    // nowhere to deliver to.
+    outbox.target.as_ref()?;
     let outbox = Arc::clone(outbox);
     Some(tokio::spawn(async move {
         loop {
@@ -833,7 +1057,7 @@ fn poll_interval_ms() -> Option<u64> {
 /// adopts the whole snapshot, so a restore (empty set) also propagates.
 pub fn spawn_revocation_poller() -> Option<tokio::task::JoinHandle<()>> {
     let outbox = outbox()?;
-    let url = revocation_poll_url(&outbox.target)?;
+    let url = revocation_poll_url(outbox.target.as_ref()?)?;
     let interval_ms = poll_interval_ms()?;
     let tenant = std::env::var("MONOLITH_TENANT_ID").unwrap_or_else(|_| "default".to_string());
     let tenant = tenant.trim().to_string();
@@ -868,12 +1092,25 @@ pub fn spawn_revocation_poller() -> Option<tokio::task::JoinHandle<()>> {
                 .await
             {
                 Ok(response) if response.status().is_success() => {
-                    let body = read_bounded_response(response).await;
-                    if let Some(count) = observe_revoked_sessions(&body) {
-                        tracing::debug!(
-                            revoked_sessions = count,
-                            "refreshed revoked-session snapshot"
-                        );
+                    match read_bounded_response(response).await {
+                        Ok(body) => {
+                            if let Some(count) = observe_revoked_sessions(&body) {
+                                tracing::debug!(
+                                    revoked_sessions = count,
+                                    "refreshed revoked-session snapshot"
+                                );
+                            }
+                        }
+                        Err(reason) => {
+                            // The previous snapshot stands: a body that could
+                            // not be read says nothing about what the
+                            // dashboard has revoked.
+                            tracing::warn!(
+                                reason = %reason,
+                                cap_bytes = MAX_INGEST_RESPONSE_BYTES,
+                                "the revocation snapshot could not be read; the previous snapshot stands"
+                            );
+                        }
                     }
                 }
                 Ok(response) => tracing::debug!(
@@ -1341,6 +1578,11 @@ mod tests {
 
     #[test]
     fn revoked_session_snapshot_replaces_wholesale_and_missing_snapshots_do_not_clear() {
+        // The mirror is process-wide, so this test holds the lock the whole
+        // time it touches it. Without it, a test running beside this one
+        // could empty the mirror between two assertions here and the failure
+        // would look like a defect in the defence.
+        let _guard = mirror_test_guard();
         let session = "cafebabe-0000-4000-8000-000000000002";
         let snapshot = json!({ "revoked_sessions": [session] }).to_string();
         assert_eq!(observe_revoked_sessions(&snapshot), Some(1));
@@ -1366,6 +1608,244 @@ mod tests {
         );
         assert!(!is_session_revoked(session));
         assert!(!is_session_revoked(""));
+    }
+
+    /// A complete snapshot replaces the local set; a bounded one only adds.
+    ///
+    /// A bounded snapshot is all the module can see, so it must not drop what
+    /// it already knows: dropping a revocation the dashboard did not mention
+    /// is the unsafe direction, and over-blocking is the safe one.
+    ///
+    /// The store is a local one, not the process-wide mirror, so this rule
+    /// cannot be disturbed by a test running beside it.
+    #[test]
+    fn a_complete_snapshot_replaces_and_a_bounded_one_only_adds() {
+        let store = RwLock::new(HashSet::new());
+        let first = "cafebabe-0000-4000-8000-00000000000a";
+        let second = "cafebabe-0000-4000-8000-00000000000b";
+        let third = "cafebabe-0000-4000-8000-00000000000c";
+
+        observe_revoked_sessions_in(
+            &store,
+            &json!({ "revoked_sessions": [first], "complete": false }).to_string(),
+        );
+        observe_revoked_sessions_in(
+            &store,
+            &json!({ "revoked_sessions": [second], "complete": false }).to_string(),
+        );
+        let sessions = store.read().unwrap();
+        assert!(
+            sessions.contains(first),
+            "a bounded snapshot must not drop what is known"
+        );
+        assert!(sessions.contains(second));
+        drop(sessions);
+
+        // A complete snapshot is authoritative: it replaces the set.
+        observe_revoked_sessions_in(
+            &store,
+            &json!({ "revoked_sessions": [third], "complete": true }).to_string(),
+        );
+        let sessions = store.read().unwrap();
+        assert!(sessions.contains(third));
+        assert!(
+            !sessions.contains(first),
+            "a complete snapshot replaces the set"
+        );
+        assert!(!sessions.contains(second));
+        drop(sessions);
+
+        // A publisher that reports the bound the other way is believed too.
+        observe_revoked_sessions_in(
+            &store,
+            &json!({ "revoked_sessions": [first], "truncated": true }).to_string(),
+        );
+        let sessions = store.read().unwrap();
+        assert!(sessions.contains(first), "a bounded snapshot adds");
+        assert!(
+            sessions.contains(third),
+            "a bounded snapshot keeps what is known"
+        );
+    }
+
+    /// The ingest answer states its bound under names of its own.
+    ///
+    /// The ingest body is a different document from the poll body, so a bare
+    /// `complete` on it would say nothing about which part of it is complete.
+    /// A module that ignored the specific names would read the absence of a
+    /// statement as "this is the whole set" and replace its local set with a
+    /// bounded list — dropping every revocation past the bound, and serving
+    /// the session revoked a moment ago.
+    #[test]
+    fn the_ingest_answer_states_its_bound_under_its_own_names() {
+        let store = RwLock::new(HashSet::new());
+        let first = "cafebabe-0000-4000-8000-00000000000d";
+        let second = "cafebabe-0000-4000-8000-00000000000e";
+        let third = "cafebabe-0000-4000-8000-00000000000f";
+
+        observe_revoked_sessions_in(
+            &store,
+            &json!({
+                "revoked_sessions": [first],
+                "revoked_sessions_complete": true,
+                "revoked_sessions_truncated": false,
+            })
+            .to_string(),
+        );
+        assert!(store.read().unwrap().contains(first));
+
+        // A bounded list is added to the local set, not substituted for it.
+        observe_revoked_sessions_in(
+            &store,
+            &json!({
+                "revoked_sessions": [second],
+                "revoked_sessions_complete": false,
+                "revoked_sessions_truncated": true,
+            })
+            .to_string(),
+        );
+        let sessions = store.read().unwrap();
+        assert!(
+            sessions.contains(first),
+            "a bounded list must not drop what is known"
+        );
+        assert!(sessions.contains(second));
+        drop(sessions);
+
+        // `truncated` alone says the same thing from the other side.
+        observe_revoked_sessions_in(
+            &store,
+            &json!({ "revoked_sessions": [third], "revoked_sessions_truncated": true }).to_string(),
+        );
+        let sessions = store.read().unwrap();
+        assert!(sessions.contains(first));
+        assert!(sessions.contains(third));
+        drop(sessions);
+
+        // Each name is read on its own, so a publisher that states the bound
+        // either way is believed. `complete` alone says the set is whole and
+        // replaces the local set; `truncated` alone says it is bounded and
+        // does not.
+        let fourth = "cafebabe-0000-4000-8000-000000000010";
+        observe_revoked_sessions_in(
+            &store,
+            &json!({ "revoked_sessions": [fourth], "revoked_sessions_complete": true }).to_string(),
+        );
+        let sessions = store.read().unwrap();
+        assert!(sessions.contains(fourth));
+        assert!(
+            !sessions.contains(third),
+            "a whole set replaces the local set"
+        );
+        drop(sessions);
+
+        let fifth = "cafebabe-0000-4000-8000-000000000011";
+        observe_revoked_sessions_in(
+            &store,
+            &json!({ "revoked_sessions": [fifth], "revoked_sessions_complete": false }).to_string(),
+        );
+        let sessions = store.read().unwrap();
+        assert!(
+            sessions.contains(fourth),
+            "a bounded list must not drop what is known"
+        );
+        assert!(sessions.contains(fifth));
+    }
+
+    /// A one-shot HTTP server that answers a single request with `body`.
+    ///
+    /// The request head is read before the answer is written: a socket closed
+    /// with an unread request resets the connection, and the client would see
+    /// a truncated body instead of the one that was served.
+    fn serve_once(body: Vec<u8>) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => request.extend_from_slice(&chunk[..read]),
+                    }
+                }
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+                let _ = stream.write_all(&body);
+                let _ = stream.flush();
+            }
+        });
+        addr
+    }
+
+    /// A body over the byte cap is an error, not a stand-in for a snapshot.
+    ///
+    /// A cut-short body can parse as JSON and look authoritative while
+    /// describing only part of the revoked set, so the reader refuses it and
+    /// the operator is told why. The snapshot the module already had stands.
+    #[tokio::test]
+    async fn an_over_cap_response_is_an_error_and_the_previous_snapshot_stands() {
+        let store = RwLock::new(HashSet::new());
+        let session = "cafebabe-0000-4000-8000-00000000000d";
+        observe_revoked_sessions_in(
+            &store,
+            &json!({ "revoked_sessions": [session] }).to_string(),
+        );
+        assert!(store.read().unwrap().contains(session));
+
+        let addr = serve_once(vec![b'x'; MAX_INGEST_RESPONSE_BYTES + 1]);
+        let client = reqwest::Client::builder().build().unwrap();
+        let response = client
+            .get(format!("http://{addr}/api/sessions/revoked"))
+            .send()
+            .await
+            .unwrap();
+        let reason = read_bounded_response(response)
+            .await
+            .expect_err("an over-cap body must not be read as a snapshot");
+        assert!(
+            reason.contains("cap"),
+            "the error must name the cap: {reason}"
+        );
+
+        // Nothing was adopted, so the previous snapshot stands: a body that
+        // could not be read says nothing about what the dashboard has revoked.
+        assert!(store.read().unwrap().contains(session));
+    }
+
+    /// Without a dashboard URL there is nowhere to deliver, so the module
+    /// says so once instead of dead-lettering every event against an
+    /// endpoint that was never configured.
+    #[test]
+    fn an_unconfigured_dashboard_records_one_dead_letter_not_one_per_event() {
+        let dir = temp_dir("unconfigured-delivery");
+        let outbox = Outbox::for_path(dir.join("outbox.jsonl")).unwrap();
+        outbox
+            .enqueue("event-1", r#"{"event_id":"event-1"}"#)
+            .unwrap();
+        outbox
+            .enqueue("event-2", r#"{"event_id":"event-2"}"#)
+            .unwrap();
+
+        let dead = read_records(outbox.dead_letter_path()).unwrap();
+        assert_eq!(
+            dead.len(),
+            1,
+            "one record must name the missing configuration, not one per event"
+        );
+        assert_eq!(dead[0].event_id, UNCONFIGURED_DELIVERY_ID);
+        let payload: Value = serde_json::from_str(&dead[0].payload).unwrap();
+        assert_eq!(payload["events_not_delivered"], 2);
+        assert_eq!(payload["last_event_id"], "event-2");
+
+        // The events themselves are still spooled: nothing was dropped.
+        assert_eq!(read_records(outbox.spool_path()).unwrap().len(), 2);
     }
 
     #[test]

@@ -28,9 +28,8 @@ import {
   ExternalAuthUnavailable,
   externalIdentityFromClaims,
 } from "../lib/external-auth";
-import { normalizeModuleLedgerHealth } from "../lib/operations-store";
+import { normalizeModuleLedgerHealth, moduleStatsUrl } from "../lib/operations-store";
 import { alertConfigStatus } from "../lib/alert-config";
-import { moduleStatsUrl } from "../app/api/operations/route";
 
 /**
  * Run a body with environment variables set, then put them back.
@@ -164,6 +163,7 @@ test("event normalization requires identity-bearing contract fields", () => {
       normalizeEvent({
         module: "mcp-shield",
         event_type: "probe",
+        event_id: "20000000-0000-4000-8000-000000000001",
         tenant_id: "x".repeat(129),
       }),
     /tenant_id/,
@@ -173,9 +173,36 @@ test("event normalization requires identity-bearing contract fields", () => {
       normalizeEvent({
         module: "mcp-shield",
         event_type: "probe",
+        event_id: "20000000-0000-4000-8000-000000000001",
         trace_id: "trace\nforged",
       }),
     /trace_id.*printable/,
+  );
+});
+
+test("an event without an id is refused rather than given one", () => {
+  // The id is the module's, and it is the idempotency key. Minting one here
+  // would invent a different identity on every redelivery, so a delivery
+  // whose answer was lost would be filed twice under two identities — and
+  // the ledger's `on conflict (event_id) do nothing` would not catch it.
+  // The published contract already requires it
+  // (contracts/schemas/event-envelope.v2.schema.json).
+  assert.throws(
+    () =>
+      normalizeEvent({
+        module: "mcp-shield",
+        event_type: "probe",
+      }),
+    /event_id must be a UUID/,
+  );
+  assert.throws(
+    () =>
+      normalizeEvent({
+        module: "mcp-shield",
+        event_type: "probe",
+        event_id: null,
+      }),
+    /event_id must be a UUID/,
   );
 });
 
@@ -183,6 +210,7 @@ test("event normalization applies safe defaults only when fields are absent", ()
   const event = normalizeEvent({
     module: "trace-audit",
     event_type: "probe",
+    event_id: "20000000-0000-4000-8000-000000000002",
     tenant_id: " tenant-a ",
   });
   assert.equal(event.severity, "info");
@@ -204,6 +232,7 @@ test("event normalization rejects malformed ledger fields", () => {
       normalizeEvent({
         module: "trace-audit",
         event_type: "probe",
+        event_id: "20000000-0000-4000-8000-000000000003",
         ...input,
       }),
     );
@@ -212,6 +241,7 @@ test("event normalization rejects malformed ledger fields", () => {
     normalizeEvent({
       module: "trace-audit",
       event_type: "probe",
+      event_id: "20000000-0000-4000-8000-000000000004",
       schema_version: 2,
       severity: "critical",
       details: { safe: true },
@@ -2018,6 +2048,7 @@ test("the session report gathers one agent run's events across all three layers"
         },
         body: JSON.stringify({
           module,
+          event_id: randomUUID(),
           tenant_id: "tenant-session",
           agent_id: "agent-report",
           session_id: "sess-report-1",
@@ -2209,6 +2240,7 @@ test("a session report that cannot hold every event says so", async () => {
         },
         body: JSON.stringify({
           module: "mcp-shield",
+          event_id: randomUUID(),
           tenant_id: "tenant-truncated",
           agent_id: "agent-report",
           session_id: "sess-truncated",

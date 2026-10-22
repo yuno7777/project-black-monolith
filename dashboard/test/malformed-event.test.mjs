@@ -43,6 +43,14 @@ const REJECTED = [
     module: "mcp-shield",
     event_type: "bad_id",
   },
+  // A missing id is refused, not supplied. The id is the module's and the
+  // ledger's idempotency key: minting one here would invent a different
+  // identity on every redelivery, so a delivery whose answer was lost would
+  // be filed twice. The published envelope schema already requires it.
+  {
+    module: "mcp-shield",
+    event_type: "no_id",
+  },
   // --- optional fields, malformed: rejected rather than coerced -----------
   { module: "mcp-shield", event_type: "bad_severity", severity: "not-a-real-severity" },
   { module: "mcp-shield", event_type: "null_details", severity: "warning", details: null },
@@ -54,9 +62,10 @@ const REJECTED = [
 
 const PREFIX = `malformed_probe_${randomUUID()}`;
 // Valid envelopes exercising the fields that ARE optional: absent severity,
-// absent timestamp, absent event_id. These must be accepted, defaulted
-// server-side, and replayed to an authenticated subscriber under the right
-// tenant -- the delivery half of the contract.
+// absent timestamp. These must be accepted, defaulted server-side, and
+// replayed to an authenticated subscriber under the right tenant -- the
+// delivery half of the contract. The event_id is NOT optional: every one of
+// these carries the id a module's own emitter would have minted.
 const NORMALIZED = [
   { severity: "warning", details: { note: "explicit severity" } },
   { details: { note: "severity defaults" } },
@@ -65,6 +74,7 @@ const NORMALIZED = [
   { severity: "info", timestamp_ms: Date.now(), details: { note: "explicit ts" } },
 ].map((value, index) => ({
   module: "mcp-shield",
+  event_id: randomUUID(),
   event_type: `${PREFIX}_${index}`,
   tenant_id: TENANT,
   ...value,

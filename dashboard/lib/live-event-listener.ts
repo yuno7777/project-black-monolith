@@ -36,6 +36,11 @@ export class LiveEventListener {
   private retry?: ReturnType<typeof setTimeout>;
   private pending = new Map<string, EventNotification>();
   private draining = false;
+  // Consecutive connection failures. It drives the reconnect delay: the first
+  // retry is quick, but a database that is still down is asked less often, so
+  // a database that is slow to start is not hammered once a second for the
+  // life of the process.
+  private failures = 0;
 
   ensureStarted(): Promise<void> {
     if (this.client) return Promise.resolve();
@@ -48,6 +53,20 @@ export class LiveEventListener {
   }
 
   private async connect() {
+    try {
+      await this.openConnection();
+    } catch (error) {
+      // A listener that failed to connect used to schedule no retry of its
+      // own: the caller was told the listener was down, and nothing brought
+      // it back except some later request that happened to try again. A
+      // connection that never came up is a disconnect like any other, so take
+      // the same path — the backoff below brings the listener back on its own.
+      this.scheduleReconnect();
+      throw error;
+    }
+  }
+
+  private async openConnection() {
     const client = await getDb().connect();
     client.on("notification", (message) => {
       if (message.channel !== CHANNEL) return;
@@ -61,6 +80,7 @@ export class LiveEventListener {
     try {
       await client.query(`listen ${CHANNEL}`);
       this.client = client;
+      this.failures = 0;
     } catch (error) {
       client.release(true);
       throw error;
@@ -71,26 +91,25 @@ export class LiveEventListener {
     if (this.client !== client) return;
     this.client = undefined;
     client.release(true);
-    if (this.retry) clearTimeout(this.retry);
-    this.retry = setTimeout(() => {
-      this.retry = undefined;
-      void this.ensureStarted().catch((error) => {
-        console.error("live event database listener reconnect failed", error);
-        this.disconnectIfIdle();
-      });
-    }, 1_000);
-    this.retry.unref?.();
+    this.scheduleReconnect();
   }
 
-  private disconnectIfIdle() {
-    if (this.client || this.retry) return;
+  /**
+   * Schedule the next connection attempt.
+   *
+   * The delay widens while the database stays down, so a database that is
+   * still starting is not asked once a second for the life of the process.
+   */
+  private scheduleReconnect() {
+    if (this.retry) clearTimeout(this.retry);
+    const delay = this.failures === 0 ? 1_000 : 5_000;
+    this.failures += 1;
     this.retry = setTimeout(() => {
       this.retry = undefined;
       void this.ensureStarted().catch((error) => {
         console.error("live event database listener reconnect failed", error);
-        this.disconnectIfIdle();
       });
-    }, 5_000);
+    }, delay);
     this.retry.unref?.();
   }
 

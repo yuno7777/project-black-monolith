@@ -1,8 +1,15 @@
 // GET /api/sessions/revoked — the revocation snapshot modules poll when no
 // events are flowing. Authenticated with the caller's per-module ingest token
 // (the same credential it already uses to POST events), scoped to a tenant.
+//
+// The body is bounded. A module reads it with a 64 KiB cap, so an unbounded
+// set of live revocations is cut short, fails to parse, and leaves the module
+// holding the set it already had — serving a session that was revoked a
+// moment ago. `complete` and `truncated` say whether the body carries the
+// tenant's whole live set, so a module knows whether it may replace its local
+// set or has to add to it.
 
-import { listRevokedSessions } from "@/lib/incident-store";
+import { readRevocationSnapshot } from "@/lib/incident-store";
 import { authenticateIngest } from "@/lib/ingest-auth";
 
 export const runtime = "nodejs";
@@ -26,12 +33,8 @@ export async function GET(req: Request) {
   }
 
   try {
-    const revoked = await listRevokedSessions(tenant);
-    return Response.json({
-      tenant_id: tenant,
-      generated_at_ms: Date.now(),
-      revoked_sessions: Array.from(new Set(revoked.map((entry) => entry.session_id))),
-    });
+    const snapshot = await readRevocationSnapshot(tenant);
+    return Response.json(snapshot);
   } catch (error) {
     console.error("failed to read revoked sessions", error);
     return Response.json({ error: "the ledger is temporarily unavailable" }, { status: 503 });

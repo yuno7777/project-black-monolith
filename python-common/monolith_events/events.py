@@ -23,6 +23,10 @@ from typing import Any, Literal
 Severity = Literal["info", "warning", "critical"]
 MAX_ID_LENGTH = 128
 MAX_EVENT_PAYLOAD_BYTES = 256 * 1024
+# The cap on a revocation-snapshot body. The real snapshot (ids plus a
+# session list) is a few kilobytes; the cap stops a misconfigured or
+# compromised target from making a module buffer an unbounded body.
+MAX_SNAPSHOT_BYTES = 64 * 1024
 MIN_BEARER_TOKEN_LENGTH = 16
 MAX_BEARER_TOKEN_LENGTH = 512
 AGENT_HEADER = "x-monolith-agent-id"
@@ -154,6 +158,31 @@ def _valid_bearer_token(value: str) -> bool:
     )
 
 
+class SnapshotTooLarge(Exception):
+    """A snapshot body exceeded the byte cap, so it was not read.
+
+    A body that was cut short is not a snapshot: it can parse as JSON and
+    look authoritative while describing only part of the revoked set. The
+    caller keeps what it already had and records why it could not read more.
+    """
+
+
+def _read_bounded_body(response: Any) -> bytes:
+    """Read a response body, refusing to truncate it silently.
+
+    The cap keeps a misconfigured or compromised target from making a module
+    buffer an unbounded body. Reading one byte past the cap is what makes the
+    difference between a complete body and a cut-short one, so an over-cap
+    body is an error rather than a plausible-looking prefix.
+    """
+    body = response.read(MAX_SNAPSHOT_BYTES + 1)
+    if len(body) > MAX_SNAPSHOT_BYTES:
+        raise SnapshotTooLarge(
+            f"the response body exceeded the {MAX_SNAPSHOT_BYTES}-byte cap"
+        )
+    return body
+
+
 @dataclass(frozen=True)
 class EventContext:
     tenant_id: str | None = None
@@ -181,6 +210,11 @@ class RevokedSessionRegistry:
     a fixed delay. The set is replaced wholesale by each authoritative update
     (an ingest response or a poll of `/api/sessions/revoked`), and a failed
     refresh leaves the previous set in place — fail closed, not open.
+
+    A snapshot that the publisher marked *bounded* is the one exception: the
+    module cannot see the whole picture, so it adds to what it knows instead
+    of replacing it. Over-blocking is the safe direction; dropping a
+    revocation the dashboard did not mention is not.
     """
 
     def __init__(self) -> None:
@@ -188,12 +222,26 @@ class RevokedSessionRegistry:
         self._sessions: frozenset[str] = frozenset()
 
     def replace(self, session_ids: Iterable[Any]) -> int:
+        return self.apply_snapshot(session_ids, complete=True)
+
+    def apply_snapshot(self, session_ids: Iterable[Any], *, complete: bool) -> int:
+        """Adopt a revocation snapshot, honouring the publisher's bound.
+
+        A complete snapshot replaces the local set: a restored session is
+        lifted, and the set cannot grow without bound. A bounded snapshot
+        only adds, because the module cannot know the whole picture and must
+        not drop what it already knows. Returns the number of revoked
+        sessions now known.
+        """
         cleaned = frozenset(
             value for value in (_clean_id(item) for item in session_ids) if value
         )
         with self._lock:
-            self._sessions = cleaned
-        return len(cleaned)
+            if complete:
+                self._sessions = cleaned
+            else:
+                self._sessions = self._sessions | cleaned
+            return len(self._sessions)
 
     def add(self, session_id: Any) -> bool:
         cleaned = _clean_id(session_id)
@@ -228,11 +276,40 @@ def is_session_revoked(session_id: Any) -> bool:
     return _REVOKED_SESSIONS.is_revoked(session_id)
 
 
+def snapshot_is_complete(payload: Mapping[str, Any]) -> bool:
+    """Whether a revocation snapshot carries the whole live set.
+
+    The publisher says so with `complete`: true when the response carries
+    every revoked session, false when it was bounded. A publisher that says
+    nothing about bounding is taken at its word — the snapshot is the whole
+    set — and `truncated` is honoured when `complete` is absent, so a
+    publisher that reports the bound the other way is still believed.
+
+    The ingest response carries the same fact under names of its own
+    (`revoked_sessions_complete` and `revoked_sessions_truncated`), because
+    that body is about an ingest and a bare `complete` on it would say
+    nothing about which part of it is complete. Those are read first: they
+    are the more specific statement, and the body that carries them is the
+    body that knows.
+    """
+    for key in ("revoked_sessions_complete", "complete"):
+        value = payload.get(key)
+        if isinstance(value, bool):
+            return value
+    for key in ("revoked_sessions_truncated", "truncated"):
+        value = payload.get(key)
+        if isinstance(value, bool):
+            return not value
+    return True
+
+
 def update_revoked_sessions_from_ingest(body: bytes | str | Mapping[str, Any]) -> int:
     """Adopt the `revoked_sessions` snapshot of an ingest response.
 
     Only a payload that actually carries the field updates the registry; an
     unparseable or empty body must not be read as "nothing is revoked".
+    A snapshot the publisher marked bounded is added to the local set rather
+    than replacing it (see `RevokedSessionRegistry.apply_snapshot`).
     Returns the number of revoked sessions now known, or -1 when the payload
     carried no usable snapshot.
     """
@@ -253,7 +330,7 @@ def update_revoked_sessions_from_ingest(body: bytes | str | Mapping[str, Any]) -
     raw = payload.get("revoked_sessions")
     if not isinstance(raw, (list, tuple)):
         return -1
-    return _REVOKED_SESSIONS.replace(raw)
+    return _REVOKED_SESSIONS.apply_snapshot(raw, complete=snapshot_is_complete(payload))
 
 
 def revocation_poll_url(dashboard_url: str) -> str | None:
@@ -326,11 +403,15 @@ class RevokedSessionPoller:
             )
             opener = urllib.request.build_opener(_NoRedirect)
             with opener.open(request, timeout=2) as response:
-                body = response.read(64 * 1024)
+                body = _read_bounded_body(response)
             self.last_error = None
             return update_revoked_sessions_from_ingest(body)
         except urllib.error.HTTPError as error:
             self.last_error = f"http {error.code}"
+        except SnapshotTooLarge as error:
+            # The set stands: a body that could not be read says nothing
+            # about what the dashboard has revoked.
+            self.last_error = str(error)
         except Exception as error:  # a poll failure must never kill the thread
             self.last_error = type(error).__name__
         return -1
@@ -454,8 +535,13 @@ class EventOutbox:
             or any(not character.isprintable() for character in event_id)
         ):
             raise ValueError(f"event_id must be 1-{MAX_ID_LENGTH} printable characters")
-        if not payload or len(payload) > MAX_EVENT_PAYLOAD_BYTES:
-            raise ValueError(f"event payload must be 1-{MAX_EVENT_PAYLOAD_BYTES} bytes")
+        if not payload:
+            raise ValueError("event payload must not be empty")
+        if len(payload) > MAX_EVENT_PAYLOAD_BYTES:
+            raise ValueError(
+                f"event payload is {len(payload)} bytes, over the "
+                f"{MAX_EVENT_PAYLOAD_BYTES}-byte cap"
+            )
         clean_tenant = _clean_id(tenant_id) if tenant_id is not None else None
         if clean_tenant is None:
             clean_tenant = _tenant_of_payload(payload)
@@ -469,6 +555,53 @@ class EventOutbox:
             )
             self._enforce_limits_locked(timestamp)
         self._wake.set()
+
+    def record_dead_letter(
+        self,
+        event_id: str,
+        reason: str,
+        *,
+        payload_bytes: int,
+        tenant_id: str | None = None,
+    ) -> None:
+        """Record an event the module refused to deliver.
+
+        This is the same dead-letter row a permanent rejection produces, so
+        an operator finds the loss in the same place and the same way. The
+        payload itself is not stored: the event was refused *because* of its
+        size, and copying it into the spool would defeat the cap it broke.
+        The record names the event, its size, and why it was rejected — and
+        the event itself is still on stderr, where every emitted event goes.
+        """
+        clean_tenant = _clean_id(tenant_id) if tenant_id is not None else None
+        summary = json.dumps(
+            {
+                "event_id": event_id,
+                "delivery": "rejected",
+                "reason": reason,
+                "payload_bytes": payload_bytes,
+                "tenant_id": clean_tenant,
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        timestamp = now_ms()
+        with self._lock, self._connection:
+            self._connection.execute(
+                """insert or replace into event_outbox
+                   (event_id, payload, tenant_id, next_attempt_ms, created_ms, updated_ms,
+                    status, attempts, last_error)
+                   values (?, ?, ?, ?, ?, ?, 'dead', 0, ?)""",
+                (
+                    event_id,
+                    summary,
+                    clean_tenant,
+                    timestamp,
+                    timestamp,
+                    timestamp,
+                    reason,
+                ),
+            )
+            self._enforce_limits_locked(timestamp)
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -566,7 +699,18 @@ class EventOutbox:
             with opener.open(request, timeout=2) as response:
                 status = response.status
                 try:
-                    body = response.read(64 * 1024)
+                    body = _read_bounded_body(response)
+                except SnapshotTooLarge as error:
+                    # A delivered event is delivered; never retry it because
+                    # the revocation snapshot could not be read back. The
+                    # failure still has to be loud: "I could not read what the
+                    # dashboard said" is not "the dashboard said nothing".
+                    print(
+                        f"revocation snapshot not read: {error}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    body = b""
                 except Exception:
                     # A delivered event is delivered; never retry it because
                     # the revocation snapshot could not be read back.
@@ -740,12 +884,32 @@ class EventEmitter:
         line = json.dumps(event, separators=(",", ":"))
         print(line, file=sys.stderr, flush=True)
         if self.outbox:
+            payload = line.encode("utf-8")
             try:
                 self.outbox.enqueue(
                     event["event_id"],
-                    line.encode("utf-8"),
+                    payload,
                     tenant_id=event["tenant_id"],
                 )
+            except ValueError as error:
+                # The outbox refuses a payload the dashboard will not accept.
+                # Raising this into the detection path would lose the
+                # detection along with the event, so the rejection is
+                # recorded in the dead-letter spool instead: the loss is
+                # recorded, not raised.
+                try:
+                    self.outbox.record_dead_letter(
+                        event["event_id"],
+                        str(error),
+                        payload_bytes=len(payload),
+                        tenant_id=event["tenant_id"],
+                    )
+                except sqlite3.Error as spool_error:
+                    print(
+                        f"event dead-letter write failed: {type(spool_error).__name__}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
             except sqlite3.Error as error:
                 print(
                     f"event outbox enqueue failed: {type(error).__name__}",

@@ -53,6 +53,8 @@ const memoryIncidentRef = globalThis as unknown as {
   __monolithRevokedSessions?: Map<string, SessionRevocation>;
   __monolithSessionModules?: Map<string, Set<string>>;
   __monolithSessionRestoredAt?: Map<string, number>;
+  __monolithRevocationRevision?: Map<string, number>;
+  __monolithLastRevokedAtMs?: number;
   __monolithMemoryTriage?: Map<string, Triage>;
   __monolithMemoryAudit?: Map<string, AuditEntry[]>;
   __monolithNextAuditId?: number;
@@ -91,6 +93,45 @@ function memoryAuditMap(): Map<string, AuditEntry[]> {
     memoryIncidentRef.__monolithMemoryAudit = new Map<string, AuditEntry[]>();
   }
   return memoryIncidentRef.__monolithMemoryAudit;
+}
+
+function revocationRevisionMap(): Map<string, number> {
+  if (!memoryIncidentRef.__monolithRevocationRevision) {
+    memoryIncidentRef.__monolithRevocationRevision = new Map<string, number>();
+  }
+  return memoryIncidentRef.__monolithRevocationRevision;
+}
+
+/**
+ * The in-memory fallback must order revocations the way the database does.
+ *
+ * The database stamps a revocation with the transaction's own `now()`, so two
+ * revocations never share a timestamp. The clock here can hand out the same
+ * millisecond twice, which would leave the newest-first order of the snapshot
+ * a coin toss, so the fallback advances its own clock by a millisecond when
+ * it would otherwise repeat one.
+ */
+function nextRevokedAt(): string {
+  const now = Date.now();
+  const last = memoryIncidentRef.__monolithLastRevokedAtMs ?? 0;
+  const next = now > last ? now : last + 1;
+  memoryIncidentRef.__monolithLastRevokedAtMs = next;
+  return new Date(next).toISOString();
+}
+
+/**
+ * Advance the tenant's revocation revision.
+ *
+ * The database does this from a trigger, so that no code path — including
+ * one written later by somebody who has never read the migration — can
+ * forget to advance it. The in-memory fallback has to do it by hand, and
+ * only when the tenant's live revoked set actually changed: a re-revocation
+ * of a session that is already revoked leaves the set exactly as it was, and
+ * a revision that moves on every rewrite stops being a change detector.
+ */
+function bumpMemoryRevocationRevision(tenantId: string): void {
+  const revisions = revocationRevisionMap();
+  revisions.set(tenantId, (revisions.get(tenantId) ?? 0) + 1);
 }
 
 function sessionKey(tenantId: string, agentId: string, sessionId: string): string {
@@ -136,6 +177,8 @@ export function clearMemoryRevocations(): void {
   sessionRestoredAtMap().clear();
   memoryTriageMap().clear();
   memoryAuditMap().clear();
+  revocationRevisionMap().clear();
+  memoryIncidentRef.__monolithLastRevokedAtMs = 0;
 }
 
 // --- reads -----------------------------------------------------------------
@@ -456,23 +499,307 @@ function toSessionRevocation(row: RevokedSessionRow): SessionRevocation {
   };
 }
 
-export async function listRevokedSessions(tenantId: string): Promise<SessionRevocation[]> {
-  if (!process.env.DATABASE_URL) {
-    const out: SessionRevocation[] = [];
-    for (const entry of revokedSessionMap().values()) {
-      if (entry.tenant_id === tenantId) out.push(entry);
-    }
-    return out.sort((a, b) => b.revoked_at.localeCompare(a.revoked_at));
+// --- Bounded revocation snapshot -------------------------------------------
+
+/**
+ * How many live revocations one snapshot may carry.
+ *
+ * The modules read the snapshot body with a 64 KiB cap. A body that does
+ * not fit is cut short, fails to parse, and leaves the module holding the
+ * set it already had — which is how a session revoked a moment ago keeps
+ * being served. The response therefore has to fit, and it has to fit
+ * whatever the tenant's identifiers look like.
+ *
+ * Every live revocation is carried twice: once as a bare session id in
+ * `revoked_sessions`, and once in `revocations` next to the agent id and
+ * the revocation time. At the longest identifier the schema allows (128
+ * characters) that is
+ *
+ *     "revoked_sessions": 128 + 2 quotes + 1 comma          = 131 bytes
+ *     "revocations":      13 + 130 + 1 + 11 + 130 + 1 + 15
+ *                         + 13 digits + 2                   = 316 bytes
+ *                                                          -----------
+ *                                                            447 bytes
+ *
+ * 128 revocations are 57,216 bytes, which with the envelope stays inside the
+ * 60 KiB budget below. One more would not fit.
+ */
+export const REVOCATION_SNAPSHOT_MAX_ENTRIES = 128;
+
+/**
+ * The byte budget for one snapshot body.
+ *
+ * The modules read 64 KiB; 60 KiB leaves 4 KiB of margin for the envelope
+ * and for a transport that adds a header of its own. The row count alone
+ * does not bound the bytes — JSON escaping can make one identifier six times
+ * longer than the identifier is — so the body is measured before it is sent
+ * and the oldest entries are dropped if it does not fit.
+ */
+export const REVOCATION_SNAPSHOT_MAX_BYTES = 60 * 1024;
+
+/**
+ * The live revoked set of one tenant, newest first, bounded.
+ *
+ * The limit is what keeps the response inside the module's read cap. One row
+ * more than the cap is asked for, because that is how the query learns that
+ * the tenant holds more live revocations than it returned: without it a
+ * partial set is indistinguishable from a whole one, and a module that
+ * mistakes a partial set for the whole one drops the revocations it did not
+ * receive.
+ *
+ * The revision is read in the same statement, so the number and the rows
+ * describe the same instant.
+ */
+export const REVOCATION_SNAPSHOT_SQL = `
+  select
+    l.tenant_id,
+    l.agent_id,
+    l.session_id,
+    l.revoked_at,
+    l.reason,
+    l.triggered_by,
+    l.layers,
+    v.revision
+  from (select monolith.revocation_revision() as revision) v
+  left join lateral (
+    select tenant_id, agent_id, session_id, revoked_at, reason, triggered_by, layers
+      from monolith.revoked_sessions
+     where tenant_id = $1 and restored_at is null
+     order by revoked_at desc, session_id desc
+     limit $2
+  ) l on true
+  order by l.revoked_at desc, l.session_id desc`;
+
+/** One live revocation as the module-facing snapshot carries it. */
+export interface RevocationEntry {
+  session_id: string;
+  agent_id: string;
+  revoked_at_ms: number;
+}
+
+export interface RevocationSnapshot {
+  tenant_id: string;
+  generated_at_ms: number;
+  /**
+   * The tenant's revision of its live revoked set. It advances whenever the
+   * set changes — a new revocation or a restore — and is 0 while nothing is
+   * revoked. A module that has seen this revision already knows the set it
+   * holds is the set the dashboard holds.
+   */
+  revision: number;
+  /** True when the body carries the tenant's entire live revoked set. */
+  complete: boolean;
+  /** The same fact from the other side: the set did not fit. */
+  truncated: boolean;
+  /** The live revoked session ids, newest first. */
+  revoked_sessions: string[];
+  /** The same revocations, with the agent id and the revocation time. */
+  revocations: RevocationEntry[];
+}
+
+interface LiveRevocationRead {
+  rows: RevokedSessionRow[];
+  revision: number;
+  /** The tenant holds more live revocations than the rows returned. */
+  truncated: boolean;
+}
+
+function revokedAtMs(value: Date | string): number {
+  if (value instanceof Date) return value.getTime();
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function distinctSessionIds(entries: RevocationEntry[]): string[] {
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const entry of entries) {
+    if (seen.has(entry.session_id)) continue;
+    seen.add(entry.session_id);
+    ids.push(entry.session_id);
   }
-  return withTenantDb(tenantId, async (db) => {
-    const result = await db.query<RevokedSessionRow>(
-      `select tenant_id, agent_id, session_id, revoked_at, reason, triggered_by, layers
-         from monolith.revoked_sessions
-        where tenant_id = $1 and restored_at is null
-        order by revoked_at desc`,
-      [tenantId],
-    );
-    return result.rows.map(toSessionRevocation);
+  return ids;
+}
+
+/**
+ * The size the body would have with the first `keep` entries in it.
+ *
+ * A JSON array is its elements plus the commas between them, so the size
+ * can be worked out without serializing the whole body for every candidate.
+ */
+function snapshotBytes(
+  entries: RevocationEntry[],
+  keep: number,
+  envelopeBytes: number,
+): number {
+  let revocations = 0;
+  const seen = new Set<string>();
+  const ids: number[] = [];
+  for (let i = 0; i < keep; i++) {
+    const entry = entries[i];
+    revocations += Buffer.byteLength(JSON.stringify(entry), "utf8");
+    if (!seen.has(entry.session_id)) {
+      seen.add(entry.session_id);
+      ids.push(Buffer.byteLength(JSON.stringify(entry.session_id), "utf8"));
+    }
+  }
+  const idBytes = ids.reduce((total, size) => total + size, 0);
+  return (
+    envelopeBytes +
+    revocations + (keep > 1 ? keep - 1 : 0) +
+    idBytes + (ids.length > 1 ? ids.length - 1 : 0)
+  );
+}
+
+/**
+ * Drop the oldest entries until the body fits the module's read cap.
+ *
+ * The row cap alone does not bound the bytes: an identifier is agent
+ * supplied, and JSON escaping can make it six times longer than it is. A
+ * body that does not fit is cut short by the reader, fails to parse, and
+ * leaves the module holding the set it already had — the failure this
+ * snapshot exists to prevent. The newest revocations are kept, because a
+ * revocation the module has not seen yet is the one it cannot do without.
+ */
+function fitSnapshotToBudget(snapshot: RevocationSnapshot): RevocationSnapshot {
+  const entries = snapshot.revocations;
+  if (!entries.length) return snapshot;
+  if (Buffer.byteLength(JSON.stringify(snapshot), "utf8") <= REVOCATION_SNAPSHOT_MAX_BYTES) {
+    return snapshot;
+  }
+  // The envelope is measured with the flags a trimmed snapshot carries, and
+  // with both arrays empty; the two empty brackets are what the entries are
+  // measured against.
+  const envelopeBytes = Buffer.byteLength(
+    JSON.stringify({
+      ...snapshot,
+      revoked_sessions: [] as string[],
+      revocations: [] as RevocationEntry[],
+      complete: false,
+      truncated: true,
+    }),
+    "utf8",
+  );
+  let keep = entries.length;
+  while (keep > 1 && snapshotBytes(entries, keep, envelopeBytes) > REVOCATION_SNAPSHOT_MAX_BYTES) {
+    keep -= 1;
+  }
+  const trimmed = entries.slice(0, keep);
+  return {
+    ...snapshot,
+    complete: false,
+    truncated: true,
+    revoked_sessions: distinctSessionIds(trimmed),
+    revocations: trimmed,
+  };
+}
+
+async function readLiveRevocations(tenantId: string): Promise<LiveRevocationRead> {
+  if (!process.env.DATABASE_URL) {
+    const rows = Array.from(revokedSessionMap().values())
+      .filter((entry) => entry.tenant_id === tenantId)
+      .map((entry) => ({
+        tenant_id: entry.tenant_id,
+        agent_id: entry.agent_id,
+        session_id: entry.session_id,
+        revoked_at: entry.revoked_at,
+        reason: entry.reason,
+        triggered_by: entry.triggered_by,
+        layers: entry.layers,
+      }))
+      .sort((a, b) => String(b.revoked_at).localeCompare(String(a.revoked_at)));
+    return {
+      rows: rows.slice(0, REVOCATION_SNAPSHOT_MAX_ENTRIES),
+      revision: revocationRevisionMap().get(tenantId) ?? 0,
+      truncated: rows.length > REVOCATION_SNAPSHOT_MAX_ENTRIES,
+    };
+  }
+  const result = await withTenantDb(tenantId, async (db) =>
+    db.query<{
+      tenant_id: string | null;
+      agent_id: string | null;
+      session_id: string | null;
+      revoked_at: Date | null;
+      reason: string | null;
+      triggered_by: string | null;
+      layers: string[] | null;
+      revision: string;
+    }>(REVOCATION_SNAPSHOT_SQL, [tenantId, REVOCATION_SNAPSHOT_MAX_ENTRIES + 1]),
+  );
+  const revision = Number(result.rows[0]?.revision ?? 0);
+  const rows: RevokedSessionRow[] = [];
+  for (const row of result.rows) {
+    // The lateral join keeps one row even when the tenant has nothing
+    // revoked; that row carries the revision and no revocation.
+    if (row.session_id === null || row.agent_id === null || row.revoked_at === null) continue;
+    rows.push({
+      tenant_id: row.tenant_id ?? tenantId,
+      agent_id: row.agent_id,
+      session_id: row.session_id,
+      revoked_at: row.revoked_at,
+      reason: row.reason ?? "",
+      triggered_by: row.triggered_by ?? "",
+      layers: row.layers,
+    });
+  }
+  return {
+    rows: rows.slice(0, REVOCATION_SNAPSHOT_MAX_ENTRIES),
+    revision,
+    truncated: rows.length > REVOCATION_SNAPSHOT_MAX_ENTRIES,
+  };
+}
+
+export async function listRevokedSessions(tenantId: string): Promise<SessionRevocation[]> {
+  const read = await readLiveRevocations(tenantId);
+  return read.rows.map(toSessionRevocation);
+}
+
+/**
+ * A snapshot that says nothing about the tenant's live revoked set.
+ *
+ * `complete: false` is the safe direction: a module that reads it adds what it
+ * is given to the set it already holds, so a moment where the dashboard could
+ * not answer leaves the modules refusing exactly what they refused before. A
+ * snapshot claiming completeness would do the opposite — it would tell every
+ * module to replace its local set with an empty one, and that lifts every
+ * revocation the dashboard holds.
+ */
+export function unknownRevocationSnapshot(tenantId: string): RevocationSnapshot {
+  return {
+    tenant_id: tenantId,
+    generated_at_ms: Date.now(),
+    revision: 0,
+    complete: false,
+    truncated: true,
+    revoked_sessions: [],
+    revocations: [],
+  };
+}
+
+/**
+ * The tenant's live revoked set, bounded, with the facts a module needs to
+ * decide what to do with it.
+ *
+ * `complete` says the body carries the whole set, so a module may replace
+ * its local set with it. `truncated` says the opposite, so a module adds to
+ * its local set and keeps what it has — dropping what it did not receive
+ * would un-revoke a session the dashboard has revoked.
+ */
+export async function readRevocationSnapshot(tenantId: string): Promise<RevocationSnapshot> {
+  const read = await readLiveRevocations(tenantId);
+  const revocations: RevocationEntry[] = read.rows.map((row) => ({
+    session_id: row.session_id,
+    agent_id: row.agent_id,
+    revoked_at_ms: revokedAtMs(row.revoked_at),
+  }));
+  return fitSnapshotToBudget({
+    tenant_id: tenantId,
+    generated_at_ms: Date.now(),
+    revision: read.revision,
+    complete: !read.truncated,
+    truncated: read.truncated,
+    revoked_sessions: distinctSessionIds(revocations),
+    revocations,
   });
 }
 
@@ -508,12 +835,20 @@ export async function revokeSession(
     tenant_id: cleanTenant,
     agent_id: cleanAgent,
     session_id: cleanSession,
-    revoked_at: new Date().toISOString(),
+    // A revocation that is already live keeps the timestamp that created it,
+    // exactly as the database's upsert does: the detection time is what an
+    // incident review needs, and the snapshot orders by it.
+    revoked_at: memoryOnly
+      ? (existing?.revoked_at ?? nextRevokedAt())
+      : new Date().toISOString(),
     reason: cleanReason,
     triggered_by: cleanTrigger,
     layers: mergedLayers,
   };
   if (memoryOnly) {
+    // A session that was not already revoked joins the live set. That is a
+    // change to the set, and the revision has to record it.
+    if (!existing) bumpMemoryRevocationRevision(cleanTenant);
     revokedSessionMap().set(key, entry);
     // A revocation supersedes any earlier restore: the session is live again and
     // any new detection, including this one, counts from here on.
@@ -588,6 +923,8 @@ export async function restoreSession(
     // The restore is a watermark, not a deletion: the ledger keeps the evidence
     // that tripped the breaker, so only events after this instant may re-trip it.
     sessionRestoredAtMap().set(key, Date.now());
+    // The session left the live set, which the revision has to record.
+    if (hadMemory) bumpMemoryRevocationRevision(cleanTenant);
   }
 
   if (memoryOnly) {
@@ -608,9 +945,13 @@ export async function restoreSession(
 
 export async function evaluateSessionCircuitBreaker(
   events: MonolithEvent[],
-): Promise<string[]> {
-  if (!events.length) return [];
-  const tenantId = events[0].tenant_id;
+): Promise<RevocationSnapshot> {
+  const tenantId = events[0]?.tenant_id ?? "";
+  if (!events.length) {
+    // Nothing was judged, so nothing can be said about the live set. See
+    // `unknownRevocationSnapshot` for why this must not claim completeness.
+    return unknownRevocationSnapshot(tenantId);
+  }
   const severities = circuitBreakerSeverities();
   const minLayers = circuitBreakerMinLayers();
 
@@ -679,8 +1020,10 @@ export async function evaluateSessionCircuitBreaker(
         );
       }
     }
-    const revoked = await listRevokedSessions(tenantId);
-    return Array.from(new Set(revoked.map((r) => r.session_id)));
+    // The snapshot's own list, not a second one read separately: the
+    // snapshot is the body that was measured against the module's read cap,
+    // and a list that was not measured could push the answer past it.
+    return readRevocationSnapshot(tenantId);
   }
 
   const severityList = Array.from(severities);
@@ -732,8 +1075,10 @@ export async function evaluateSessionCircuitBreaker(
     }
   }
 
-  const revoked = await listRevokedSessions(tenantId);
-  return Array.from(new Set(revoked.map((r) => r.session_id)));
+  // The snapshot's own list, not a second one read separately: the snapshot
+  // is the body that was measured against the module's read cap, and a list
+  // that was not measured could push the answer past it.
+  return readRevocationSnapshot(tenantId);
 }
 
 /**

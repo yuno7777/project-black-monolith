@@ -1,0 +1,23 @@
+{
+  "tenant_id": "default",
+  "generated_at_ms": 1750000000000,
+  "revision": 7,
+  "complete": true,
+  "truncated": false,
+  "revoked_sessions": [
+    "session-alpha-0000000000000001",
+    "session-beta-0000000000000002"
+  ],
+  "revocations": [
+    {
+      "session_id": "session-alpha-0000000000000001",
+      "agent_id": "agent-one",
+      "revoked_at_ms": 1750000000000
+    },
+    {
+      "session_id": "session-beta-0000000000000002",
+      "agent_id": "agent-two",
+      "revoked_at_ms": 1749999999000
+    }
+  ]
+}

@@ -42,6 +42,23 @@ use tracing_subscriber::EnvFilter;
 /// invocation.
 const FINAL_DRAIN_BUDGET: Duration = Duration::from_secs(3);
 
+/// The administrative credential for the status listener.
+///
+/// The listener serves `GET /stats` and `POST /admin/replay-dead-letters`, so
+/// it authenticates with `MONOLITH_ADMIN_TOKEN` and with nothing else. The
+/// module's ingest credential (`MONOLITH_EVENT_TOKEN`) is deliberately not a
+/// candidate: it is the bearer token every event is POSTed with, so it is
+/// transmitted to the dashboard on every delivery and is the
+/// broadest-held secret in this process's environment. A credential issued
+/// for delivery must not become one that opens the administrative surface —
+/// the shipped compose file binds that listener to every interface.
+fn admin_token_from_env() -> Option<String> {
+    std::env::var("MONOLITH_ADMIN_TOKEN")
+        .ok()
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Logs MUST go to stderr: stdout carries the proxied JSON-RPC stream and
@@ -181,9 +198,20 @@ async fn main() -> Result<()> {
             if !trimmed.is_empty() {
                 let outbox = outbox::outbox_or_from_env_path()
                     .context("failed to access outbox for status listener")?;
-                let admin_token = std::env::var("MONOLITH_ADMIN_TOKEN")
-                    .ok()
-                    .or_else(|| std::env::var("MONOLITH_EVENT_TOKEN").ok());
+                let admin_token = admin_token_from_env();
+                if admin_token.is_none() {
+                    // Not fatal: the liveness endpoint still answers, so an
+                    // operator can see that the module is up. But every
+                    // administrative request is refused until an
+                    // administrative credential is configured, and the
+                    // misconfiguration says so here rather than only in a
+                    // 503 on a port nobody is watching.
+                    tracing::warn!(
+                        "MONOLITH_ADMIN_TOKEN is not configured; the status listener's \
+                         administrative endpoints (/stats, /admin/replay-dead-letters) will \
+                         refuse every request"
+                    );
+                }
                 let local_addr = outbox::spawn_status_listener(trimmed, outbox, admin_token)
                     .with_context(|| format!("failed to bind status listener on {trimmed}"))?;
                 tracing::info!(

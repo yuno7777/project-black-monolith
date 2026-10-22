@@ -1,5 +1,4 @@
 import {
-  moduleStatsUrl,
   probeModuleRuntimes,
   readLedgerHealth,
   replayDeadLetters,
@@ -9,8 +8,6 @@ import { alertConfigStatus } from "@/lib/alert-config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-export { moduleStatsUrl };
 
 export async function GET(req: Request) {
   const identity = await requireOperator(req);

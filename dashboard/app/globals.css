@@ -325,6 +325,57 @@ html, body {
 .kpi-link { display: block; text-decoration: none; color: inherit; }
 .kpi-link:hover { background: var(--card-2); }
 
+.kpi-aux-strip {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 8px 14px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  backdrop-filter: var(--glass);
+  -webkit-backdrop-filter: var(--glass);
+}
+.kpi-aux-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-dim);
+}
+.kpi-aux-item .aux-ic {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: var(--aux-accent, var(--ink-dim));
+  background: color-mix(in srgb, var(--aux-accent, #888) 14%, transparent);
+}
+.kpi-aux-label {
+  color: var(--ink-faint);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+.kpi-aux-val {
+  font-weight: 690;
+  color: var(--ink);
+  font-size: 14px;
+}
+.kpi-aux-desc {
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+.kpi-aux-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--line);
+}
+
 /* ============================ content grid ============================ */
 .content { display: grid; grid-template-columns: 1fr 340px; gap: 11px; align-items: stretch; flex: 1; min-height: 0; }
 @media (max-width: 1240px) { .content { grid-template-columns: 1fr; overflow-y: auto; } }
@@ -592,6 +643,54 @@ option {
 .trail-head strong { color: var(--ink); font-weight: 620; }
 .trail-when { font-size: 11px; color: var(--ink-faint); font-variant-numeric: tabular-nums; margin-top: 1px; }
 .trail-note { font-size: 12px; color: var(--ink-dim); margin-top: 4px; word-break: break-word; }
+
+/* ============================ ml triage recommendation ============================ */
+.ml-triage-box {
+  display: flex; flex-direction: column; gap: 8px;
+  background: color-mix(in srgb, var(--mod-trace) 6%, var(--card-inset));
+  border: 1px solid color-mix(in srgb, var(--mod-trace) 28%, var(--line));
+  border-left: 3px solid var(--mod-trace);
+  border-radius: var(--r-sm); padding: 11px 13px; margin: 12px 0 14px;
+}
+.ml-triage-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.ml-triage-title {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11.5px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.6px; color: var(--mod-trace);
+}
+.ml-sparkle { font-size: 13px; line-height: 1; }
+.ml-conf-badge {
+  font-size: 10.5px; font-weight: 650;
+  color: var(--mod-trace);
+  background: color-mix(in srgb, var(--mod-trace) 16%, transparent);
+  padding: 2px 7px; border-radius: 999px;
+}
+.ml-triage-category {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.ml-threat-label {
+  font-size: 13.5px; font-weight: 680; color: var(--ink);
+}
+.ml-urgency-pill {
+  font-size: 10px; font-weight: 650; text-transform: uppercase;
+  padding: 2px 6px; border-radius: 4px; border: 1px solid;
+}
+.ml-triage-action-box {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--r-sm); padding: 8px 10px;
+}
+.ml-action-lead {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.5px; color: var(--ink-faint); margin-bottom: 2px;
+}
+.ml-action-text {
+  font-size: 12px; font-weight: 550; color: var(--ink); line-height: 1.45;
+}
+.ml-triage-rationale {
+  font-size: 11px; color: var(--ink-dim); line-height: 1.4;
+}
 
 /* ============================ agent session ============================ */
 /* The cross-layer banner. Severity colours stay reserved for severity, so this
@@ -899,3 +998,199 @@ option {
 .onb-firstrun-text strong { color: var(--ink); font-size: 12.5px; }
 .onb-firstrun-text span { color: var(--ink-dim); font-size: 11.5px; }
 .onb-firstrun .ghost-btn { flex: none; }
+
+/* ==========================================================================
+   Project Black Monolith — Advanced Defense Tabs (Simulator, Journey, Compliance, Control Room)
+   ========================================================================== */
+
+.pbm-page-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 32px;
+}
+
+.pbm-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 16px 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--emphasis) 15%, var(--card)), var(--card));
+  backdrop-filter: var(--glass);
+}
+.pbm-hero h2 { margin: 2px 0; font-size: 16px; font-weight: 660; color: var(--ink); }
+.pbm-hero p { margin: 0; font-size: 11.5px; color: var(--ink-dim); }
+
+.pbm-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+@media (max-width: 1024px) { .pbm-kpis { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 580px) { .pbm-kpis { grid-template-columns: 1fr; } }
+
+.pbm-kpi {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pbm-kpi-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: var(--ink-faint); }
+.pbm-kpi-val { font-size: 22px; font-weight: 700; font-family: ui-monospace, SFMono-Regular, monospace; color: var(--ink); }
+.pbm-kpi-sub { font-size: 11px; color: var(--ink-dim); }
+
+.pbm-two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 980px) { .pbm-two-col { grid-template-columns: 1fr; } }
+
+.pbm-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  backdrop-filter: var(--glass);
+}
+.pbm-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--line-soft);
+  padding-bottom: 10px;
+}
+.pbm-card-title {
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.pbm-card-meta {
+  font-size: 10.5px;
+  color: var(--ink-faint);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+
+.pbm-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  font-weight: 560;
+  cursor: pointer;
+  border: 1px solid var(--line);
+  background: var(--card-2);
+  color: var(--ink);
+  transition: all 0.14s ease;
+}
+.pbm-btn:hover:not(:disabled) { background: var(--emphasis); border-color: var(--emphasis-line); color: var(--emphasis-ink); }
+.pbm-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.pbm-btn-primary {
+  background: var(--emphasis);
+  color: var(--emphasis-ink);
+  border-color: var(--emphasis-line);
+}
+.pbm-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+.pbm-btn-danger {
+  background: rgba(244, 86, 74, 0.15);
+  border-color: rgba(244, 86, 74, 0.35);
+  color: var(--sev-critical);
+}
+.pbm-btn-danger:hover:not(:disabled) {
+  background: rgba(244, 86, 74, 0.28);
+}
+
+.pbm-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  text-transform: uppercase;
+}
+.pbm-pill-ok { background: rgba(53, 208, 127, 0.12); color: var(--ok); border: 1px solid rgba(53, 208, 127, 0.3); }
+.pbm-pill-warn { background: rgba(246, 183, 60, 0.12); color: var(--sev-warning); border: 1px solid rgba(246, 183, 60, 0.3); }
+.pbm-pill-crit { background: rgba(244, 86, 74, 0.12); color: var(--sev-critical); border: 1px solid rgba(244, 86, 74, 0.3); }
+.pbm-pill-dim { background: var(--card-inset); color: var(--ink-dim); border: 1px solid var(--line-soft); }
+
+.pbm-input, .pbm-select, .pbm-textarea {
+  width: 100%;
+  padding: 7px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--line-soft);
+  background: var(--card-inset);
+  color: var(--ink);
+  font-size: 12px;
+  font-family: inherit;
+  transition: border-color 0.14s ease;
+}
+.pbm-input:focus, .pbm-select:focus, .pbm-textarea:focus {
+  outline: none;
+  border-color: var(--emphasis-line);
+}
+.pbm-select {
+  background: var(--popover);
+  color: var(--popover-ink);
+}
+
+/* Attack Journey DAG flow strip */
+.pbm-dag-strip {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 4px 2px 10px;
+}
+.pbm-dag-node {
+  flex: 1;
+  min-width: 170px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  cursor: pointer;
+  transition: all 0.16s ease;
+  position: relative;
+}
+.pbm-dag-node:hover {
+  background: var(--card-2);
+  border-color: var(--emphasis-line);
+}
+.pbm-dag-node.selected {
+  border-color: var(--emphasis-line);
+  background: var(--card-2);
+  box-shadow: 0 0 12px rgba(255, 255, 255, 0.08);
+}
+.pbm-dag-connector {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-faint);
+  font-size: 16px;
+  flex: none;
+}
+

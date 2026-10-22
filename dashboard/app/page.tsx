@@ -4,13 +4,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { Incident, IncidentStatus, MonolithEvent, Severity } from "@/lib/types";
 import { KNOWN_MODULES, MODULE_LABELS } from "@/lib/types";
+import { consoleTruth, TRUTH_DESCRIPTIONS, TRUTH_LABELS } from "@/lib/event-classification";
+import { EventStreamClient } from "@/lib/event-stream-client";
 import Sidebar, { Rail } from "./components/Sidebar";
 import ThreatFeed from "./components/ThreatFeed";
 import ModuleBars from "./components/ModuleBars";
 import SeverityDonut from "./components/SeverityDonut";
 import ThemeToggle from "./components/ThemeToggle";
 import OperatorBadge from "./components/OperatorBadge";
-import { IconIntercept, IconActivity, IconAlert, IconBolt, IconSearch, IconLedger, IconX } from "./components/Icons";
+import { IconIntercept, IconActivity, IconAlert, IconBolt, IconSearch, IconLedger, IconPlug, IconX } from "./components/Icons";
 
 /** Key for the "you have seen the pointer" flag. */
 const FIRST_RUN_KEY = "monolith.onboarding.dismissed";
@@ -72,31 +74,38 @@ export default function Page() {
   }, []);
 
   useEffect(() => {
-    const es = new EventSource("/api/events");
-    es.onopen = () => setConnected(true);
-    es.onerror = () => setConnected(false);
-    es.onmessage = (msg) => {
-      try {
-        const evt = JSON.parse(msg.data) as MonolithEvent;
-        if (!evt.event_id || seen.current.has(evt.event_id)) return;
-        seen.current.add(evt.event_id);
-        // Subscribe-before-replay prevents gaps, but a just-committed live
-        // event can arrive before older replay frames. Sort by collector time
-        // after de-duplication so that safe ordering cannot put stale evidence
-        // above the latest event.
-        setEvents((prev) =>
-          [evt, ...prev]
-            .sort(
-              (a, b) =>
-                (b.received_ms ?? b.timestamp_ms) - (a.received_ms ?? a.timestamp_ms),
-            )
-            .slice(0, 500),
-        );
-      } catch {
-        /* ignore malformed frame */
-      }
-    };
-    return () => es.close();
+    // The wrapper owns the reconnection. The browser abandons an EventSource
+    // it could not connect to — a 503 from a dashboard that is not ready yet
+    // — and does not retry it, so the live view would stay dark until the
+    // operator reloaded the page by hand.
+    const stream = new EventStreamClient({
+      url: "/api/events",
+      onOpen: () => setConnected(true),
+      onError: () => setConnected(false),
+      onMessage: (data) => {
+        try {
+          const evt = JSON.parse(data) as MonolithEvent;
+          if (!evt.event_id || seen.current.has(evt.event_id)) return;
+          seen.current.add(evt.event_id);
+          // Subscribe-before-replay prevents gaps, but a just-committed live
+          // event can arrive before older replay frames. Sort by collector time
+          // after de-duplication so that safe ordering cannot put stale evidence
+          // above the latest event.
+          setEvents((prev) =>
+            [evt, ...prev]
+              .sort(
+                (a, b) =>
+                  (b.received_ms ?? b.timestamp_ms) - (a.received_ms ?? a.timestamp_ms),
+              )
+              .slice(0, 500),
+          );
+        } catch {
+          /* ignore malformed frame */
+        }
+      },
+    });
+    stream.start();
+    return () => stream.stop();
   }, []);
 
   // Triage state lives in the ledger, not on the event stream, so the overview
@@ -196,17 +205,28 @@ export default function Page() {
     [events],
   );
 
-  const intercepted = severityCounts.critical + severityCounts.warning;
+  // Three numbers, not one. "Attacks intercepted" used to be
+  // `critical + warning`, which counted a broken upstream and a cut-short
+  // reply as attacks — an operator could not tell a catch from a crash. The
+  // split is by event type, never by severity: see lib/event-classification.
+  const truth = useMemo(() => consoleTruth(events), [events]);
   const latency = avgEndToEndLatency(events);
 
   const kpis = [
     {
-      k: "Attacks intercepted",
-      v: intercepted,
-      sub: "warning + critical",
+      k: TRUTH_LABELS.detections,
+      v: truth.detections,
+      // A non-zero "unclassified" count means a module started emitting an
+      // event type this dashboard does not know about. It is called out
+      // rather than folded into the headline, because an unknown type must
+      // never be quietly counted as an attack.
+      sub:
+        truth.unclassified > 0
+          ? `${TRUTH_DESCRIPTIONS.detections} · ${truth.unclassified} unclassified`
+          : TRUTH_DESCRIPTIONS.detections,
       icon: <IconIntercept />,
       accent: "var(--mod-vector)",
-      chip: events.length ? `${Math.round((intercepted / events.length) * 100)}% of feed` : null,
+      chip: events.length ? `${Math.round((truth.detections / events.length) * 100)}% of feed` : null,
     },
     // Replaces the old "Total events" card: that number is already the donut's
     // centre and the sidebar's count, whereas how much is still unhandled was
@@ -324,6 +344,22 @@ export default function Page() {
                 </div>
               );
             })}
+          </div>
+
+          <div className="kpi-aux-strip">
+            <div className="kpi-aux-item" style={{ ["--aux-accent" as string]: "var(--sev-warning)" }}>
+              <span className="aux-ic"><IconPlug /></span>
+              <span className="kpi-aux-label">{TRUTH_LABELS.operational_failures}:</span>
+              <span className="kpi-aux-val num">{truth.operational_failures}</span>
+              <span className="kpi-aux-desc">({TRUTH_DESCRIPTIONS.operational_failures})</span>
+            </div>
+            <div className="kpi-aux-divider" />
+            <div className="kpi-aux-item" style={{ ["--aux-accent" as string]: "var(--sev-info)" }}>
+              <span className="aux-ic"><IconActivity /></span>
+              <span className="kpi-aux-label">{TRUTH_LABELS.truncated_generations}:</span>
+              <span className="kpi-aux-val num">{truth.truncated_generations}</span>
+              <span className="kpi-aux-desc">({TRUTH_DESCRIPTIONS.truncated_generations})</span>
+            </div>
           </div>
 
           <div className="content">

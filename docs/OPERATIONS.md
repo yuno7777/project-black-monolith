@@ -154,6 +154,126 @@ is a finding; agreement across layers is treated as an active compromise.
   consequences of a revocation, not evidence, so the breaker never counts them
   toward a new trip.
 
+### The revocation snapshot is bounded
+
+Modules learn the tenant's revoked set from two places: the `revoked_sessions`
+list in every ingest response, and `GET /api/sessions/revoked`, which a module
+with no event traffic polls. Both bodies are **bounded**, because both are
+read with a 64 KiB cap (`MAX_SNAPSHOT_BYTES` in the Python emitter,
+`MAX_INGEST_RESPONSE_BYTES` in MCP-Shield's spool). A body that does not fit
+is cut short: it fails to parse, the module keeps the set it already had, and
+a session revoked a moment ago is still served. The revocation path has to
+fail closed, so the body has to fit — for every tenant, and whatever
+identifiers the tenant's agents choose.
+
+The snapshot body:
+
+```json
+{
+  "tenant_id": "default",
+  "generated_at_ms": 1750000000000,
+  "revision": 42,
+  "complete": true,
+  "truncated": false,
+  "revoked_sessions": ["session-a", "session-b"],
+  "revocations": [
+    { "session_id": "session-a", "agent_id": "agent-1", "revoked_at_ms": 1750000000000 }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `tenant_id` | The tenant the snapshot describes |
+| `generated_at_ms` | When the snapshot was read |
+| `revision` | The tenant's revision of its live revoked set |
+| `complete` | True when the body carries the tenant's **entire** live revoked set |
+| `truncated` | The same fact from the other side: true when the set did not fit |
+| `revoked_sessions` | The live revoked session ids, newest first |
+| `revocations` | The same revocations, each with its agent id and revocation time |
+
+`revoked_sessions` stays a flat array of ids so a module that predates the
+bounded snapshot still reads it. `revocations` carries the same entries plus
+the agent id, because the ledger's revocation key is
+`(tenant_id, agent_id, session_id)` — a session id alone does not identify a
+revocation.
+
+**The cap and the arithmetic.** At most **128** live revocations, newest
+first. Every revocation is carried twice, and at the longest identifier the
+schema allows (128 characters) that is:
+
+```text
+"revoked_sessions":  128 + 2 quotes + 1 comma                       = 131 bytes
+"revocations":       13 + 130 + 1 + 11 + 130 + 1 + 15 + 13 digits + 2 = 316 bytes
+                                                                   -----------
+                                                                     447 bytes
+
+128 revocations are 57,216 bytes, which with the envelope stays inside the
+60 KiB budget; one more would not fit.
+```
+
+**A row cap is not a byte cap.** An identifier is agent-supplied, and JSON
+escaping can make it six times longer than it is — a session id of 128 quote
+characters serializes to 256 bytes. The row cap therefore cannot by itself
+guarantee the body fits, so the body is also *measured*: the oldest entries
+are dropped until the serialized body is inside the 60 KiB budget, and the
+newest are kept, because a revocation the module has not seen yet is the one
+it cannot do without. The 128 is the row cap from the arithmetic above; the
+60 KiB budget is the guarantee.
+
+**The revision.** A monotonically increasing integer per tenant, advanced by
+a **trigger** on `monolith.revoked_sessions` whenever the tenant's live
+revoked set changes — a new revocation, or a restore. A trigger, so no code
+path can forget to advance it. It is 0 while nothing is revoked. A count is
+not enough (the same count can mean two different sets) and a timestamp
+cannot be compared across two readers.
+
+**What a module does with the body.**
+
+```text
+complete: true                          -> replace the local revoked set
+complete: false                         -> add to the local set, keep what it has
+truncated read / unparseable body       -> leave the local set exactly as it was
+```
+
+The last line is reported as an error, not swallowed: a truncated body is not
+a snapshot. It can parse as JSON and look authoritative while describing only
+part of the revoked set. Only an authoritative snapshot can lift a
+revocation, and only a failure can leave the module holding what it had.
+
+**The threshold that is live until the module half ships.** The dashboard half
+is bounded today; the module half that reads `complete` and `truncated` is
+not in the running layers yet. Until it is, a module replaces its local set
+wholesale, so **a tenant with more than 128 live revocations has only its
+newest 128 enforced by the layers** — the older revocations are still in the
+ledger and still reported by the dashboard, but the layers stop refusing
+them. Below 128 live revocations the snapshot is complete and every layer
+refuses every revoked session.
+
+An operator can check where a tenant stands today:
+
+```bash
+curl -s -H "Authorization: Bearer $MONOLITH_EVENT_TOKEN_VECTOR_ANCHOR" \
+  -H "x-monolith-tenant-id: $MONOLITH_TENANT_ID" \
+  -H "x-monolith-module: vector-anchor" \
+  http://localhost:3000/api/sessions/revoked
+```
+
+`complete: true` (with `truncated: false`) means the tenant is under the
+threshold and the layers enforce the whole set. `complete: false` means the
+tenant is at or over it, and `revision` says how far the set has moved since
+it was last read. The same fact in SQL:
+
+```sql
+select tenant_id, count(*) as live_revocations
+  from monolith.revoked_sessions
+ where restored_at is null
+ group by tenant_id
+ order by live_revocations desc;
+```
+
+A tenant at 128 or more is over the threshold.
+
 ## Retention and cleanup
 
 Evidence is append-only to the dashboard runtime. A database owner may schedule

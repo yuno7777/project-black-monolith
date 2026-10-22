@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-black-monolith.local/contracts/revocation-snapshot.v1.schema.json",
+  "title": "Revocation snapshot",
+  "description": "The tenant's live revoked sessions, bounded so the body always fits the reader's cap. `complete` says the body carries the whole live set; `truncated` says the opposite. A module that is told the body is incomplete adds to its local set and keeps what it has — replacing it would un-revoke the sessions the body did not carry.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tenant_id",
+    "generated_at_ms",
+    "revision",
+    "complete",
+    "truncated",
+    "revoked_sessions",
+    "revocations"
+  ],
+  "properties": {
+    "tenant_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "generated_at_ms": { "type": "integer", "minimum": 1, "maximum": 32503680000000 },
+    "revision": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The tenant's revision of its live revoked set. It advances whenever the set changes — a new revocation or a restore — and is 0 while nothing is revoked."
+    },
+    "complete": {
+      "type": "boolean",
+      "description": "True when the body carries the tenant's entire live revoked set."
+    },
+    "truncated": {
+      "type": "boolean",
+      "description": "The same fact from the other side: true when the set did not fit and the body is a bounded prefix of it."
+    },
+    "revoked_sessions": {
+      "type": "array",
+      "maxItems": 128,
+      "description": "The live revoked session ids, newest first. A flat array of ids, so a module that predates the bounded snapshot still reads it.",
+      "items": { "$ref": "#/$defs/identifier" }
+    },
+    "revocations": {
+      "type": "array",
+      "maxItems": 128,
+      "description": "The same revocations, each with the agent id and the revocation time. The ledger's revocation key is (tenant_id, agent_id, session_id), so the session id alone does not identify a revocation.",
+      "items": { "$ref": "#/$defs/revocation" }
+    }
+  },
+  "$defs": {
+    "identifier": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "revocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session_id", "agent_id", "revoked_at_ms"],
+      "properties": {
+        "session_id": { "$ref": "#/$defs/identifier" },
+        "agent_id": { "$ref": "#/$defs/identifier" },
+        "revoked_at_ms": { "type": "integer", "minimum": 1, "maximum": 32503680000000 }
+      }
+    }
+  }
+}

@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start -p 3000",
     "lint": "eslint . --max-warnings 0",
-    "test": "node scripts/check-migrations.mjs && tsx --test test/contracts.test.ts test/onboarding.test.ts test/event-store.test.ts"
+    "test": "node scripts/check-migrations.mjs && node scripts/check-test-wiring.mjs && tsx --test test/contracts.test.ts test/onboarding.test.ts test/event-store.test.ts test/ingest-rate-limit.test.ts test/live-listener-retry.test.ts test/event-stream-client.test.ts test/console-truth.test.ts test/revocation-snapshot.test.ts"
   },
   "dependencies": {
     "jose": "^6.2.12",

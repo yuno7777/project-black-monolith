@@ -34,6 +34,7 @@ Read it before starting work. Write to it while you work.
 
 | Agent | Branch | Working on | State |
 | --- | --- | --- | --- |
+| console | `chore/build-context-and-ci-timeout` | classify refusal & probe events, compact secondary metrics in UI, clean verification ledger pollution | all gates green, ledger clean, presentation-ready |
 | security | `fix/security-hardening` | retention scoping, evidence verification, fail-closed admin, DLP coverage, breaker batching, baseline locking | merged into `main` (`3634d23`); branch kept until cleanup |
 | security | `feature/video-explainer` | the AEOS Guard explainer, rescued off a branch that was about to be deleted | pushed, 1 commit |
 | security | `fix/mcp-shield/baseline-persist-failure` | the tool layer's fail-open path discarded enforcement it had already computed (`FINDINGS.md` §5) | PR #64 open; the fix is proved by mutating it back to the old behaviour and watching the new test fail. The branch was rebased onto `main` after #60 and #62 merged, so its history was rewritten and it was force-pushed |

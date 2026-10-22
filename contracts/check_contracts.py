@@ -30,6 +30,7 @@ def validate() -> None:
     vector = validator("vector-anchor-api.v1.schema.json")
     trace = validator("trace-audit-api.v1.schema.json")
     benchmark = validator("benchmark-run.v1.schema.json")
+    snapshot = validator("revocation-snapshot.v1.schema.json")
 
     event.validate(load_json(FIXTURES / "event-envelope.valid.json"))
     # The Secret Boundary emits the same envelope under a different
@@ -68,6 +69,35 @@ def validate() -> None:
     for stream_event in load_json(FIXTURES / "trace-stream-events.valid.json"):
         stream_validator.validate(stream_event)
     benchmark.validate(load_json(FIXTURES / "benchmark-run.valid.json"))
+
+    # The revocation snapshot is the one body a module polls on a timer and
+    # reads under a hard byte cap. Its contract is therefore not only "these
+    # fields exist" but "the body stays inside what the reader can take", and
+    # the two halves of that have to be checked here rather than trusted: a
+    # snapshot that grew past the cap would reach a module truncated, fail to
+    # parse, and leave it serving a session that was revoked a moment ago.
+    snapshot.validate(load_json(FIXTURES / "revocation-snapshot.valid.json"))
+    snapshot_fixture = load_json(FIXTURES / "revocation-snapshot.valid.json")
+
+    # `revision` and `complete` are the two fields a module cannot do without:
+    # the first says whether the set changed, the second says whether the body
+    # is the whole set or a bounded prefix of it. A body missing either is one
+    # a module would have to guess about, and a module that guesses is the
+    # failure this snapshot exists to prevent.
+    for required_field in ("revision", "complete"):
+        without = {k: v for k, v in snapshot_fixture.items() if k != required_field}
+        if snapshot.is_valid(without):
+            raise AssertionError(
+                f"revocation snapshot contract unexpectedly accepts a body without {required_field}"
+            )
+
+    # The bound is part of the contract, not an implementation detail: the
+    # module's reader is what enforces it, and a body past the cap is a body
+    # the reader cannot take.
+    over_capacity = dict(snapshot_fixture)
+    over_capacity["revoked_sessions"] = [f"session-{index}" for index in range(129)]
+    if snapshot.is_valid(over_capacity):
+        raise AssertionError("revocation snapshot contract unexpectedly accepts 129 entries")
 
     # Public input is deliberately named `k`; ChromaDB's internal
     # `n_results` parameter must never leak into the API contract.
