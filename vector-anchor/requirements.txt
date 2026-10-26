@@ -1,6 +1,6 @@
 fastapi>=0.141.1
 uvicorn[standard]>=0.52.1
-pydantic>=2.13.4
+pydantic>=2.14.1
 chromadb>=1.5.9
 # ChromaDB requests uvicorn[standard]. Declare its Linux-only event loop
 # explicitly so the hashed lock remains complete when compiled on Windows.
