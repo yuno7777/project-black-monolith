@@ -11,8 +11,8 @@
     "test": "node scripts/check-migrations.mjs && tsx --test test/contracts.test.ts test/onboarding.test.ts test/reset-detection.test.ts test/event-store.test.ts test/event-classification.test.ts test/incident-triage.test.ts test/incident-queue.test.ts test/benchmark-ledger.test.ts test/session-list.test.ts"
   },
   "dependencies": {
-    "jose": "^6.2.12",
-    "next": "16.4.2",
+    "jose": "^6.2.13",
+    "next": "16.4.3",
     "pg": "^8.23.1",
     "react": "19.3.1",
     "react-dom": "19.3.1",
@@ -24,7 +24,7 @@
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "eslint": "10.13.0",
-    "eslint-config-next": "16.4.2",
+    "eslint-config-next": "16.4.3",
     "tsx": "4.23.15",
     "typescript": "5.9.3"
   },
