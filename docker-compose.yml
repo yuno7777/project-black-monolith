@@ -238,6 +238,8 @@ services:
       MONOLITH_AGENT_ID: ${MONOLITH_AGENT_ID:-demo-agent}
       MONOLITH_MODEL_BACKEND: "mock"
       MONOLITH_BASELINE_PATH: "/var/lib/monolith/baseline_distribution.json"
+      MONOLITH_ANTHROPIC_BASE_URL: ${MONOLITH_ANTHROPIC_BASE_URL:-https://api.anthropic.com}
+      MONOLITH_ANTHROPIC_MAX_TOKENS: ${MONOLITH_ANTHROPIC_MAX_TOKENS:-64000}
     volumes:
       - trace-audit-outbox:/var/lib/monolith
     # start_period covers the baseline_capture step the entrypoint runs before
