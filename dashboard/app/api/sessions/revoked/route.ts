@@ -2,13 +2,14 @@
 // events are flowing. Authenticated with the caller's per-module ingest token
 // (the same credential it already uses to POST events), scoped to a tenant.
 
-import { listRevokedSessions } from "@/lib/incident-store";
+import { isSessionRevoked, listRevokedSessions } from "@/lib/incident-store";
 import { authenticateIngest } from "@/lib/ingest-auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const KNOWN_MODULES = new Set(["mcp-shield", "vector-anchor", "trace-audit"]);
+const WORKLOAD_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 export async function GET(req: Request) {
   const tenant = req.headers.get("x-monolith-tenant-id")?.trim() ?? "";
@@ -23,6 +24,21 @@ export async function GET(req: Request) {
   } catch (error) {
     console.error("revocation snapshot authentication is misconfigured", error);
     return Response.json({ error: "authentication is unavailable" }, { status: 503 });
+  }
+
+  const query = new URL(req.url).searchParams;
+  const agent = query.getAll("agent_id");
+  const session = query.getAll("session_id");
+  if (agent.length || session.length) {
+    if (agent.length !== 1 || session.length !== 1 || !WORKLOAD_ID.test(agent[0]) || !WORKLOAD_ID.test(session[0])) {
+      return Response.json({ error: "one valid agent_id and session_id are required" }, { status: 422 });
+    }
+    try {
+      return Response.json({ revoked: await isSessionRevoked(tenant, agent[0], session[0]) });
+    } catch (error) {
+      console.error("failed to check session revocation", error);
+      return Response.json({ error: "the ledger is temporarily unavailable" }, { status: 503 });
+    }
   }
 
   try {

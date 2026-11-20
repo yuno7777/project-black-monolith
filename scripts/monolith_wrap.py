@@ -536,6 +536,8 @@ class _InjectorHandler(BaseHTTPRequestHandler):
     # Set by the launcher before the server starts.
     trace_audit_url: str = DEFAULT_TRACE_AUDIT_URL
     upstream_url: str = DEFAULT_UPSTREAM_URL
+    vector_anchor_url: str | None = None
+    workload_token: str | None = None
     correlation: dict[str, str] = {}
     read_timeout: float = 600.0
     # Whether the operator has said that an ambient proxy may carry the
@@ -567,6 +569,8 @@ class _InjectorHandler(BaseHTTPRequestHandler):
         headers["accept-encoding"] = "identity"
         if stamped:
             headers.update(self.correlation)
+            if self.workload_token:
+                headers["X-Monolith-Workload-Token"] = self.workload_token
         return headers
 
     def _normalized_path(self) -> str:
@@ -594,12 +598,21 @@ class _InjectorHandler(BaseHTTPRequestHandler):
     def _is_messages_path(self) -> bool:
         return self._normalized_path() == "/v1/messages"
 
+    def _is_retrieve_path(self) -> bool:
+        return self._normalized_path() == "/monolith/retrieve"
+
     def _target(self) -> str:
         if self._is_messages_path():
             return self.trace_audit_url.rstrip("/") + "/v1/messages"
+        if self._is_retrieve_path() and self.vector_anchor_url:
+            return self.vector_anchor_url.rstrip("/") + "/retrieve"
         return self.upstream_url.rstrip("/") + self.path
 
     def _proxy(self, method: str) -> None:
+        retrieval = self._is_retrieve_path()
+        if retrieval and (method != "POST" or not self.vector_anchor_url):
+            self._refuse(404, "retrieval is unavailable")
+            return
         try:
             length = int(self.headers.get("content-length") or 0)
         except ValueError:
@@ -625,13 +638,20 @@ class _InjectorHandler(BaseHTTPRequestHandler):
             # waiting as long as it takes.
             self.connection.settimeout(None)
         target = self._target()
+        protected_route = self._is_messages_path() or retrieval
+        headers = self._forward_headers(stamped=protected_route)
+        if retrieval:
+            headers = {key: value for key, value in headers.items() if key.lower() in {
+                "content-type", "accept-encoding", "x-monolith-tenant-id", "x-monolith-agent-id",
+                "x-monolith-session-id", "x-monolith-workload-token",
+            }}
         request = urllib.request.Request(
             target,
             data=body if body else None,
             # The session id is stamped on the request that goes to the
             # auditor, and nowhere else: it is how a run is attributed, and
             # it is not the model provider's business.
-            headers=self._forward_headers(stamped=self._is_messages_path()),
+            headers=headers,
             method=method,
         )
         try:
@@ -640,7 +660,7 @@ class _InjectorHandler(BaseHTTPRequestHandler):
             # local auditor would otherwise be handed to whatever proxy
             # the host happens to be configured with.
             response = _opener(
-                use_proxy=_should_use_ambient_proxy(
+                use_proxy=not (self.workload_token and protected_route) and _should_use_ambient_proxy(
                     target,
                     carries_credential=True,
                     allow_credential_via_proxy=self.allow_credential_via_proxy,
@@ -724,6 +744,9 @@ class _Injector:
         upstream_url: str,
         correlation: dict[str, str],
         allow_credential_via_proxy: bool = False,
+        *,
+        vector_anchor_url: str | None = None,
+        workload_token: str | None = None,
     ):
         handler = type(
             "BoundInjectorHandler",
@@ -732,6 +755,8 @@ class _Injector:
                 "trace_audit_url": trace_audit_url,
                 "upstream_url": upstream_url,
                 "correlation": correlation,
+                "vector_anchor_url": vector_anchor_url,
+                "workload_token": workload_token,
                 "allow_credential_via_proxy": allow_credential_via_proxy,
             },
         )
@@ -891,6 +916,8 @@ AGENT_HIDDEN_ENV = (
     "MONOLITH_OPERATOR_TOKEN",
     "MONOLITH_ADMIN_TOKEN",
     "MONOLITH_EVENT_TOKEN",
+    "MONOLITH_WORKLOAD_TOKEN",
+    "MONOLITH_WORKLOAD_GRANTS_JSON",
     "MCP_SHIELD_KEY",
     "MCP_SHIELD_SECRET_BOUNDARY_CONFIG",
     "MONOLITH_DASHBOARD_URL",
@@ -1127,6 +1154,12 @@ def main(argv: list[str] | None = None) -> int:
     operator_token = resolve_setting("MONOLITH_OPERATOR_TOKEN", dotenv)
     event_token = resolve_setting("MONOLITH_EVENT_TOKEN_MCP_SHIELD", dotenv)
     shield_key = resolve_setting("MCP_SHIELD_KEY", dotenv)
+    workload_token = resolve_setting("MONOLITH_WORKLOAD_TOKEN", dotenv)
+    if workload_token:
+        if not args.session_id:
+            parser.error("MONOLITH_WORKLOAD_TOKEN requires the grant's --session-id")
+        if not all(credential_transport_is_trusted(url, False) for url in (vector_anchor_url, trace_audit_url)):
+            parser.error("workload credentials require HTTPS or loopback service URLs")
     # One answer to "is the network trusted?", read once and used by both
     # the launcher's own report and the tool layer's delivery.
     allow_insecure_dashboard = (
@@ -1219,7 +1252,6 @@ def main(argv: list[str] | None = None) -> int:
         python=sys.executable,
     )
     config_path = workdir / "mcp-config.json"
-    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
     # The agent inherits the operator's environment, minus the credentials
     # the Monolith stack holds. The agent is the thing this system defends
@@ -1256,7 +1288,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.plan:
         print(f"\n  The MCP configuration would be written to {config_path}:\n")
         print(json.dumps(redact_config_secrets(config), indent=2))
-        print("\n  (environment values are redacted; the file on disk carries the real ones)")
+        print("\n  (credential values are redacted)")
         shutil.rmtree(workdir, ignore_errors=True)
         return 0
 
@@ -1273,8 +1305,15 @@ def main(argv: list[str] | None = None) -> int:
         upstream_url,
         correlation,
         allow_credential_via_proxy=allow_credential_via_proxy,
+        vector_anchor_url=vector_anchor_url if workload_token else None,
+        workload_token=workload_token,
     ) as injector:
         child_env["ANTHROPIC_BASE_URL"] = injector.base_url
+        if workload_token:
+            config["mcpServers"]["vector-anchor"]["env"]["MONOLITH_VECTOR_ANCHOR_URL"] = (
+                injector.base_url + "/monolith"
+            )
+        config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
         # The MCP flags go after the agent's own arguments, not before: an
         # agent that takes a script path would otherwise have its flags read
         # as the interpreter's.

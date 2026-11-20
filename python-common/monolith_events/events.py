@@ -175,6 +175,7 @@ class EventContext:
     session_id: str | None = None
     correlation_id: str | None = None
     agent_id: str | None = None
+    workload_authenticated: bool = False
 
 
 def context_from_headers(headers: Mapping[str, str]) -> EventContext:

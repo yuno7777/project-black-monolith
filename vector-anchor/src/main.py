@@ -21,7 +21,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .config import MODULE_NAME, load_config
 from .detector_state import DetectorStateStore
-from .events import context_from_headers, make_emitter, replay_dead_letters, tenant_scope
+from .events import (
+    WorkloadDenied,
+    authorize_workload,
+    make_emitter,
+    replay_dead_letters,
+    tenant_scope,
+)
 from .frequency_tracker import FrequencyTracker
 from .quarantine import Quarantine
 from .retriever_proxy import RetrieverProxy
@@ -214,11 +220,17 @@ def health() -> dict:
 
 @app.post("/retrieve")
 def retrieve(req: RetrieveRequest, request: Request) -> dict:
-    # The caller (an agent framework) propagates its identity in X-Monolith-*
-    # headers; anything it does not send falls back to this process's
-    # configured defaults inside the emitter.
     proxy: RetrieverProxy = app.state.proxy
-    return proxy.retrieve(req.query, req.k, context_from_headers(request.headers))
+    cfg = proxy.cfg
+    try:
+        ctx = authorize_workload(
+            request.headers, tenant=cfg.tenant_id, module=MODULE_NAME,
+            dashboard_url=cfg.dashboard_url, event_token=cfg.event_token,
+            allow_insecure_dashboard=cfg.allow_insecure_dashboard,
+        )
+    except WorkloadDenied as error:
+        raise HTTPException(error.status, detail=str(error)) from error
+    return proxy.retrieve(req.query, req.k, ctx)
 
 
 @app.post("/admin/add-documents")

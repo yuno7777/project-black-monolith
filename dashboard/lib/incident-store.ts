@@ -476,6 +476,18 @@ export async function listRevokedSessions(tenantId: string): Promise<SessionRevo
   });
 }
 
+export async function isSessionRevoked(tenantId: string, agentId: string, sessionId: string): Promise<boolean> {
+  if (!process.env.DATABASE_URL) throw new Error("authoritative session storage is unavailable");
+  return withTenantDb(tenantId, async (db) => {
+    const result = await db.query(
+      `select 1 from monolith.revoked_sessions
+        where tenant_id = $1 and agent_id = $2 and session_id = $3 and restored_at is null`,
+      [tenantId, agentId, sessionId],
+    );
+    return result.rows.length > 0;
+  });
+}
+
 export async function revokeSession(
   tenantId: string,
   agentId: string,

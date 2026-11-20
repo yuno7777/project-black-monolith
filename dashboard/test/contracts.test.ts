@@ -1605,6 +1605,17 @@ test("revocation snapshot endpoint serves module-scoped session ids over module 
   assert.equal(typeof body.generated_at_ms, "number");
   assert.deepEqual(body.revoked_sessions.slice().sort(), ["sess-snap-a", "sess-snap-b"]);
 
+  const moduleHeaders = {
+    authorization: "Bearer vector-anchor-snapshot-token-01",
+    "x-monolith-tenant-id": "tenant-snap",
+    "x-monolith-module": "vector-anchor",
+  };
+  const exactUrl = "http://localhost/api/sessions/revoked?agent_id=agent-snap&session_id=sess-snap-a";
+  const noLedger = await revokedGet(new Request(exactUrl, { headers: moduleHeaders }));
+  assert.equal(noLedger.status, 503);
+  const ambiguous = await revokedGet(new Request(exactUrl + "&agent_id=agent-other", { headers: moduleHeaders }));
+  assert.equal(ambiguous.status, 422);
+
   const deniedHeaderCases: Record<string, string>[] = [
     {},
     { "x-monolith-tenant-id": "tenant-snap", "x-monolith-module": "untrusted-layer" },

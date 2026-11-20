@@ -23,6 +23,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -40,7 +41,8 @@ from .anthropic_gateway import (
 from .config import MODULE_NAME, load_config
 from .events import (
     EventContext,
-    context_from_headers,
+    WorkloadDenied,
+    authorize_workload,
     credential_transport_is_trusted,
     is_session_revoked,
     make_emitter,
@@ -64,7 +66,19 @@ def _session_is_revoked(ctx: EventContext | None) -> bool:
     revocation poll, so the refusal survives even when this module has emitted
     nothing recently.
     """
-    return bool(ctx and ctx.session_id and is_session_revoked(ctx.session_id))
+    return bool(ctx and not ctx.workload_authenticated and is_session_revoked(ctx.session_id))
+
+
+async def _workload_context(request: Request) -> EventContext:
+    cfg = request.app.state.cfg
+    try:
+        return await run_in_threadpool(
+            authorize_workload, request.headers, tenant=cfg.tenant_id, module=MODULE_NAME,
+            dashboard_url=cfg.dashboard_url, event_token=cfg.event_token,
+            allow_insecure_dashboard=cfg.allow_insecure_dashboard,
+        )
+    except WorkloadDenied as error:
+        raise HTTPException(error.status, detail=str(error)) from error
 
 
 def _report_revoked_session(ctx: EventContext | None) -> None:
@@ -680,7 +694,7 @@ async def generate(req: GenerateRequest, request: Request) -> StreamingResponse:
     # Read the headers before the response starts streaming: the generator body
     # runs after the handler returns, and reaching for the request from inside
     # it would be reading state that is no longer guaranteed to be there.
-    ctx = context_from_headers(request.headers)
+    ctx = await _workload_context(request)
 
     if _session_is_revoked(ctx):
         _report_revoked_session(ctx)
@@ -707,7 +721,7 @@ async def generate(req: GenerateRequest, request: Request) -> StreamingResponse:
 @app.post("/v1/chat/completions")
 async def chat_completions(req: ChatCompletionRequest, request: Request):
     auditor: StreamAuditor = app.state.auditor
-    ctx = context_from_headers(request.headers)
+    ctx = await _workload_context(request)
     prompt = _messages_to_prompt(req.messages)
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created_ts = int(time.time())
@@ -1134,7 +1148,7 @@ async def messages(request: Request):
     """
     cfg = app.state.cfg
     auditor: StreamAuditor = app.state.auditor
-    ctx = context_from_headers(request.headers)
+    ctx = await _workload_context(request)
 
     raw = await _read_capped_body(request, MAX_MESSAGES_BODY_BYTES)
     try:

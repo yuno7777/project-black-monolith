@@ -49,6 +49,8 @@ except ModuleNotFoundError:
         tenant_scope,
     )
 
+from monolith_events.workload import WorkloadDenied, authorize_workload
+
 __all__ = [
     "AGENT_HEADER",
     "CORRELATION_HEADER",
@@ -60,7 +62,9 @@ __all__ = [
     "EventEmitter",
     "EventOutbox",
     "Severity",
+    "WorkloadDenied",
     "_clean_id",
+    "authorize_workload",
     "context_from_headers",
     "credential_transport_is_trusted",
     "is_session_revoked",
