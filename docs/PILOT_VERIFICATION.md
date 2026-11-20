@@ -94,3 +94,14 @@ refused an attached running container, and restore refused a corrupted archive
 and existing destination volumes. Hosted CI now includes the round-trip on
 volumes populated by the Compose integration run. The complete Compose stack
 still awaits that run on a host with sufficient storage.
+
+## Live acceptance runner rehearsal
+
+The three [acceptance commands](GITHUB_TRIAGE_QUICKSTART.md#record-live-acceptance-evidence)
+were rehearsed against the real dashboard and a disposable PostgreSQL database
+with a local HTTP fixture serving the GitHub API. Preparation queued all six
+proposals without a write and rejected the changed payload with HTTP 409.
+Three positive approvals produced one exact reply and two label updates. Replay,
+denial, revocation, and expiry produced no additional writes. The verifier also
+failed before expiration and detected a duplicate comment injected into the
+fixture. The dedicated live repository remains required for final verification.

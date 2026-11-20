@@ -41,3 +41,32 @@ payload and select **Approve and send** or **Deny**. Check the result in the
 queue and in GitHub. A proposal expires after 15 minutes. Use **Revoke session**
 from a proposal to stop new calls by that workload. See the
 [pilot operations runbook](PILOT_OPERATIONS.md) for recovery.
+
+## Record live acceptance evidence
+
+Use a disposable issue in the dedicated repository. Prepare two existing
+labels, with the removal label attached and the addition label absent. Set
+`MONOLITH_DASHBOARD_API_URL`, `MONOLITH_WORKLOAD_TOKEN`, and
+`MONOLITH_VERIFY_GITHUB_TOKEN` for preparation. The verifier token only needs
+permission to read the fixture issue and comments. Run from a clean test
+workload session. Use a new private state file per run.
+
+```sh
+python3 scripts/verify_github_pilot.py prepare --test-repository OWNER/REPO \
+  --issue 1 --state ./pilot-state.json \
+  --label-to-add pilot-add --label-to-remove pilot-remove
+```
+
+In the dashboard, approve the printed `reply`, `add_label`, and `remove_label`
+actions. Deny `denied`, then revoke the test session using the `revoked` action.
+Leave the `expired` action untouched. Set `MONOLITH_OPERATOR_TOKEN` to a test
+analyst credential and run the immediate check before the 15-minute deadline.
+Run the expiry check after that deadline. The checks exercise refused approval
+attempts and compare the audit record with the actual GitHub comment and labels.
+
+```sh
+python3 scripts/verify_github_pilot.py check-now --test-repository OWNER/REPO \
+  --issue 1 --state ./pilot-state.json
+python3 scripts/verify_github_pilot.py check-expired --test-repository OWNER/REPO \
+  --issue 1 --state ./pilot-state.json
+```
