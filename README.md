@@ -431,6 +431,10 @@ Full model: [docs/IDENTITY_AND_ACCESS.md](docs/IDENTITY_AND_ACCESS.md).
 
 ## Evaluate for your team
 
+The [GitHub triage quickstart](docs/GITHUB_TRIAGE_QUICKSTART.md) connects a
+workload to issue reads and human-approved writes. The [pilot operations
+runbook](docs/PILOT_OPERATIONS.md) covers deployment and recovery.
+
 The [product roadmap](docs/PRODUCT_ROADMAP.md) describes the GitHub issue triage
 pilot, deployment gates for shared environments, and how to measure developer
 onboarding and operator outcomes. The [operations runbook](docs/OPERATIONS.md)

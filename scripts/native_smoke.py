@@ -154,6 +154,14 @@ def main():
                         target.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(report, target)
                         print(target.read_text(encoding="utf-8"))
+            else:
+                subprocess.run(
+                    ["node", "node_modules/tsx/dist/cli.mjs", "--test", "test/github-triage.test.ts"],
+                    cwd=ROOT / "dashboard",
+                    env=env | {"MONOLITH_TRIAGE_TEST_DATABASE_ADMIN_URL": env["DATABASE_ADMIN_URL"]},
+                    check=True,
+                    timeout=120,
+                )
             # The compatibility roles must stay inert on a plain database.
             roles = subprocess.run(
                 [str(directory / ("psql" + suffix)), env["DATABASE_ADMIN_URL"],

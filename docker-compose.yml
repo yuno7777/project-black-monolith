@@ -112,6 +112,10 @@ services:
     environment:
       DATABASE_URL: postgresql://monolith_runtime:${MONOLITH_DATABASE_RUNTIME_PASSWORD:?set MONOLITH_DATABASE_RUNTIME_PASSWORD in .env}@database:5432/postgres
       DATABASE_APP_ROLE: monolith_app
+      MONOLITH_TENANT_ID: ${MONOLITH_TENANT_ID:-default}
+      MONOLITH_WORKLOAD_GRANTS_JSON:
+      MONOLITH_GITHUB_REPOSITORY:
+      MONOLITH_GITHUB_TOKEN:
       # Demo escape hatch: "true" turns operator sign-in OFF entirely.
       MONOLITH_DISABLE_AUTH: ${MONOLITH_DISABLE_AUTH:-false}
       EVENT_INGEST_TOKENS_JSON: >-

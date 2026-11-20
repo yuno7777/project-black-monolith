@@ -1,4 +1,5 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import type { PoolClient } from "pg";
 import { withTenantDb } from "@/lib/db";
 import { getMemoryEventsForTenant } from "@/lib/event-store";
 import type {
@@ -478,14 +479,21 @@ export async function listRevokedSessions(tenantId: string): Promise<SessionRevo
 
 export async function isSessionRevoked(tenantId: string, agentId: string, sessionId: string): Promise<boolean> {
   if (!process.env.DATABASE_URL) throw new Error("authoritative session storage is unavailable");
-  return withTenantDb(tenantId, async (db) => {
-    const result = await db.query(
-      `select 1 from monolith.revoked_sessions
-        where tenant_id = $1 and agent_id = $2 and session_id = $3 and restored_at is null`,
-      [tenantId, agentId, sessionId],
-    );
-    return result.rows.length > 0;
-  });
+  return withTenantDb(tenantId, (db) => sessionRevokedIn(db, tenantId, agentId, sessionId));
+}
+
+export async function sessionRevokedIn(db: PoolClient, tenantId: string, agentId: string, sessionId: string) {
+  const result = await db.query(
+    `select 1 from monolith.revoked_sessions
+      where tenant_id = $1 and agent_id = $2 and session_id = $3 and restored_at is null`,
+    [tenantId, agentId, sessionId],
+  );
+  return result.rows.length > 0;
+}
+
+export async function lockSession(db: PoolClient, tenantId: string, agentId: string, sessionId: string) {
+  const key = JSON.stringify([tenantId, agentId, sessionId]);
+  await db.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [key]);
 }
 
 export async function revokeSession(
@@ -538,6 +546,7 @@ export async function revokeSession(
   }
 
   return withTenantDb(cleanTenant, async (db) => {
+    await lockSession(db, cleanTenant, cleanAgent, cleanSession);
     const result = await db.query<RevokedSessionRow>(
       `insert into monolith.revoked_sessions
          (tenant_id, agent_id, session_id, reason, triggered_by, layers, revoked_at)
@@ -607,6 +616,7 @@ export async function restoreSession(
   }
 
   return withTenantDb(cleanTenant, async (db) => {
+    await lockSession(db, cleanTenant, cleanAgent, cleanSession);
     const result = await db.query(
       `update monolith.revoked_sessions
           set restored_at = now()
