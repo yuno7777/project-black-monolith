@@ -43,22 +43,27 @@ Local suites reported 66 script tests, 57 shared Python tests, 165 VectorAnchor
 tests, 261 TraceAudit tests and one expected failure, 164 dashboard tests, and
 two GitHub triage tests. Ruff, dashboard lint, TypeScript, the Next.js build,
 the contract checker, and `docker compose config --quiet` passed. The full
-container run remains unverified because the executor ran out of disk space
-extracting its Docker images.
+native smoke runner verified all three layers in PostgreSQL, ran the triage
+integration tests, and confirmed service cleanup. The full container run
+remains unverified because the executor ran out of disk space extracting its
+Docker images.
 
 ## Versioned native release
 
-The Linux `0.4.0-rc.3` archive was built from `6d9764b`. Its SHA-256 is
-`0a53dad3be76f98b12f0900eb8fe692803a2ee6266fd6aeaf0546499f4f75360`.
+The Linux `0.4.0-rc.4` archive was built from `ba1b28c`. Its SHA-256 is
+`9b32e162cbb158c234e7b47cb87f68f37a744083a4b248af4455eb56a1cccbeb`.
 The comparison release was `0.3.0-rc.1` from `c5bb2e7`. The first restart
 attempt exposed a Linux port preflight failure while old connections were in
 `TIME_WAIT`. Commit `6d9764b` corrected the check and added a regression test.
+The broader native smoke found a stale MCP-Shield log assertion. Commit
+`ba1b28c` switched the runner to the existing structured ledger assertion
+and removed the GitHub credential from the other native service environments.
 
 ```sh
 python3 scripts/package_release.py --revision c5bb2e7 --version 0.3.0-rc.1 --output /workspace/work/monolith-pilot-releases
-python3 scripts/build_platform_bundle.py --revision 6d9764b --platform linux-x86_64 --version 0.4.0-rc.3 --output /workspace/work/monolith-pilot-releases
-(cd /workspace/work/monolith-pilot-releases && sha256sum -c black-monolith-0.3.0-rc.1-source.zip.sha256 black-monolith-0.4.0-rc.3-linux-x86_64.zip.sha256)
-/workspace/work/monolith-services/bin/python /workspace/work/monolith-release-check.py
+python3 scripts/build_platform_bundle.py --revision ba1b28c --platform linux-x86_64 --version 0.4.0-rc.4 --output /workspace/work/monolith-pilot-releases
+(cd /workspace/work/monolith-pilot-releases && sha256sum -c black-monolith-0.3.0-rc.1-source.zip.sha256 black-monolith-0.4.0-rc.4-linux-x86_64.zip.sha256)
+/workspace/work/monolith-services/bin/python /workspace/work/monolith-release-check-rc4.py
 ```
 
 The release check builds and runs the extracted code against disposable native
