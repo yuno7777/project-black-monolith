@@ -313,8 +313,7 @@ def attacks(runner: Runner, env: dict[str, str], state: Path, ports: list[int]) 
             raise RuntimeError(f"MCP phase {phase} did not return the trusted tool")
         if "<IMPORTANT>" in json.dumps(responses):
             raise RuntimeError("MCP enforce mode forwarded the poisoned description")
-        if phase == 2 and "SCHEMA MISMATCH DETECTED" not in output:
-            raise RuntimeError("MCP rug pull did not trigger detection")
+        # The ledger assertion verifies the structured schema_mismatch event.
     vector_env = env | {"MONOLITH_SERVICE_URL": f"http://127.0.0.1:{ports[1]}"}
     for fixture, queries in (
         (
@@ -401,6 +400,7 @@ def main() -> int:
         ]
         check_ports(ports)
         env = configure(env, ports)
+        github_token = env.pop("MONOLITH_GITHUB_TOKEN", None)
         env.setdefault("MONOLITH_SESSION_ID", "demo-" + uuid.uuid4().hex)
         env.setdefault("MONOLITH_AGENT_ID", "native-demo-agent")
         shield_binary = (
@@ -478,7 +478,7 @@ def main() -> int:
             "dashboard",
             [node, str(next_cli), "start", "-H", "127.0.0.1", "-p", str(ports[0])],
             dashboard,
-            env,
+            env if github_token is None else env | {"MONOLITH_GITHUB_TOKEN": github_token},
         )
         services = [process]
         wait_health(f"http://127.0.0.1:{ports[0]}/api/ingest", process)
