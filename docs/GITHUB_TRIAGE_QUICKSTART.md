@@ -13,7 +13,10 @@ with Issues write access. Give the agent only its Monolith workload token.
    `MONOLITH_GITHUB_REPOSITORY=OWNER/REPOSITORY` and `MONOLITH_GITHUB_TOKEN` to the
    dashboard using your deployment secret store. Keep operator sign-in enabled.
 4. Run `docker compose up -d --build --wait` and `./monolith doctor`. For the
-   native stack, follow the options in [the project README](../README.md).
+   native Linux bundle, install Python 3.12, Node 22, and PostgreSQL 17 client
+   tools, then run `sh packaging/install.sh`. Configure `DATABASE_ADMIN_URL`
+   and the restricted runtime `DATABASE_URL` before starting with
+   `.venv/bin/python scripts/run_local_demo.py --skip-build --skip-attacks`.
 
 ## Draft and review
 
