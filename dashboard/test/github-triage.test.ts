@@ -74,7 +74,7 @@ test("PostgreSQL-backed triage sends each approved action once", {
     assert.equal(response.status, 202);
     return (await response.json()).action as { id: string; digest: string; status: string };
   };
-  const decide = (action: { id: string; digest: string }, decision = "approve", headers = reviewer) => review(
+  const decide = (action: { id: string; digest: string }, decision = "approve", headers: Record<string, string> = reviewer) => review(
     request(`/triage/${action.id}`, headers, { decision, digest: action.digest }),
     { params: Promise.resolve({ id: action.id }) },
   );
@@ -91,6 +91,10 @@ test("PostgreSQL-backed triage sends each approved action once", {
   const requestId = randomUUID();
   const reply = await draft("reply", " Exact draft\n", requestId);
   assert.equal((await draft("reply", " Exact draft\n", requestId)).id, reply.id);
+  const changed = await propose(request("/triage", workload, {
+    request_id: requestId, issue: 7, action: { kind: "reply", value: "Changed draft" },
+  }));
+  assert.equal(changed.status, 409);
   assert.equal((await decide({ ...reply, digest: "0".repeat(64) })).status, 409);
   assert.equal((await decide(reply, "approve", other)).status, 404);
   assert.equal((await decide(reply, "approve", workload)).status, 401);
