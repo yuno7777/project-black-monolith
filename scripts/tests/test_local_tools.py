@@ -74,6 +74,19 @@ class LocalToolsTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 check_ports(ports)
 
+    @unittest.skipIf(os.name == "nt", "POSIX listener reuse behavior")
+    def test_recently_stopped_service_port_can_be_reused(self):
+        with socket.socket() as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            port = listener.getsockname()[1]
+            with socket.create_connection(("127.0.0.1", port), timeout=2) as peer:
+                connection, _ = listener.accept()
+                connection.close()
+                self.assertEqual(peer.recv(1), b"")
+        check_ports([port])
+
     def test_process_failure_is_reported_and_log_preserved(self):
         with tempfile.TemporaryDirectory(prefix="monolith space ") as directory:
             runner = Runner(Path(directory))

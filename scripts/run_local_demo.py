@@ -113,6 +113,10 @@ def check_ports(ports: list[int]) -> None:
         raise ValueError("Service ports must be distinct and between 1 and 65535")
     for port in ports:
         with socket.socket() as sock:
+            if os.name != "nt":
+                # Match the service listeners, which can bind while their old
+                # connections are still in TIME_WAIT after a clean shutdown.
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 sock.bind(("127.0.0.1", port))
             except OSError as error:
