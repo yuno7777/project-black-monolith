@@ -116,6 +116,7 @@ export default function TriagePage() {
                   <span className="ops-state">{action.status}</span>
                 </div>
                 <div style={{ padding: "16px" }}>
+                  <p className="card-meta">Action ID <code>{action.id}</code></p>
                   <p className="card-meta">Agent {action.agent_id} · Session {action.session_id}</p>
                   <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", marginBlock: "12px" }}>{action.value}</pre>
                   {action.reviewer ? <p className="card-meta">Reviewed by {action.reviewer} · {action.reviewed_at}</p> : null}

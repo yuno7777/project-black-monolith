@@ -105,3 +105,12 @@ Three positive approvals produced one exact reply and two label updates. Replay,
 denial, revocation, and expiry produced no additional writes. The verifier also
 failed before expiration and detected a duplicate comment injected into the
 fixture. The dedicated live repository remains required for final verification.
+
+A headless Chromium rehearsal used the production dashboard build and the same
+local GitHub HTTP fixture. A signed-in analyst approved the three intended
+actions, denied one draft, and revoked the test session. Two label drafts had
+identical payloads. Selecting the printed Action ID changed only the intended
+record. The dashboard displayed the reviewer and GitHub comment ID, and the
+viewer account could read the results without approval, denial, or revocation
+controls. The three acceptance commands confirmed the resulting audit and
+fixture state.

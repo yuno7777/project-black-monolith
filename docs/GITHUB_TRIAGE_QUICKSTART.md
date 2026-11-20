@@ -57,8 +57,9 @@ python3 scripts/verify_github_pilot.py prepare --test-repository OWNER/REPO \
   --label-to-add pilot-add --label-to-remove pilot-remove
 ```
 
-In the dashboard, approve the printed `reply`, `add_label`, and `remove_label`
-actions. Deny `denied`, then revoke the test session using the `revoked` action.
+In the dashboard, match the **Action ID** on each card to the ID printed by the
+runner. Approve `reply`, `add_label`, and `remove_label`. Deny `denied`, then
+revoke the test session using the `revoked` action.
 Leave the `expired` action untouched. Set `MONOLITH_OPERATOR_TOKEN` to a test
 analyst credential and run the immediate check before the 15-minute deadline.
 Run the expiry check after that deadline. The checks exercise refused approval
