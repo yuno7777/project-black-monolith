@@ -337,6 +337,43 @@ jobs:
           docker compose cp mcp-shield:/usr/local/bin/mcp-shield ./mcp-shield-host
           chmod +x ./mcp-shield-host
           MONOLITH_MCP_SHIELD_BIN="$PWD/mcp-shield-host" python scripts/run_gateway_demo.py
+      - name: Verify module volume backup and restore
+        shell: bash
+        run: |
+          source_project=$(docker compose config --format json | jq -er .name)
+          restore_project="monolith-ci-restore-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          backup_root=$(mktemp -d)
+          cleanup_restore() {
+            for key in vector-anchor-outbox vector-anchor-state trace-audit-outbox mcp-shield-outbox; do
+              docker volume rm "${restore_project}_$key" >/dev/null 2>&1 || true
+            done
+          }
+          trap cleanup_restore EXIT
+          docker compose stop dashboard alert-dispatcher mcp-shield vector-anchor trace-audit
+          bash scripts/pilot_module_volumes.sh backup "$source_project" "$backup_root/source"
+          bash scripts/pilot_module_volumes.sh restore "$restore_project" "$backup_root/source"
+          bash scripts/pilot_module_volumes.sh backup "$restore_project" "$backup_root/restored"
+          python - "$backup_root" <<'PY'
+          import hashlib
+          import sys
+          import tarfile
+          from pathlib import Path
+
+          def contents(archive):
+              with tarfile.open(archive) as volume:
+                  return {
+                      entry.name: (entry.type, entry.mode, entry.uid, entry.gid, entry.linkname,
+                                   None if entry.isdir() else entry.mtime,
+                                   hashlib.file_digest(volume.extractfile(entry), "sha256").hexdigest()
+                                   if entry.isfile() else None)
+                      for entry in volume
+                  }
+
+          root = Path(sys.argv[1])
+          for original in sorted((root / "source").glob("*.tar")):
+              assert contents(original) == contents(root / "restored" / original.name), original.name
+              print(f"Verified restored {original.stem}")
+          PY
       - name: Dump container logs on failure
         if: failure()
         shell: bash

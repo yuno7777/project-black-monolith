@@ -18,14 +18,31 @@ a fresh proposal. The service never automatically resends a consumed approval.
 
 ## Backup and restore
 
-Stop the dashboard and any dispatching processes before making a maintenance
-backup. Back up PostgreSQL and the configured persistent module volumes. Keep
+Stop the dashboard, the alert dispatcher, and the three modules before making
+a maintenance backup. Keep PostgreSQL running for the logical dump. Retain
 the release archive and deployment configuration version with the backup.
 
 ```sh
 pg_dump --format=custom --file=monolith.dump "$DATABASE_ADMIN_URL"
 pg_restore --exit-on-error --single-transaction --dbname="$RESTORE_DATABASE_URL" monolith.dump
 ```
+
+For the Docker Compose deployment, back up the four module volumes separately.
+Use the original Compose project name to locate the volumes. Restore into a new
+project with no module volumes and keep its services stopped until the database
+and approval checks below pass.
+
+```sh
+docker compose -p monolith stop dashboard alert-dispatcher mcp-shield vector-anchor trace-audit
+bash scripts/pilot_module_volumes.sh backup monolith ./module-backup
+bash scripts/pilot_module_volumes.sh restore monolith-recovery ./module-backup
+```
+
+The helper verifies every archive's SHA-256 before creating volumes and refuses
+existing destinations. Restore only backups you trust. Keep the original named
+volumes until recovery is verified, and use a fresh recovery project if a
+restore is interrupted. Keep the original MCP-Shield baseline key with the
+release configuration so the restored baseline can still be validated.
 
 Restore into a new database with the bootstrap roles in place. Start with the
 GitHub credential absent and verify the restored ledger and approval history.

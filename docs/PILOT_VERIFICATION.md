@@ -73,4 +73,24 @@ approval replay. The PostgreSQL backup restored into a new database, retained
 the succeeded approval, and expired the stale pending proposal before re-enabling
 the provider stub. The previous release upgraded to the pilot, rolled back on
 the same database, then rolled forward with the approved action intact and its
-replay rejected. Container volume restore remains unverified.
+replay rejected.
+
+## Docker module volume round-trip
+
+The following procedure passed locally with disposable Docker volumes seeded
+from a completed native smoke run. It used the Chroma store, detector state,
+SQLite outboxes, and saved baselines produced by the actual modules.
+
+```sh
+bash scripts/pilot_module_volumes.sh backup "$FIXTURE_PROJECT" "$BACKUP_DIRECTORY"
+bash scripts/pilot_module_volumes.sh restore "$RESTORE_PROJECT" "$BACKUP_DIRECTORY"
+bash scripts/pilot_module_volumes.sh backup "$RESTORE_PROJECT" "$RECHECK_DIRECTORY"
+```
+
+All four restored archives preserved file contents, file timestamps, modes,
+and numeric ownership. Directory timestamps changed on extraction. The
+restored Chroma database was readable by the service's UID 10001. Backup
+refused an attached running container, and restore refused a corrupted archive
+and existing destination volumes. Hosted CI now includes the round-trip on
+volumes populated by the Compose integration run. The complete Compose stack
+still awaits that run on a host with sufficient storage.
