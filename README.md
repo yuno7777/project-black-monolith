@@ -19,7 +19,7 @@
 [What this is](#what-this-is) · [Try it](#try-it) · [Put your own agent behind it](#put-your-own-agent-behind-it) ·
 [AI agent setup](#let-your-ai-agent-set-it-up-for-you) ·
 [What you saw](#what-you-saw) · [How it works](#how-it-works) · [How well it works](#how-well-it-works) ·
-[If it breaks](#if-it-breaks) · [What this is not](#what-this-is-not) · [Go deeper](#go-deeper)
+[If it breaks](#if-it-breaks) · [Evaluate for your team](#evaluate-for-your-team) · [Go deeper](#go-deeper)
 
 </div>
 
@@ -48,18 +48,20 @@ three directions at once.
 
 ## Try it
 
-You need Docker with Compose, Bash, and `curl`. Everything runs offline: no
-model download, no external vector database.
+You need Docker with Compose, Python 3.12, Bash, and `curl`. The demo runs
+offline once the images are built, with a local model stub and vector store.
 
 ### 1. Make your local credentials
 
 ```bash
 git clone https://github.com/yuno7777/project-black-monolith.git
 cd project-black-monolith
-bash scripts/generate_secrets.sh      # or: python scripts/generate_secrets.py
+./monolith init
 ```
 
-→ you should see: `Wrote .env with 8 random secrets (values not printed).`
+On Windows, use `python scripts/monolith.py` in place of `./monolith` throughout.
+The command creates a gitignored `.env` with local development credentials and
+preserves any existing `.env`.
 
 Nothing is preset. Compose refuses to start if a secret is missing, so a
 half-configured stack fails loudly instead of running wide open. The full
@@ -123,12 +125,21 @@ run prints `DEMO FAILED — N check(s) failed`.
 
 ## Put your own agent behind it
 
-The demos above fire synthetic attacks at the stack. `monolith wrap` puts
-*your* agent behind it instead.
+Build the host-side MCP-Shield binary once, check the running stack, and launch
+Claude Code. Run the build command from the Black Monolith checkout.
 
 ```bash
-python scripts/monolith_wrap.py --claude
+cargo build --locked --release --manifest-path mcp-shield/Cargo.toml
+./monolith doctor
+./monolith wrap --claude
 ```
+
+`doctor` uses the same readiness checks as `wrap`. It checks dashboard ingest,
+VectorAnchor, TraceAudit, the local MCP-Shield binary, and whether the launcher
+has an event token configured. It exits with status 2 if a check fails. Use
+`doctor --no-mcp` with a launcher invocation that also uses `--no-mcp`.
+To pick up MCP configuration from another project, run the launcher by its
+path to this checkout while your shell is in that project's directory.
 
 One command, and three things start happening that the agent cannot see:
 
@@ -185,10 +196,6 @@ carry, so the decision is yours:
 A health check carries no credential, so it is not held to that rule: it
 reaches a service the way the rest of your machine reaches it.
 
-**What it needs:** the stack up (`docker compose up -d --build`), and
-`cargo build --release` in `mcp-shield/` so the host has the shield binary the
-MCP servers are started through.
-
 ### Or set it up from the dashboard
 
 If you would rather not assemble the commands yourself, open
@@ -229,22 +236,20 @@ Repository: https://github.com/yuno7777/project-black-monolith.git
 
 Do this, in order:
 1. Clone the repo and cd into it.
-2. Read README.md and CLAUDE.md before touching anything. CLAUDE.md documents
-   the architecture and several invariants that will bite you if you ignore them.
-3. Run `bash scripts/generate_secrets.sh` (or `python scripts/generate_secrets.py`).
-   It writes a gitignored .env with 8 random secrets and refuses to overwrite
-   an existing one — that is fine, continue.
+2. Read README.md and CONTRIBUTING.md for the architecture and development conventions.
+3. Run `./monolith init` (or `python scripts/monolith.py init`).
+   It writes a gitignored .env with local credentials and preserves an existing one.
 4. Run `docker compose up -d --build --wait`. It builds six images and pulls a
    Postgres image; the first run takes several minutes.
 5. Run `bash run_full_demo.sh`. It fires three synthetic attacks at the stack.
 6. Report back:
    - the demo output, including every [OK] line and the DEMO PASSED line
    - the session id it printed
-   - the dashboard URL and the MONOLITH_OPERATOR_TOKEN value from .env
-   - anything that failed, with the full error text
+   - the dashboard URL and whether its sign-in page loads
+   - anything that failed, with credentials removed from the error text
 
 Rules:
-- Never commit .env or any secret, and never write a secret value into a file.
+- Keep the generated .env local. Never commit or report any credential value.
 - If a step fails, read the error and the module's README before retrying.
 - Do not modify a detector to make the demo pass. The demo must pass as-is.
 - If Docker is unavailable, use `python scripts/run_local_demo.py` instead and
@@ -423,6 +428,13 @@ network, not end-user login. Scope and disclosure: [SECURITY.md](SECURITY.md).
 Full model: [docs/IDENTITY_AND_ACCESS.md](docs/IDENTITY_AND_ACCESS.md).
 
 ---
+
+## Evaluate for your team
+
+The [product roadmap](docs/PRODUCT_ROADMAP.md) describes the GitHub issue triage
+pilot, deployment gates for shared environments, and how to measure developer
+onboarding and operator outcomes. The [operations runbook](docs/OPERATIONS.md)
+covers investigations, evidence exports, webhooks, and revocation in the current stack.
 
 ## Go deeper
 

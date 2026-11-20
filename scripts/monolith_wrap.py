@@ -133,6 +133,14 @@ def resolve_setting(name: str, dotenv: dict[str, str], default: str | None = Non
     return default
 
 
+def service_urls(dotenv: dict[str, str]) -> tuple[str, str, str]:
+    return (
+        resolve_setting("MONOLITH_DASHBOARD_API_URL", dotenv) or DEFAULT_DASHBOARD_URL,
+        resolve_setting("MONOLITH_VECTOR_ANCHOR_URL", dotenv) or DEFAULT_VECTOR_ANCHOR_URL,
+        resolve_setting("MONOLITH_TRACE_AUDIT_URL", dotenv) or DEFAULT_TRACE_AUDIT_URL,
+    )
+
+
 def mint_session_id() -> str:
     """A session id that nothing else on the machine can guess.
 
@@ -269,6 +277,15 @@ def _proxy_advisory(
     return lines
 
 
+def _diagnostic_origin(url: str) -> str:
+    try:
+        # Proxy and service URLs can include user info or secrets in the path.
+        parsed = urllib.parse.urlsplit(url if "://" in url else f"//{url}")
+        return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc.rsplit("@", 1)[-1], "", "", ""))
+    except ValueError:
+        return "[invalid URL]"
+
+
 def _unreachable(what: str, url: str) -> str:
     """Why a service did not answer, naming the proxy when one carried it.
 
@@ -277,10 +294,13 @@ def _unreachable(what: str, url: str) -> str:
     the stack may be up and working, and the proxy may be the reason
     nothing answered.
     """
-    message = f"{what} is not answering at {url}"
-    proxy = _ambient_proxy_for(url)
+    message = f"{what} is not answering at {_diagnostic_origin(url)}"
+    try:
+        proxy = _ambient_proxy_for(url)
+    except ValueError:
+        return message
     if proxy and _should_use_ambient_proxy(url, carries_credential=False):
-        message += f" (the request went through the ambient proxy {proxy})"
+        message += f" (check the configured proxy at {_diagnostic_origin(proxy)})"
     return message
 
 
@@ -775,14 +795,46 @@ def find_mcp_shield() -> Path | None:
     explicit = os.environ.get("MONOLITH_MCP_SHIELD_BIN")
     if explicit:
         candidate = Path(explicit)
-        return candidate if candidate.is_file() else None
+        return candidate.resolve() if candidate.is_file() and os.access(candidate, os.X_OK) else None
     for profile in ("release", "debug"):
         for name in ("mcp-shield", "mcp-shield.exe"):
             candidate = REPO_ROOT / "mcp-shield" / "target" / profile / name
-            if candidate.is_file():
+            if candidate.is_file() and os.access(candidate, os.X_OK):
                 return candidate
     found = shutil.which("mcp-shield")
     return Path(found) if found else None
+
+
+def check_gateway_readiness(
+    dashboard_url: str,
+    vector_anchor_url: str,
+    trace_audit_url: str,
+    *,
+    shield: Path | None,
+    event_token: str | None,
+    require_shield: bool,
+) -> list[tuple[str, str | None]]:
+    services = (
+        ("Dashboard ingest", dashboard_url, "/api/ingest"),
+        ("VectorAnchor", vector_anchor_url, "/health"),
+        ("TraceAudit", trace_audit_url, "/health"),
+    )
+    checks = [
+        (name, None if service_healthy(url.rstrip("/") + path) else _unreachable(name, url))
+        for name, url, path in services
+    ]
+    if require_shield:
+        shield_error = (
+            "Build with `cargo build --locked --release --manifest-path mcp-shield/Cargo.toml` "
+            "or set MONOLITH_MCP_SHIELD_BIN to an executable file."
+        )
+        checks.append(("MCP-Shield binary", None if shield else shield_error))
+    token_error = (
+        "MONOLITH_EVENT_TOKEN_MCP_SHIELD is missing. "
+        "Run `monolith init` for a new local stack or check the existing configuration."
+    )
+    checks.append(("MCP-Shield event token", None if event_token else token_error))
+    return checks
 
 
 def build_shield_env(
@@ -1069,9 +1121,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     dotenv = load_dotenv(REPO_ROOT / ".env")
-    dashboard_url = resolve_setting("MONOLITH_DASHBOARD_API_URL", dotenv, DEFAULT_DASHBOARD_URL)
-    vector_anchor_url = resolve_setting("MONOLITH_VECTOR_ANCHOR_URL", dotenv, DEFAULT_VECTOR_ANCHOR_URL)
-    trace_audit_url = resolve_setting("MONOLITH_TRACE_AUDIT_URL", dotenv, DEFAULT_TRACE_AUDIT_URL)
+    dashboard_url, vector_anchor_url, trace_audit_url = service_urls(dotenv)
     tenant_id = args.tenant_id or resolve_setting("MONOLITH_TENANT_ID", dotenv, "default")
     agent_id = args.agent_id or resolve_setting("MONOLITH_AGENT_ID", dotenv, "claude-code")
     operator_token = resolve_setting("MONOLITH_OPERATOR_TOKEN", dotenv)
@@ -1114,24 +1164,16 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  agent       {agent_id}   tenant {tenant_id}")
 
     # --- preflight -------------------------------------------------------
-    problems: list[str] = []
-    if not service_healthy(dashboard_url.rstrip("/") + "/api/ingest"):
-        problems.append(_unreachable("the dashboard", dashboard_url))
-    if not service_healthy(vector_anchor_url.rstrip("/") + "/health"):
-        problems.append(_unreachable("VectorAnchor", vector_anchor_url))
-    if not service_healthy(trace_audit_url.rstrip("/") + "/health"):
-        problems.append(_unreachable("TraceAudit", trace_audit_url))
     shield = find_mcp_shield()
-    if shield is None and not args.no_mcp:
-        problems.append(
-            "the MCP-Shield binary was not found - build it with "
-            "`cargo build --release` in mcp-shield/, or set MONOLITH_MCP_SHIELD_BIN"
-        )
-    if not event_token:
-        problems.append(
-            "MONOLITH_EVENT_TOKEN_MCP_SHIELD was not found (the .env file next to "
-            "the stack carries it) - the tool layer would have nowhere to report"
-        )
+    checks = check_gateway_readiness(
+        dashboard_url,
+        vector_anchor_url,
+        trace_audit_url,
+        shield=shield,
+        event_token=event_token,
+        require_shield=not args.no_mcp,
+    )
+    problems = [problem for _, problem in checks if problem]
     if problems:
         print("\n  The stack is not ready:")
         for problem in problems:
@@ -1186,7 +1228,12 @@ def main(argv: list[str] | None = None) -> int:
     child_env = build_child_env()
     hidden = sorted(set(os.environ) - set(child_env))
 
-    print(f"  tool layer {len(config['mcpServers'])} MCP server(s) through MCP-Shield")
+    mcp_servers = config["mcpServers"]
+    shielded = sum(
+        shield is not None and server.get("command") == str(shield)
+        for server in mcp_servers.values()
+    )
+    print(f"  tool layer {shielded}/{len(mcp_servers)} MCP server(s) through MCP-Shield")
     print(f"  memory     VectorAnchor at {vector_anchor_url}")
     print(f"  reasoning  TraceAudit at {trace_audit_url}")
     if hidden:

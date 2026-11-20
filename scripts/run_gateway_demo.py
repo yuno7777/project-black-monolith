@@ -166,7 +166,8 @@ def main() -> int:
         completed = subprocess.run(
             [
                 sys.executable,
-                str(REPO_ROOT / "scripts" / "monolith_wrap.py"),
+                str(REPO_ROOT / "scripts" / "monolith.py"),
+                "wrap",
                 "--agent",
                 sys.executable,
                 "--session-id",
