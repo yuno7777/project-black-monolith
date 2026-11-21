@@ -67,7 +67,12 @@ attempts and compare the audit record with the actual GitHub comment and labels.
 
 ```sh
 python3 scripts/verify_github_pilot.py check-now --test-repository OWNER/REPO \
-  --issue 1 --state ./pilot-state.json
+  --issue 1 --state ./pilot-state.json --evidence ./pilot-now.json
 python3 scripts/verify_github_pilot.py check-expired --test-repository OWNER/REPO \
-  --issue 1 --state ./pilot-state.json
+  --issue 1 --state ./pilot-state.json --evidence ./pilot-expired.json
 ```
+
+Each optional evidence file is created after its check passes. It records the
+test target, verified checks, action IDs and digests, and audit outcomes. It
+omits credentials, request headers, and the comment text. Use a new filename
+for each successful check and keep both files with the pilot verification report.

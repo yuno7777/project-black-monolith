@@ -114,3 +114,9 @@ record. The dashboard displayed the reviewer and GitHub comment ID, and the
 viewer account could read the results without approval, denial, or revocation
 controls. The three acceptance commands confirmed the resulting audit and
 fixture state.
+
+The same dashboard and PostgreSQL rehearsal exercised `--evidence` for both
+check phases. Successful checks wrote JSON with the action IDs, digests, and
+audit outcomes. The early expiry check and a duplicate-comment check produced
+no files. The reports contained neither credentials nor reply text, and the
+unit tests verified that an existing report cannot be overwritten.

@@ -5,9 +5,11 @@ import json
 import os
 import re
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -158,14 +160,48 @@ def verify(pilot, state, phase):
         for name in ("reply", "add_label", "remove_label", "denied"):
             pilot.review(rows[name], expected=409)
         if target["status"] == "pending":
-            require(pilot.review(target)["status"] == "revoked", "The revoked proposal did not record a revoked outcome.")
+            recorded = pilot.review(target)
+            require(recorded["status"] == "revoked", "The revoked proposal did not record a revoked outcome.")
+            rows["revoked"] = {**target, **recorded}
     else:
         require(rows["revoked"]["status"] == "revoked", "Complete check-now first.")
         require(target["status"] == "expired", "Wait until the expired draft passes its deadline.")
         if not target.get("reviewed_at"):
-            require(pilot.review(target)["status"] == "expired", "The expired proposal did not record an expired outcome.")
+            recorded = pilot.review(target)
+            require(recorded["status"] == "expired", "The expired proposal did not record an expired outcome.")
+            rows["expired"] = {**target, **recorded}
     pilot.github_outcome(state, rows["reply"])
-    print(f"PASS {phase}: audit decisions and exact GitHub reply and labels match.")
+    checks = (
+        ["approved_actions", "changed_draft_refused", "approval_replays_refused", "denied_action_refused", "revoked_action_refused"]
+        if phase == "check-now" else ["expired_action_refused"]
+    )
+    fields = ("id", "digest", "status", "reviewed_at", "github_status", "github_comment_id")
+    return {
+        "format_version": 1,
+        "phase": phase,
+        "verified_at": datetime.now(UTC).isoformat(),
+        "repository": state["repository"],
+        "issue": state["issue"],
+        "checks": [*checks, "exact_github_reply_and_labels"],
+        "actions": {
+            name: {field: row.get(field) for field in fields}
+            for name, row in rows.items() if phase == "check-expired" or name != "expired"
+        },
+    }
+
+
+def write_evidence(path, report):
+    # Publish a complete report without overwriting evidence from another run.
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as output:
+            temporary = Path(output.name)
+            json.dump(report, output, indent=2)
+            output.write("\n")
+        os.link(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def main():
@@ -174,6 +210,7 @@ def main():
     parser.add_argument("--test-repository", required=True, metavar="OWNER/REPO")
     parser.add_argument("--issue", required=True, type=int)
     parser.add_argument("--state", required=True, type=Path)
+    parser.add_argument("--evidence", type=Path, help="write a new JSON evidence file after a successful check")
     parser.add_argument("--label-to-add")
     parser.add_argument("--label-to-remove")
     args = parser.parse_args()
@@ -187,6 +224,10 @@ def main():
         require(credential_transport_is_trusted(dashboard, False) and "?" not in dashboard and github,
                 "Set a trusted dashboard URL and a read-only GitHub verifier token.")
         require(workload if args.phase == "prepare" else operator, "Set the credential for the selected phase.")
+        if args.evidence is not None:
+            require(args.phase != "prepare", "Use --evidence with check-now or check-expired.")
+            require(args.evidence.parent.is_dir(), "The evidence directory must already exist.")
+            require(not (args.evidence.exists() or args.evidence.is_symlink()), "Choose a new evidence file.")
         pilot = Pilot(dashboard, args.test_repository, args.issue, github, workload, operator)
         if args.phase == "prepare":
             prepare(pilot, args.state, args.label_to_add, args.label_to_remove)
@@ -194,12 +235,15 @@ def main():
             state = json.loads(args.state.read_text(encoding="utf-8"))
             require((state["repository"], state["issue"]) == (pilot.repository, pilot.issue), "The state file belongs to a different test target.")
             require(set(state["drafts"]) == {"reply", "add_label", "remove_label", "denied", "expired", "revoked"}, "The state file is incomplete.")
-            verify(pilot, state, args.phase)
+            report = verify(pilot, state, args.phase)
+            if args.evidence is not None:
+                write_evidence(args.evidence, report)
+            print(f"PASS {args.phase}: audit decisions and exact GitHub reply and labels match.")
     except VerificationError as error:
         print(error, file=sys.stderr)
         return 1
     except (OSError, ValueError, LookupError, TypeError, AttributeError):
-        print("Could not read a fixture response or write verification state.", file=sys.stderr)
+        print("Could not read a fixture response or write verification state or evidence.", file=sys.stderr)
         return 1
     return 0
 
