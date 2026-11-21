@@ -132,3 +132,24 @@ npm --prefix dashboard run build
 cargo build --locked --manifest-path mcp-shield/Cargo.toml
 PG_BIN=/path/to/postgresql/17/bin python3 scripts/native_smoke.py
 ```
+
+### Retry after a partial Docker volume restore
+
+The integration workflow's module backup step now tests an extraction failure.
+The following calls passed locally on Linux with Docker's VFS driver. The
+source directory held the four archives from the module volume rehearsal.
+The invalid directory contained copies with the third archive replaced by
+plain text and SHA256SUMS recalculated in the helper's expected order.
+
+```sh
+restore_project=pilot-retry-check-1795220889
+bash scripts/pilot_module_volumes.sh restore "$restore_project" "$backup_root/invalid"
+docker volume ls -q --filter "label=com.docker.compose.project=$restore_project"
+bash scripts/pilot_module_volumes.sh restore "$restore_project" "$backup_root/source"
+bash scripts/pilot_module_volumes.sh backup "$restore_project" "$backup_root/restored"
+```
+
+The first restore exited with an error from tar (`invalid tar magic`). The
+volume listing was empty. The retry and backup both exited successfully.
+Comparison of all four archives confirmed matching file contents, entry types,
+modes, owners, link targets, and non-directory modification times.

@@ -49,10 +49,32 @@ case "$operation" in
         fail "Restore requires a new project with no existing volume for $key."
       fi
     done
+    # Docker may return an existing volume on a concurrent create. Only write
+    # to volumes bearing this invocation's label, and only clean up those.
+    owner_label='io.blackmonolith.restore-id'
+    restore_id=$(python3 -c 'import uuid; print(uuid.uuid4())')
+    cleanup_failed_restore() {
+      local status=$? owned
+      if (( status != 0 )); then
+        if owned=$(docker volume ls --quiet --filter "label=$owner_label=$restore_id"); then
+          while IFS= read -r volume; do
+            [[ -z $volume ]] || docker volume rm "$volume" >/dev/null || \
+              printf 'Could not remove partial restore volume %s\n' "$volume" >&2
+          done <<< "$owned"
+        else
+          printf 'Could not list partial restore volumes for %s\n' "$restore_id" >&2
+        fi
+      fi
+    }
+    trap cleanup_failed_restore EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     for key in "${volumes[@]}"; do
       volume="${project}_$key"
       docker volume create --label "com.docker.compose.project=$project" \
-        --label "com.docker.compose.volume=$key" "$volume" >/dev/null
+        --label "com.docker.compose.volume=$key" --label "$owner_label=$restore_id" "$volume" >/dev/null
+      owner=$(docker volume inspect --format "{{ index .Labels \"$owner_label\" }}" "$volume")
+      [[ $owner == "$restore_id" ]] || fail "Another operation owns $volume."
       docker run --rm --interactive --network none --read-only \
         --mount "type=volume,src=$volume,dst=/data" "$helper" \
         sh -ec 'test -z "$(ls -A /data)"; tar -xpf - -C /data' < "$directory/$key.tar"

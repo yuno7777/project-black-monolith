@@ -40,8 +40,10 @@ bash scripts/pilot_module_volumes.sh restore monolith-recovery ./module-backup
 
 The helper verifies every archive's SHA-256 before creating volumes and refuses
 existing destinations. Restore only backups you trust. Keep the original named
-volumes until recovery is verified, and use a fresh recovery project if a
-restore is interrupted. Keep the original MCP-Shield baseline key with the
+volumes until recovery is verified. If extraction fails, the helper removes
+volumes created by that restore so you can correct the backup and retry the
+same project. If the host loses power or cleanup reports an error, use a fresh
+recovery project and inspect the partial volumes before removing them. Keep the original MCP-Shield baseline key with the
 release configuration so the restored baseline can still be validated.
 
 Restore into a new database with the bootstrap roles in place. Start with the

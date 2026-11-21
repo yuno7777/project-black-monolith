@@ -351,6 +351,17 @@ jobs:
           trap cleanup_restore EXIT
           docker compose stop dashboard alert-dispatcher mcp-shield vector-anchor trace-audit
           bash scripts/pilot_module_volumes.sh backup "$source_project" "$backup_root/source"
+          # Exercise failure during extraction after earlier volumes are populated.
+          mkdir "$backup_root/invalid"
+          cp "$backup_root/source/"*.tar "$backup_root/invalid/"
+          printf 'invalid tar archive\n' > "$backup_root/invalid/trace-audit-outbox.tar"
+          (cd "$backup_root/invalid" && sha256sum vector-anchor-outbox.tar vector-anchor-state.tar trace-audit-outbox.tar mcp-shield-outbox.tar > SHA256SUMS)
+          if bash scripts/pilot_module_volumes.sh restore "$restore_project" "$backup_root/invalid"; then
+            echo "Invalid tar archive unexpectedly restored" >&2
+            exit 1
+          fi
+          remaining=$(docker volume ls -q --filter "label=com.docker.compose.project=$restore_project")
+          test -z "$remaining"
           bash scripts/pilot_module_volumes.sh restore "$restore_project" "$backup_root/source"
           bash scripts/pilot_module_volumes.sh backup "$restore_project" "$backup_root/restored"
           python - "$backup_root" <<'PY'
