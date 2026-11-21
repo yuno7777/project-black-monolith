@@ -120,3 +120,15 @@ check phases. Successful checks wrote JSON with the action IDs, digests, and
 audit outcomes. The early expiry check and a duplicate-comment check produced
 no files. The reports contained neither credentials nor reply text, and the
 unit tests verified that an existing report cannot be overwritten.
+
+The native CI smoke runner now runs this rehearsal from the checkout. From a
+clean checkout with no `.env`, install the locked Python dependencies, build
+the dashboard and the debug MCP-Shield binary, then run the following commands.
+The runner creates and cleans up its own PostgreSQL database and GitHub fixture.
+
+```sh
+npm ci --prefix dashboard
+npm --prefix dashboard run build
+cargo build --locked --manifest-path mcp-shield/Cargo.toml
+PG_BIN=/path/to/postgresql/17/bin python3 scripts/native_smoke.py
+```

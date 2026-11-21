@@ -162,6 +162,9 @@ def main():
                     check=True,
                     timeout=120,
                 )
+                from verify_github_pilot_local import exercise
+
+                exercise(env, state / "github-acceptance", free_port())
             # The compatibility roles must stay inert on a plain database.
             roles = subprocess.run(
                 [str(directory / ("psql" + suffix)), env["DATABASE_ADMIN_URL"],
