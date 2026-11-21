@@ -38,6 +38,11 @@ bash scripts/pilot_module_volumes.sh backup monolith ./module-backup
 bash scripts/pilot_module_volumes.sh restore monolith-recovery ./module-backup
 ```
 
+On Linux the backup helper stages the four archives in a private sibling
+directory and publishes the destination once the checksum manifest is complete.
+After an ordinary backup failure you can retry the same path. Existing backup
+destinations are preserved.
+
 The helper verifies every archive's SHA-256 before creating volumes and refuses
 existing destinations. Restore only backups you trust. Keep the original named
 volumes until recovery is verified. If extraction fails, the helper removes

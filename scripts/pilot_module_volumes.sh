@@ -20,6 +20,7 @@ for key in "${volumes[@]}"; do archives+=("$key.tar"); done
 
 case "$operation" in
   backup)
+    [[ ! -e $directory && ! -L $directory ]] || fail "Backup destination already exists: $directory"
     sources=()
     for key in "${volumes[@]}"; do
       volume=$(docker volume ls --quiet \
@@ -30,13 +31,21 @@ case "$operation" in
       [[ -z $running ]] || fail "Stop containers using $volume before backing it up."
       sources+=("$volume")
     done
-    mkdir -m 700 -- "$directory"
+    # Stage on the destination filesystem so a completed set appears atomically.
+    staging=$(mktemp -d -- "$(dirname -- "$directory")/.monolith-backup.XXXXXXXX")
+    trap 'rm -rf -- "$staging"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     for index in "${!sources[@]}"; do
       docker run --rm --network none --read-only \
         --mount "type=volume,src=${sources[$index]},dst=/data,readonly" \
-        "$helper" tar -cpf - -C /data . > "$directory/${archives[$index]}"
+        "$helper" tar -cpf - -C /data . > "$staging/${archives[$index]}"
     done
-    (cd -- "$directory" && sha256sum "${archives[@]}" > SHA256SUMS)
+    (cd -- "$staging" && sha256sum "${archives[@]}" > SHA256SUMS)
+    mv -nT -- "$staging" "${directory%/}"
+    # GNU mv -n may return success when another writer claimed the name.
+    [[ ! -d $staging ]] || fail "Backup destination already exists: $directory"
+    trap - EXIT INT TERM
     ;;
   restore)
     (cd -- "$directory" && sha256sum "${archives[@]}" | cmp -s SHA256SUMS -) \

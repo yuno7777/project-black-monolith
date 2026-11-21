@@ -153,3 +153,22 @@ The first restore exited with an error from tar (`invalid tar magic`). The
 volume listing was empty. The retry and backup both exited successfully.
 Comparison of all four archives confirmed matching file contents, entry types,
 modes, owners, link targets, and non-directory modification times.
+
+### Partial backup and concurrent publication
+
+On Linux, `python3 -m unittest discover -s scripts/tests -p test_module_backup.py`
+passed both regression tests. A Docker CLI fixture failed on the third archive
+with exit 42. The destination and staging directory were absent afterwards.
+Retrying the same path produced four archives with valid checksums. When a
+second writer created the destination during backup, its marker was preserved.
+
+A separate local Docker run restored the four saved module fixtures and ran
+the commands below. All four checksums passed, the destination mode was 0700,
+and repeating the backup returned an existing-destination error.
+
+```sh
+bash scripts/pilot_module_volumes.sh restore "$project" "$source_dir"
+bash scripts/pilot_module_volumes.sh backup "$project" "$backup_root/new backup"
+(cd "$backup_root/new backup" && sha256sum -c SHA256SUMS)
+bash scripts/pilot_module_volumes.sh backup "$project" "$backup_root/new backup"
+```
