@@ -58,6 +58,9 @@ class LocalToolsTests(unittest.TestCase):
             self.assertEqual(
                 configure(env, [3000, 8001, 8002])["DATABASE_ADMIN_URL"], env["DATABASE_ADMIN_URL"]
             )
+            accounts = json.dumps({"finance-reviewer": {"token": "fixture-operator", "role": "analyst", "tenant_id": "pilot"}})
+            env["OPERATOR_TOKENS_JSON"] = accounts
+            self.assertEqual(configure(env, [3000, 8001, 8002])["OPERATOR_TOKENS_JSON"], accounts)
             del env["MONOLITH_ADMIN_TOKEN"]
             with self.assertRaises(ValueError):
                 configure(env, [3000, 8001, 8002])
@@ -73,6 +76,19 @@ class LocalToolsTests(unittest.TestCase):
         for ports in ([1234, 1234], [0], [65536]):
             with self.assertRaises(ValueError):
                 check_ports(ports)
+
+    @unittest.skipIf(os.name == "nt", "POSIX listener reuse behavior")
+    def test_recently_stopped_service_port_can_be_reused(self):
+        with socket.socket() as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            port = listener.getsockname()[1]
+            with socket.create_connection(("127.0.0.1", port), timeout=2) as peer:
+                connection, _ = listener.accept()
+                connection.close()
+                self.assertEqual(peer.recv(1), b"")
+        check_ports([port])
 
     def test_process_failure_is_reported_and_log_preserved(self):
         with tempfile.TemporaryDirectory(prefix="monolith space ") as directory:

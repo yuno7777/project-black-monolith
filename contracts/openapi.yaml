@@ -9,6 +9,10 @@ paths:
   /retrieve:
     post:
       operationId: retrieveDocuments
+      security:
+        - workloadAuth: []
+        - {}
+      description: A workload credential is required when workload grants are enabled.
       parameters:
         - $ref: "#/components/parameters/TenantId"
         - $ref: "#/components/parameters/AgentId"
@@ -45,6 +49,10 @@ paths:
   /generate:
     post:
       operationId: auditGeneration
+      security:
+        - workloadAuth: []
+        - {}
+      description: A workload credential is required when workload grants are enabled.
       parameters:
         - $ref: "#/components/parameters/TenantId"
         - $ref: "#/components/parameters/AgentId"
@@ -188,11 +196,15 @@ paths:
   /v1/chat/completions:
     post:
       operationId: auditedChatCompletion
+      security:
+        - workloadAuth: []
+        - {}
       description: |
         OpenAI-compatible entry point. The prompt is audited with the same
         divergence and PII pipeline as /generate; divergent streams terminate
         with `finish_reason: "content_filter"`. TraceAudit is a detector, not a
         general-purpose model proxy; the backend is configured server-side.
+        A workload credential is required when workload grants are enabled.
       parameters:
         - $ref: "#/components/parameters/TenantId"
         - $ref: "#/components/parameters/AgentId"
@@ -220,6 +232,81 @@ paths:
                 $ref: "./schemas/trace-audit-api.v1.schema.json#/$defs/chatCompletionChunk"
         "422":
           description: The request body is not a usable chat completion request.
+  /api/github/issues/{issue}:
+    get:
+      operationId: readGitHubIssueForTriage
+      security:
+        - workloadAuth: []
+      parameters:
+        - name: issue
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200": { description: Issue data from the configured repository. }
+        "401": { description: The workload credential is invalid. }
+        "403": { description: Workload claims conflict or the session is revoked. }
+        "404": { description: The issue was not found. }
+  /api/github/triage:
+    get:
+      operationId: listGitHubTriageActions
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: before
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: Tenant-scoped approval records with a pagination cursor. }
+    post:
+      operationId: proposeGitHubTriageAction
+      security:
+        - workloadAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [request_id, issue, action]
+              additionalProperties: false
+              properties:
+                request_id: { type: string, format: uuid }
+                issue: { type: integer, minimum: 1 }
+                action:
+                  type: object
+                  additionalProperties: false
+                  required: [kind, value]
+                  properties:
+                    kind: { type: string, enum: [reply, add_label, remove_label] }
+                    value: { type: string, minLength: 1 }
+      responses:
+        "202": { description: The immutable proposal is recorded for review. }
+        "409": { description: The request ID is already bound to a different proposal. }
+  /api/github/triage/{id}:
+    post:
+      operationId: reviewGitHubTriageAction
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [digest, decision]
+              additionalProperties: false
+              properties:
+                digest: { type: string, pattern: '^[a-f0-9]{64}$' }
+                decision: { type: string, enum: [approve, deny, revoke_session] }
+      responses:
+        "200": { description: The recorded action outcome or the session revocation. }
+        "409": { description: The proposal does not match or the approval is already consumed. }
   /api/ingest:
     post:
       operationId: ingestSecurityEvents
@@ -273,6 +360,46 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OperationsReplayResponse"
+  /api/sessions/revoked:
+    get:
+      operationId: readSessionRevocation
+      description: With both query parameters, checks the exact session against PostgreSQL. Without them, returns the legacy tenant snapshot.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+        - name: x-monolith-module
+          in: header
+          required: true
+          schema: { type: string, enum: [mcp-shield, vector-anchor, trace-audit] }
+        - name: agent_id
+          in: query
+          schema: { type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$' }
+        - name: session_id
+          in: query
+          schema: { type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$' }
+      responses:
+        "200":
+          description: Exact revocation status or a tenant snapshot.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [revoked]
+                    properties:
+                      revoked: { type: boolean }
+                  - type: object
+                    required: [tenant_id, generated_at_ms, revoked_sessions]
+                    properties:
+                      tenant_id: { type: string }
+                      generated_at_ms: { type: integer }
+                      revoked_sessions:
+                        type: array
+                        items: { type: string }
+        "401": { description: The module credential is invalid for this tenant. }
+        "422": { description: One or both exact session identifiers are invalid. }
+        "503": { description: The authoritative revocation ledger is unavailable. }
   /api/incidents/{eventId}/session:
     get:
       operationId: readIncidentSession
@@ -359,6 +486,10 @@ paths:
           description: Benchmark run persisted.
 components:
   securitySchemes:
+    workloadAuth:
+      type: apiKey
+      in: header
+      name: X-Monolith-Workload-Token
     bearerAuth:
       type: http
       scheme: bearer

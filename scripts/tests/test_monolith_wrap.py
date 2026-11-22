@@ -776,6 +776,10 @@ class ChildEnvTests(unittest.TestCase):
             "MONOLITH_ADMIN_TOKEN": "admin-token-0004",
             "MCP_SHIELD_KEY": "hmac-key-0005",
             "PBM_SECRET_PROVIDER_TOKEN": "provider-token-0006",
+            "MONOLITH_BUSINESS_CONNECTORS_JSON": "private-connector-config",
+            "MONOLITH_PRACTICE_CONNECTOR_TOKEN": "private-practice-token",
+            "MONOLITH_BUSINESS_REVIEWERS_JSON": "reviewer-membership",
+            "OPERATOR_TOKENS_JSON": "operator-accounts",
             "A_TOKEN_FOR_SOMETHING_ELSE": "not-ours-to-take",
         }
         child = build_child_env(base)
@@ -787,6 +791,10 @@ class ChildEnvTests(unittest.TestCase):
             "MONOLITH_ADMIN_TOKEN",
             "MCP_SHIELD_KEY",
             "PBM_SECRET_PROVIDER_TOKEN",
+            "MONOLITH_BUSINESS_CONNECTORS_JSON",
+            "MONOLITH_PRACTICE_CONNECTOR_TOKEN",
+            "MONOLITH_BUSINESS_REVIEWERS_JSON",
+            "OPERATOR_TOKENS_JSON",
         ):
             self.assertNotIn(name, child, f"{name} must not reach the agent")
 
@@ -1008,6 +1016,35 @@ class InjectorTests(unittest.TestCase):
         # The client's own credential is forwarded, never replaced.
         self.assertEqual(sent["headers"]["x-api-key"], "client-secret-key")
         self.assertEqual(sent["headers"]["authorization"], "Bearer client-token")
+
+    def test_workload_token_goes_only_to_protected_services(self):
+        memory = _Service()
+        self.addCleanup(memory.close)
+        with _Injector(
+            self.trace_audit.url,
+            self.upstream.url,
+            {"X-Monolith-Session-Id": "sess-wrap"},
+            vector_anchor_url=memory.url,
+            workload_token="workload-test-credential",
+        ) as injector:
+            for path in ("/v1/messages", "/monolith/retrieve", "/v1/models"):
+                request = urllib.request.Request(
+                    injector.base_url + path, data=b"{}", headers={
+                        "authorization": "Bearer model-test-credential",
+                        "x-monolith-workload-token": "client-supplied-value",
+                    },
+                )
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    self.assertEqual(response.status, 200)
+                    response.read()
+
+        self.assertEqual(memory.received[0]["path"], "/retrieve")
+        self.assertEqual(memory.received[0]["headers"]["x-monolith-workload-token"], "workload-test-credential")
+        self.assertNotIn("authorization", memory.received[0]["headers"])
+        audit_headers = self.trace_audit.received[0]["headers"]
+        self.assertEqual(audit_headers["x-monolith-workload-token"], "workload-test-credential")
+        self.assertEqual(audit_headers["authorization"], "Bearer model-test-credential")
+        self.assertNotIn("x-monolith-workload-token", self.upstream.received[0]["headers"])
 
     def test_the_clients_credential_does_not_go_through_an_ambient_proxy(self):
         """The hop to the auditor carries the client's own credential.

@@ -107,6 +107,35 @@ every API independently validates the session or bearer credential.
 
 ## Module and service credentials
 
+### Authenticated agent workloads
+
+Set `MONOLITH_WORKLOAD_GRANTS_JSON` in VectorAnchor and TraceAudit to require a
+credential for `/retrieve`, `/generate`, `/v1/messages`, and
+`/v1/chat/completions`. Each service instance hosts exactly one tenant, set by
+`MONOLITH_TENANT_ID`. Provision independent instances, event tokens, and
+VectorAnchor data volumes per tenant. Keep the variable unset for the offline
+demo. An empty or malformed value rejects workload requests with HTTP 503.
+
+Each grant has `agent_id`, `session_id`, and `token_sha256`. Generate a high
+entropy token with `secrets.token_urlsafe(32)` and store only its lowercase
+SHA-256 hex digest in the grant array. Deliver the token to the workload using
+the deployment's secret store. Direct clients send `X-Monolith-Workload-Token`.
+The launcher accepts `MONOLITH_WORKLOAD_TOKEN` with `--agent-id` and
+`--session-id` matching the grant. It sends the token through its loopback
+proxy to both services. The model upstream receives only its own provider
+credential. Use HTTPS for non-loopback launcher-to-service connections.
+
+Requests use the grant's fixed identity. A conflicting tenant, agent, or
+session header returns HTTP 403. Before accepting each request, the service
+checks the exact tuple against the PostgreSQL-backed dashboard using its
+tenant-scoped ingest credential. A revoked session returns HTTP 403 and an
+unavailable ledger returns HTTP 503. This protects new requests. An operation
+already admitted may finish while revocation is being recorded.
+
+For rotation, add the new token digest for the same tuple, restart the services,
+switch the workload to the new token, and remove the old digest. Revoke the
+session from the investigation queue to stop all its credentials at once.
+
 `EVENT_INGEST_TOKENS_JSON` is tenant-first:
 
 ```json

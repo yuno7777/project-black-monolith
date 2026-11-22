@@ -101,7 +101,7 @@ def main() -> int:
     model_port = free_port()
     audit_port = free_port()
     workdir = Path(tempfile.mkdtemp(prefix="monolith-gateway-demo-"))
-    session_id = f"demo-gateway-{int(time.time())}"
+    session_id = os.environ.get("MONOLITH_GATEWAY_DEMO_SESSION_ID") or f"demo-gateway-{int(time.time())}"
 
     print("  Project Black Monolith - agent gateway demo")
     print(f"  session id  {session_id}")
@@ -166,7 +166,8 @@ def main() -> int:
         completed = subprocess.run(
             [
                 sys.executable,
-                str(REPO_ROOT / "scripts" / "monolith_wrap.py"),
+                str(REPO_ROOT / "scripts" / "monolith.py"),
+                "wrap",
                 "--agent",
                 sys.executable,
                 "--session-id",

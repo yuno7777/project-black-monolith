@@ -78,7 +78,7 @@ class RetrieverProxy:
             # closed, the way the registry itself fails when its refresh
             # fails.
             return self._refuse_unattributed_retrieval(query, ctx)
-        if is_session_revoked(session_id):
+        if ctx and not ctx.workload_authenticated and is_session_revoked(session_id):
             return self._refuse_revoked_session(query, session_id, ctx)
 
         start = now_ms()

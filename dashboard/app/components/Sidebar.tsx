@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { MonolithEvent } from "@/lib/types";
 import { KNOWN_MODULES, MODULE_ACCENT, MODULE_LABELS, MODULE_LAYER } from "@/lib/types";
-import { Logo, ModuleGlyph, IconActivity, IconGrid, IconLedger, IconGauge, IconGear, IconPlug } from "./Icons";
+import { Logo, ModuleGlyph, IconActivity, IconCheck, IconGrid, IconLedger, IconGauge, IconGear, IconPlug, IconReason } from "./Icons";
 
 /** The narrow icon rail. Settings does not exist yet, so it is not presented
  *  as if it does. */
@@ -30,6 +30,24 @@ export function Rail() {
         title="Investigation queue"
       >
         <IconLedger />
+      </Link>
+      <Link
+        href="/business"
+        className={`rail-btn${path === "/business" ? " on" : ""}`}
+        aria-label="Business workspace"
+        aria-current={path === "/business" ? "page" : undefined}
+        title="Business workspace"
+      >
+        <IconReason />
+      </Link>
+      <Link
+        href="/triage"
+        className={`rail-btn${path === "/triage" ? " on" : ""}`}
+        aria-label="GitHub approvals"
+        aria-current={path === "/triage" ? "page" : undefined}
+        title="GitHub approvals"
+      >
+        <IconCheck />
       </Link>
       <Link
         href="/benchmarks"

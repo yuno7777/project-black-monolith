@@ -15,9 +15,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use fs2::FileExt;
-// hmac 0.13 exposes `new_from_slice` as a `KeyInit` trait method rather than
-// an inherent constructor, so the trait has to be in scope.
-use hmac::{Hmac, KeyInit, Mac};
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};

@@ -133,6 +133,14 @@ def resolve_setting(name: str, dotenv: dict[str, str], default: str | None = Non
     return default
 
 
+def service_urls(dotenv: dict[str, str]) -> tuple[str, str, str]:
+    return (
+        resolve_setting("MONOLITH_DASHBOARD_API_URL", dotenv) or DEFAULT_DASHBOARD_URL,
+        resolve_setting("MONOLITH_VECTOR_ANCHOR_URL", dotenv) or DEFAULT_VECTOR_ANCHOR_URL,
+        resolve_setting("MONOLITH_TRACE_AUDIT_URL", dotenv) or DEFAULT_TRACE_AUDIT_URL,
+    )
+
+
 def mint_session_id() -> str:
     """A session id that nothing else on the machine can guess.
 
@@ -269,6 +277,15 @@ def _proxy_advisory(
     return lines
 
 
+def _diagnostic_origin(url: str) -> str:
+    try:
+        # Proxy and service URLs can include user info or secrets in the path.
+        parsed = urllib.parse.urlsplit(url if "://" in url else f"//{url}")
+        return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc.rsplit("@", 1)[-1], "", "", ""))
+    except ValueError:
+        return "[invalid URL]"
+
+
 def _unreachable(what: str, url: str) -> str:
     """Why a service did not answer, naming the proxy when one carried it.
 
@@ -277,10 +294,13 @@ def _unreachable(what: str, url: str) -> str:
     the stack may be up and working, and the proxy may be the reason
     nothing answered.
     """
-    message = f"{what} is not answering at {url}"
-    proxy = _ambient_proxy_for(url)
+    message = f"{what} is not answering at {_diagnostic_origin(url)}"
+    try:
+        proxy = _ambient_proxy_for(url)
+    except ValueError:
+        return message
     if proxy and _should_use_ambient_proxy(url, carries_credential=False):
-        message += f" (the request went through the ambient proxy {proxy})"
+        message += f" (check the configured proxy at {_diagnostic_origin(proxy)})"
     return message
 
 
@@ -516,6 +536,8 @@ class _InjectorHandler(BaseHTTPRequestHandler):
     # Set by the launcher before the server starts.
     trace_audit_url: str = DEFAULT_TRACE_AUDIT_URL
     upstream_url: str = DEFAULT_UPSTREAM_URL
+    vector_anchor_url: str | None = None
+    workload_token: str | None = None
     correlation: dict[str, str] = {}
     read_timeout: float = 600.0
     # Whether the operator has said that an ambient proxy may carry the
@@ -547,6 +569,8 @@ class _InjectorHandler(BaseHTTPRequestHandler):
         headers["accept-encoding"] = "identity"
         if stamped:
             headers.update(self.correlation)
+            if self.workload_token:
+                headers["X-Monolith-Workload-Token"] = self.workload_token
         return headers
 
     def _normalized_path(self) -> str:
@@ -574,12 +598,21 @@ class _InjectorHandler(BaseHTTPRequestHandler):
     def _is_messages_path(self) -> bool:
         return self._normalized_path() == "/v1/messages"
 
+    def _is_retrieve_path(self) -> bool:
+        return self._normalized_path() == "/monolith/retrieve"
+
     def _target(self) -> str:
         if self._is_messages_path():
             return self.trace_audit_url.rstrip("/") + "/v1/messages"
+        if self._is_retrieve_path() and self.vector_anchor_url:
+            return self.vector_anchor_url.rstrip("/") + "/retrieve"
         return self.upstream_url.rstrip("/") + self.path
 
     def _proxy(self, method: str) -> None:
+        retrieval = self._is_retrieve_path()
+        if retrieval and (method != "POST" or not self.vector_anchor_url):
+            self._refuse(404, "retrieval is unavailable")
+            return
         try:
             length = int(self.headers.get("content-length") or 0)
         except ValueError:
@@ -605,13 +638,20 @@ class _InjectorHandler(BaseHTTPRequestHandler):
             # waiting as long as it takes.
             self.connection.settimeout(None)
         target = self._target()
+        protected_route = self._is_messages_path() or retrieval
+        headers = self._forward_headers(stamped=protected_route)
+        if retrieval:
+            headers = {key: value for key, value in headers.items() if key.lower() in {
+                "content-type", "accept-encoding", "x-monolith-tenant-id", "x-monolith-agent-id",
+                "x-monolith-session-id", "x-monolith-workload-token",
+            }}
         request = urllib.request.Request(
             target,
             data=body if body else None,
             # The session id is stamped on the request that goes to the
             # auditor, and nowhere else: it is how a run is attributed, and
             # it is not the model provider's business.
-            headers=self._forward_headers(stamped=self._is_messages_path()),
+            headers=headers,
             method=method,
         )
         try:
@@ -620,7 +660,7 @@ class _InjectorHandler(BaseHTTPRequestHandler):
             # local auditor would otherwise be handed to whatever proxy
             # the host happens to be configured with.
             response = _opener(
-                use_proxy=_should_use_ambient_proxy(
+                use_proxy=not (self.workload_token and protected_route) and _should_use_ambient_proxy(
                     target,
                     carries_credential=True,
                     allow_credential_via_proxy=self.allow_credential_via_proxy,
@@ -704,6 +744,9 @@ class _Injector:
         upstream_url: str,
         correlation: dict[str, str],
         allow_credential_via_proxy: bool = False,
+        *,
+        vector_anchor_url: str | None = None,
+        workload_token: str | None = None,
     ):
         handler = type(
             "BoundInjectorHandler",
@@ -712,6 +755,8 @@ class _Injector:
                 "trace_audit_url": trace_audit_url,
                 "upstream_url": upstream_url,
                 "correlation": correlation,
+                "vector_anchor_url": vector_anchor_url,
+                "workload_token": workload_token,
                 "allow_credential_via_proxy": allow_credential_via_proxy,
             },
         )
@@ -775,14 +820,46 @@ def find_mcp_shield() -> Path | None:
     explicit = os.environ.get("MONOLITH_MCP_SHIELD_BIN")
     if explicit:
         candidate = Path(explicit)
-        return candidate if candidate.is_file() else None
+        return candidate.resolve() if candidate.is_file() and os.access(candidate, os.X_OK) else None
     for profile in ("release", "debug"):
         for name in ("mcp-shield", "mcp-shield.exe"):
             candidate = REPO_ROOT / "mcp-shield" / "target" / profile / name
-            if candidate.is_file():
+            if candidate.is_file() and os.access(candidate, os.X_OK):
                 return candidate
     found = shutil.which("mcp-shield")
     return Path(found) if found else None
+
+
+def check_gateway_readiness(
+    dashboard_url: str,
+    vector_anchor_url: str,
+    trace_audit_url: str,
+    *,
+    shield: Path | None,
+    event_token: str | None,
+    require_shield: bool,
+) -> list[tuple[str, str | None]]:
+    services = (
+        ("Dashboard ingest", dashboard_url, "/api/ingest"),
+        ("VectorAnchor", vector_anchor_url, "/health"),
+        ("TraceAudit", trace_audit_url, "/health"),
+    )
+    checks = [
+        (name, None if service_healthy(url.rstrip("/") + path) else _unreachable(name, url))
+        for name, url, path in services
+    ]
+    if require_shield:
+        shield_error = (
+            "Build with `cargo build --locked --release --manifest-path mcp-shield/Cargo.toml` "
+            "or set MONOLITH_MCP_SHIELD_BIN to an executable file."
+        )
+        checks.append(("MCP-Shield binary", None if shield else shield_error))
+    token_error = (
+        "MONOLITH_EVENT_TOKEN_MCP_SHIELD is missing. "
+        "Run `monolith init` for a new local stack or check the existing configuration."
+    )
+    checks.append(("MCP-Shield event token", None if event_token else token_error))
+    return checks
 
 
 def build_shield_env(
@@ -839,6 +916,14 @@ AGENT_HIDDEN_ENV = (
     "MONOLITH_OPERATOR_TOKEN",
     "MONOLITH_ADMIN_TOKEN",
     "MONOLITH_EVENT_TOKEN",
+    "MONOLITH_WORKLOAD_TOKEN",
+    "MONOLITH_WORKLOAD_GRANTS_JSON",
+    "MONOLITH_GITHUB_TOKEN",
+    "MONOLITH_VERIFY_GITHUB_TOKEN",
+    "MONOLITH_BUSINESS_CONNECTORS_JSON",
+    "MONOLITH_PRACTICE_CONNECTOR_TOKEN",
+    "MONOLITH_BUSINESS_REVIEWERS_JSON",
+    "OPERATOR_TOKENS_JSON",
     "MCP_SHIELD_KEY",
     "MCP_SHIELD_SECRET_BOUNDARY_CONFIG",
     "MONOLITH_DASHBOARD_URL",
@@ -1069,14 +1154,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     dotenv = load_dotenv(REPO_ROOT / ".env")
-    dashboard_url = resolve_setting("MONOLITH_DASHBOARD_API_URL", dotenv, DEFAULT_DASHBOARD_URL)
-    vector_anchor_url = resolve_setting("MONOLITH_VECTOR_ANCHOR_URL", dotenv, DEFAULT_VECTOR_ANCHOR_URL)
-    trace_audit_url = resolve_setting("MONOLITH_TRACE_AUDIT_URL", dotenv, DEFAULT_TRACE_AUDIT_URL)
+    dashboard_url, vector_anchor_url, trace_audit_url = service_urls(dotenv)
     tenant_id = args.tenant_id or resolve_setting("MONOLITH_TENANT_ID", dotenv, "default")
     agent_id = args.agent_id or resolve_setting("MONOLITH_AGENT_ID", dotenv, "claude-code")
     operator_token = resolve_setting("MONOLITH_OPERATOR_TOKEN", dotenv)
     event_token = resolve_setting("MONOLITH_EVENT_TOKEN_MCP_SHIELD", dotenv)
     shield_key = resolve_setting("MCP_SHIELD_KEY", dotenv)
+    workload_token = resolve_setting("MONOLITH_WORKLOAD_TOKEN", dotenv)
+    if workload_token:
+        if not args.session_id:
+            parser.error("MONOLITH_WORKLOAD_TOKEN requires the grant's --session-id")
+        if not all(credential_transport_is_trusted(url, False) for url in (vector_anchor_url, trace_audit_url)):
+            parser.error("workload credentials require HTTPS or loopback service URLs")
     # One answer to "is the network trusted?", read once and used by both
     # the launcher's own report and the tool layer's delivery.
     allow_insecure_dashboard = (
@@ -1114,24 +1203,16 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  agent       {agent_id}   tenant {tenant_id}")
 
     # --- preflight -------------------------------------------------------
-    problems: list[str] = []
-    if not service_healthy(dashboard_url.rstrip("/") + "/api/ingest"):
-        problems.append(_unreachable("the dashboard", dashboard_url))
-    if not service_healthy(vector_anchor_url.rstrip("/") + "/health"):
-        problems.append(_unreachable("VectorAnchor", vector_anchor_url))
-    if not service_healthy(trace_audit_url.rstrip("/") + "/health"):
-        problems.append(_unreachable("TraceAudit", trace_audit_url))
     shield = find_mcp_shield()
-    if shield is None and not args.no_mcp:
-        problems.append(
-            "the MCP-Shield binary was not found - build it with "
-            "`cargo build --release` in mcp-shield/, or set MONOLITH_MCP_SHIELD_BIN"
-        )
-    if not event_token:
-        problems.append(
-            "MONOLITH_EVENT_TOKEN_MCP_SHIELD was not found (the .env file next to "
-            "the stack carries it) - the tool layer would have nowhere to report"
-        )
+    checks = check_gateway_readiness(
+        dashboard_url,
+        vector_anchor_url,
+        trace_audit_url,
+        shield=shield,
+        event_token=event_token,
+        require_shield=not args.no_mcp,
+    )
+    problems = [problem for _, problem in checks if problem]
     if problems:
         print("\n  The stack is not ready:")
         for problem in problems:
@@ -1177,7 +1258,6 @@ def main(argv: list[str] | None = None) -> int:
         python=sys.executable,
     )
     config_path = workdir / "mcp-config.json"
-    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
     # The agent inherits the operator's environment, minus the credentials
     # the Monolith stack holds. The agent is the thing this system defends
@@ -1186,7 +1266,12 @@ def main(argv: list[str] | None = None) -> int:
     child_env = build_child_env()
     hidden = sorted(set(os.environ) - set(child_env))
 
-    print(f"  tool layer {len(config['mcpServers'])} MCP server(s) through MCP-Shield")
+    mcp_servers = config["mcpServers"]
+    shielded = sum(
+        shield is not None and server.get("command") == str(shield)
+        for server in mcp_servers.values()
+    )
+    print(f"  tool layer {shielded}/{len(mcp_servers)} MCP server(s) through MCP-Shield")
     print(f"  memory     VectorAnchor at {vector_anchor_url}")
     print(f"  reasoning  TraceAudit at {trace_audit_url}")
     if hidden:
@@ -1209,7 +1294,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.plan:
         print(f"\n  The MCP configuration would be written to {config_path}:\n")
         print(json.dumps(redact_config_secrets(config), indent=2))
-        print("\n  (environment values are redacted; the file on disk carries the real ones)")
+        print("\n  (credential values are redacted)")
         shutil.rmtree(workdir, ignore_errors=True)
         return 0
 
@@ -1226,8 +1311,15 @@ def main(argv: list[str] | None = None) -> int:
         upstream_url,
         correlation,
         allow_credential_via_proxy=allow_credential_via_proxy,
+        vector_anchor_url=vector_anchor_url if workload_token else None,
+        workload_token=workload_token,
     ) as injector:
         child_env["ANTHROPIC_BASE_URL"] = injector.base_url
+        if workload_token:
+            config["mcpServers"]["vector-anchor"]["env"]["MONOLITH_VECTOR_ANCHOR_URL"] = (
+                injector.base_url + "/monolith"
+            )
+        config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
         # The MCP flags go after the agent's own arguments, not before: an
         # agent that takes a script path would otherwise have its flags read
         # as the interpreter's.

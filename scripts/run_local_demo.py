@@ -66,7 +66,7 @@ def configure(env: dict[str, str], ports: list[int]) -> dict[str, str]:
     env["EVENT_INGEST_TOKENS_JSON"] = json.dumps(
         {tenant: {module: env[name] for module, name in zip(modules, token_names, strict=True)}}
     )
-    env["OPERATOR_TOKENS_JSON"] = json.dumps(
+    env.setdefault("OPERATOR_TOKENS_JSON", json.dumps(
         {
             env["MONOLITH_OPERATOR_NAME"]: {
                 "token": env["MONOLITH_OPERATOR_TOKEN"],
@@ -74,7 +74,7 @@ def configure(env: dict[str, str], ports: list[int]) -> dict[str, str]:
                 "tenant_id": tenant,
             }
         }
-    )
+    ))
     for key, user, password in (
         ("DATABASE_ADMIN_URL", "postgres", "MONOLITH_POSTGRES_PASSWORD"),
         ("DATABASE_URL", "monolith_runtime", "MONOLITH_DATABASE_RUNTIME_PASSWORD"),
@@ -113,6 +113,10 @@ def check_ports(ports: list[int]) -> None:
         raise ValueError("Service ports must be distinct and between 1 and 65535")
     for port in ports:
         with socket.socket() as sock:
+            if os.name != "nt":
+                # Match the service listeners, which can bind while their old
+                # connections are still in TIME_WAIT after a clean shutdown.
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 sock.bind(("127.0.0.1", port))
             except OSError as error:
@@ -309,8 +313,7 @@ def attacks(runner: Runner, env: dict[str, str], state: Path, ports: list[int]) 
             raise RuntimeError(f"MCP phase {phase} did not return the trusted tool")
         if "<IMPORTANT>" in json.dumps(responses):
             raise RuntimeError("MCP enforce mode forwarded the poisoned description")
-        if phase == 2 and "SCHEMA MISMATCH DETECTED" not in output:
-            raise RuntimeError("MCP rug pull did not trigger detection")
+        # The ledger assertion verifies the structured schema_mismatch event.
     vector_env = env | {"MONOLITH_SERVICE_URL": f"http://127.0.0.1:{ports[1]}"}
     for fixture, queries in (
         (
@@ -397,6 +400,12 @@ def main() -> int:
         ]
         check_ports(ports)
         env = configure(env, ports)
+        env.pop("MONOLITH_PRACTICE_CONNECTOR_TOKEN", None)
+        dashboard_only = {}
+        for key in ("MONOLITH_GITHUB_TOKEN", "MONOLITH_BUSINESS_CONNECTORS_JSON",
+                    "MONOLITH_BUSINESS_REVIEWERS_JSON", "OPERATOR_TOKENS_JSON"):
+            if key in env:
+                dashboard_only[key] = env.pop(key)
         env.setdefault("MONOLITH_SESSION_ID", "demo-" + uuid.uuid4().hex)
         env.setdefault("MONOLITH_AGENT_ID", "native-demo-agent")
         shield_binary = (
@@ -474,7 +483,7 @@ def main() -> int:
             "dashboard",
             [node, str(next_cli), "start", "-H", "127.0.0.1", "-p", str(ports[0])],
             dashboard,
-            env,
+            env | dashboard_only,
         )
         services = [process]
         wait_health(f"http://127.0.0.1:{ports[0]}/api/ingest", process)

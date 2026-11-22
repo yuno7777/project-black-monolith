@@ -16,6 +16,9 @@ jobs:
   real-models:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_NUM_PARALLEL: "1"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
@@ -32,11 +35,7 @@ jobs:
           echo "$RUNNER_TEMP/ollama/bin" >> "$GITHUB_PATH"
       - name: Start real inference and pull two models
         run: |
-          ollama serve > /tmp/ollama.log 2>&1 &
-          for attempt in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:11434/api/tags; then break; fi
-            sleep 1
-          done
+          bash evaluation/ollama_ci.sh start
           ollama pull llama3.2:1b
           ollama pull qwen2.5:0.5b
       - name: Import independent test split and evaluate content policy
@@ -49,8 +48,8 @@ jobs:
       - name: Evaluate semantic retrieval and two real models
         run: |
           python evaluation/real_models.py vector --output evaluation/results/semantic-real.json
-          python evaluation/real_models.py trace --model llama3.2:1b --external evaluation/results/external.json --output evaluation/results/llama-real.json
-          python evaluation/real_models.py trace --model qwen2.5:0.5b --external evaluation/results/external.json --output evaluation/results/qwen-real.json
+          bash evaluation/ollama_ci.sh evaluate llama3.2:1b evaluation/results/llama-real.json
+          bash evaluation/ollama_ci.sh evaluate qwen2.5:0.5b evaluation/results/qwen-real.json
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: '22'
@@ -78,4 +77,5 @@ jobs:
             evaluation/results/content-independent.json
             evaluation/results/content-development.json
             evaluation/results/redaction-stress.json
+            ${{ runner.temp }}/monolith-ollama.log
           if-no-files-found: error

@@ -35,7 +35,7 @@ def postgres_bin():
     suffix = ".exe" if os.name == "nt" else ""
     for path in candidates:
         if (path / ("initdb" + suffix)).is_file():
-            return path, suffix
+            return path.resolve(), suffix
     raise RuntimeError("Install PostgreSQL or set PG_BIN to its bin directory")
 
 
@@ -154,6 +154,22 @@ def main():
                         target.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(report, target)
                         print(target.read_text(encoding="utf-8"))
+            else:
+                subprocess.run(
+                    ["node", "node_modules/tsx/dist/cli.mjs", "--test", "test/github-triage.test.ts"],
+                    cwd=ROOT / "dashboard",
+                    env=env | {"MONOLITH_TRIAGE_TEST_DATABASE_ADMIN_URL": env["DATABASE_ADMIN_URL"]},
+                    check=True,
+                    timeout=120,
+                )
+                from verify_github_pilot_local import exercise
+
+                # Windows resolves executables using the parent process's PATH.
+                psql = directory / ("psql" + suffix)
+                exercise(env, state / "github-acceptance", free_port(), psql)
+                from verify_business_local import exercise as exercise_business
+
+                exercise_business(env, state / "business-acceptance", free_port(), psql)
             # The compatibility roles must stay inert on a plain database.
             roles = subprocess.run(
                 [str(directory / ("psql" + suffix)), env["DATABASE_ADMIN_URL"],
