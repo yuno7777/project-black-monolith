@@ -8,7 +8,9 @@ import re
 import sqlite3
 import sys
 import uuid
+from collections.abc import Callable
 from contextlib import closing
+from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -98,19 +100,24 @@ def record(path: Path, tenant: str, decision_id: str, action: dict) -> dict:
     return receipt(decision_id)
 
 
-class PracticeServer(ThreadingHTTPServer):
-    def __init__(self, port: int, path: Path, tenant: str, token: str):
+class ConnectorServer(ThreadingHTTPServer):
+    def __init__(self, port: int, tenant: str, token: str, dispatch: Callable[[str, dict], dict]):
         if not TENANT.fullmatch(tenant) or not TOKEN.fullmatch(token):
-            raise ValueError("A tenant ID and valid MONOLITH_PRACTICE_CONNECTOR_TOKEN are required.")
-        initialize_ledger(path)
-        self.path = path
+            raise ValueError("A tenant ID and valid connector bearer credential are required.")
         self.tenant = tenant
         self.authorization = f"Bearer {token}".encode("ascii")
-        super().__init__(("127.0.0.1", port), PracticeHandler)
+        self.dispatch = dispatch
+        super().__init__(("127.0.0.1", port), ConnectorHandler)
 
 
-class PracticeHandler(BaseHTTPRequestHandler):
-    server: PracticeServer
+class PracticeServer(ConnectorServer):
+    def __init__(self, port: int, path: Path, tenant: str, token: str):
+        initialize_ledger(path)
+        super().__init__(port, tenant, token, partial(record, path, tenant))
+
+
+class ConnectorHandler(BaseHTTPRequestHandler):
+    server: ConnectorServer
     timeout = 5
 
     def log_message(self, _format, *_args):
@@ -145,7 +152,7 @@ class PracticeHandler(BaseHTTPRequestHandler):
             raise RequestError(422, "Decision and idempotency key must agree.")
         if data["tenant"] != self.server.tenant:
             raise RequestError(403, "Wrong tenant.")
-        return record(self.server.path, self.server.tenant, keys[0], validated_action(data["action"]))
+        return self.server.dispatch(keys[0], validated_action(data["action"]))
 
     def do_POST(self):
         try:
@@ -156,7 +163,7 @@ class PracticeHandler(BaseHTTPRequestHandler):
         except UnicodeError:
             result, status = {"error": "Invalid Unicode."}, 422
         except sqlite3.Error:
-            result, status = {"error": "Local rehearsal ledger unavailable."}, 503
+            result, status = {"error": "Connector receipt ledger unavailable."}, 503
         body = json.dumps(result).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")

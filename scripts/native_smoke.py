@@ -170,6 +170,9 @@ def main():
                 from verify_business_local import exercise as exercise_business
 
                 exercise_business(env, state / "business-acceptance", free_port(), psql)
+                from verify_zendesk_local import exercise as exercise_zendesk
+
+                exercise_zendesk(env, state / "zendesk-acceptance", free_port())
             # The compatibility roles must stay inert on a plain database.
             roles = subprocess.run(
                 [str(directory / ("psql" + suffix)), env["DATABASE_ADMIN_URL"],

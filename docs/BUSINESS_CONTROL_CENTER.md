@@ -188,6 +188,9 @@ has acknowledged both.
 
 ## Implement the customer connector
 
+For a ready-to-run support reply adapter, use the
+[Zendesk support pilot](ZENDESK_SUPPORT_PILOT.md) with synthetic sandbox tickets.
+
 The dashboard sends an authenticated HTTP POST with `Authorization: Bearer`
 and an `Idempotency-Key` equal to the decision ID. The JSON body contains
 `id`, `tenant` and the approved `action`. Use HTTPS for a remote connector.
