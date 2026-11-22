@@ -400,7 +400,9 @@ def main() -> int:
         ]
         check_ports(ports)
         env = configure(env, ports)
-        env.pop("MONOLITH_PRACTICE_CONNECTOR_TOKEN", None)
+        for key in ("MONOLITH_PRACTICE_CONNECTOR_TOKEN", "MONOLITH_ZENDESK_ACCESS_TOKEN",
+                    "MONOLITH_ZENDESK_CONNECTOR_TOKEN", "MONOLITH_VERIFY_ZENDESK_TOKEN"):
+            env.pop(key, None)
         dashboard_only = {}
         for key in ("MONOLITH_GITHUB_TOKEN", "MONOLITH_BUSINESS_CONNECTORS_JSON",
                     "MONOLITH_BUSINESS_REVIEWERS_JSON", "OPERATOR_TOKENS_JSON"):
