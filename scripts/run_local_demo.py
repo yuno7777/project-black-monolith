@@ -66,7 +66,7 @@ def configure(env: dict[str, str], ports: list[int]) -> dict[str, str]:
     env["EVENT_INGEST_TOKENS_JSON"] = json.dumps(
         {tenant: {module: env[name] for module, name in zip(modules, token_names, strict=True)}}
     )
-    env["OPERATOR_TOKENS_JSON"] = json.dumps(
+    env.setdefault("OPERATOR_TOKENS_JSON", json.dumps(
         {
             env["MONOLITH_OPERATOR_NAME"]: {
                 "token": env["MONOLITH_OPERATOR_TOKEN"],
@@ -74,7 +74,7 @@ def configure(env: dict[str, str], ports: list[int]) -> dict[str, str]:
                 "tenant_id": tenant,
             }
         }
-    )
+    ))
     for key, user, password in (
         ("DATABASE_ADMIN_URL", "postgres", "MONOLITH_POSTGRES_PASSWORD"),
         ("DATABASE_URL", "monolith_runtime", "MONOLITH_DATABASE_RUNTIME_PASSWORD"),
@@ -400,7 +400,12 @@ def main() -> int:
         ]
         check_ports(ports)
         env = configure(env, ports)
-        github_token = env.pop("MONOLITH_GITHUB_TOKEN", None)
+        env.pop("MONOLITH_PRACTICE_CONNECTOR_TOKEN", None)
+        dashboard_only = {}
+        for key in ("MONOLITH_GITHUB_TOKEN", "MONOLITH_BUSINESS_CONNECTORS_JSON",
+                    "MONOLITH_BUSINESS_REVIEWERS_JSON", "OPERATOR_TOKENS_JSON"):
+            if key in env:
+                dashboard_only[key] = env.pop(key)
         env.setdefault("MONOLITH_SESSION_ID", "demo-" + uuid.uuid4().hex)
         env.setdefault("MONOLITH_AGENT_ID", "native-demo-agent")
         shield_binary = (
@@ -478,7 +483,7 @@ def main() -> int:
             "dashboard",
             [node, str(next_cli), "start", "-H", "127.0.0.1", "-p", str(ports[0])],
             dashboard,
-            env if github_token is None else env | {"MONOLITH_GITHUB_TOKEN": github_token},
+            env | dashboard_only,
         )
         services = [process]
         wait_health(f"http://127.0.0.1:{ports[0]}/api/ingest", process)

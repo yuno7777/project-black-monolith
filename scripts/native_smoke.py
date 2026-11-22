@@ -165,6 +165,9 @@ def main():
                 from verify_github_pilot_local import exercise
 
                 exercise(env, state / "github-acceptance", free_port())
+                from verify_business_local import exercise as exercise_business
+
+                exercise_business(env, state / "business-acceptance", free_port())
             # The compatibility roles must stay inert on a plain database.
             roles = subprocess.run(
                 [str(directory / ("psql" + suffix)), env["DATABASE_ADMIN_URL"],

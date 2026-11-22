@@ -776,6 +776,10 @@ class ChildEnvTests(unittest.TestCase):
             "MONOLITH_ADMIN_TOKEN": "admin-token-0004",
             "MCP_SHIELD_KEY": "hmac-key-0005",
             "PBM_SECRET_PROVIDER_TOKEN": "provider-token-0006",
+            "MONOLITH_BUSINESS_CONNECTORS_JSON": "private-connector-config",
+            "MONOLITH_PRACTICE_CONNECTOR_TOKEN": "private-practice-token",
+            "MONOLITH_BUSINESS_REVIEWERS_JSON": "reviewer-membership",
+            "OPERATOR_TOKENS_JSON": "operator-accounts",
             "A_TOKEN_FOR_SOMETHING_ELSE": "not-ours-to-take",
         }
         child = build_child_env(base)
@@ -787,6 +791,10 @@ class ChildEnvTests(unittest.TestCase):
             "MONOLITH_ADMIN_TOKEN",
             "MCP_SHIELD_KEY",
             "PBM_SECRET_PROVIDER_TOKEN",
+            "MONOLITH_BUSINESS_CONNECTORS_JSON",
+            "MONOLITH_PRACTICE_CONNECTOR_TOKEN",
+            "MONOLITH_BUSINESS_REVIEWERS_JSON",
+            "OPERATOR_TOKENS_JSON",
         ):
             self.assertNotIn(name, child, f"{name} must not reach the agent")
 

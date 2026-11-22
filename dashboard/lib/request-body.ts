@@ -8,7 +8,7 @@ export class JsonBodyError extends Error {
 }
 
 /** Read a JSON body with a hard UTF-8 byte limit, including chunked bodies. */
-export async function readJsonBody(req: Request, maxBytes: number): Promise<unknown> {
+export async function readJsonBody(req: Pick<Request, "headers" | "body">, maxBytes: number): Promise<unknown> {
   const declared = req.headers.get("content-length");
   if (declared !== null) {
     if (!/^\d+$/.test(declared)) {

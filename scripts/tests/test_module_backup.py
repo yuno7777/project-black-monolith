@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -26,6 +27,7 @@ esac
 """
 
 
+@unittest.skipUnless(sys.platform.startswith("linux"), "the module backup helper targets GNU/Linux")
 class ModuleBackupTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()

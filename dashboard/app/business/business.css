@@ -1,0 +1,40 @@
+.biz-page h2, .biz-page h3, .biz-page h4, .biz-page p { margin: 0; }
+.biz-page h2 { font-size: 17px; }
+.biz-page h3 { font-size: 15px; }
+.biz-page p { font-size: 13px; line-height: 1.55; }
+.biz-nav, .biz-buttons, .biz-heading { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.biz-nav { border-bottom: 1px solid var(--line); padding-bottom: 12px; margin-bottom: 14px; }
+.biz-nav button, .biz-metrics button { border: 1px solid transparent; background: transparent; color: var(--ink-dim); font: inherit; text-align: left; cursor: pointer; }
+.biz-nav button { border-radius: 8px; padding: 7px 10px; font-size: 13px; }
+.biz-nav button[aria-current], .biz-nav button:hover { background: var(--card-2); color: var(--ink); border-color: var(--line); }
+.biz-content { padding-bottom: 24px; }
+.biz-panel, .biz-empty { border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--card); padding: 16px; }
+.biz-panel { display: grid; gap: 11px; min-width: 0; }
+.biz-empty, .biz-panel p, .biz-page details, .biz-timeline span { color: var(--ink-dim); }
+.biz-heading { justify-content: space-between; }
+.biz-page label, .biz-fields dt, .biz-page legend { font-size: 13px; }
+.biz-page label { display: grid; gap: 6px; }
+.biz-page input:not([type=checkbox]), .biz-page select, .biz-page textarea { display: block; width: 100%; min-width: 0; padding: 9px; font: inherit; border: 1px solid var(--line-strong); border-radius: 7px; color: var(--ink); background: var(--canvas); }
+.biz-page textarea { min-height: 72px; resize: vertical; }
+.biz-page fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+.biz-page fieldset legend { margin-bottom: 6px; }
+.biz-page .biz-check { display: flex; gap: 8px; align-items: center; margin-block: 5px; }
+.biz-page button:disabled { opacity: .55; cursor: default; }
+.biz-grid, .biz-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 12px; }
+.biz-form, .biz-fields, .biz-timeline li { display: grid; gap: 12px; }
+.biz-fields { margin: 0; padding: 12px; background: var(--card-inset); border-radius: 6px; }
+.biz-fields div { display: grid; grid-template-columns: minmax(7rem, 18%) minmax(0, 1fr); gap: 10px; }
+.biz-fields dt { color: var(--ink-dim); }
+.biz-fields dd { margin: 0; font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.biz-primary, .biz-metrics button { border-radius: 8px; padding: 8px 13px; }
+.biz-primary { border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); font-weight: 650; cursor: pointer; }
+.biz-metrics button { border-color: var(--line); background: var(--card); }
+.biz-metrics button:hover { background: var(--card-2); }
+.biz-metrics strong { display: block; margin-top: 5px; font-size: 22px; color: var(--ink); }
+.biz-result, .biz-confirm { border-top: 1px solid var(--line); padding-top: 12px; }
+.biz-notice { color: var(--ok); }
+.biz-page summary { cursor: pointer; font-size: 12px; width: fit-content; }
+.biz-timeline { margin: 0; padding: 0; list-style: none; }
+.biz-timeline li { padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 13px; gap: 4px; }
+.biz-timeline button, .biz-panel > button { justify-self: start; }
+@media (max-width: 600px) { .biz-fields div { grid-template-columns: 1fr; gap: 4px; } }

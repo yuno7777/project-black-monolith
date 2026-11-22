@@ -64,6 +64,10 @@ update monolith.github_triage_actions
  where status in ('pending', 'dispatching');
 ```
 
+For deployments using the business workspace, apply the [business decision
+recovery procedure](BUSINESS_CONTROL_CENTER.md#recover-after-a-database-restore)
+before re-enabling its connector.
+
 Reconcile the affected issues against GitHub before asking reviewers to approve
 new proposals. Backups may contain drafts and operational evidence. Restrict
 access to the same operators who can read that data in the dashboard.

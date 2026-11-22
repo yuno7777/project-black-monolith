@@ -58,6 +58,9 @@ class LocalToolsTests(unittest.TestCase):
             self.assertEqual(
                 configure(env, [3000, 8001, 8002])["DATABASE_ADMIN_URL"], env["DATABASE_ADMIN_URL"]
             )
+            accounts = json.dumps({"finance-reviewer": {"token": "fixture-operator", "role": "analyst", "tenant_id": "pilot"}})
+            env["OPERATOR_TOKENS_JSON"] = accounts
+            self.assertEqual(configure(env, [3000, 8001, 8002])["OPERATOR_TOKENS_JSON"], accounts)
             del env["MONOLITH_ADMIN_TOKEN"]
             with self.assertRaises(ValueError):
                 configure(env, [3000, 8001, 8002])

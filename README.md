@@ -431,6 +431,10 @@ Full model: [docs/IDENTITY_AND_ACCESS.md](docs/IDENTITY_AND_ACCESS.md).
 
 ## Evaluate for your team
 
+A support team can use the **Business control center** to register its agent,
+practice a refund policy, and review the exact refund and customer reply before
+sending either to its own connector. [Walk through a refund](docs/BUSINESS_CONTROL_CENTER.md).
+
 The [GitHub triage quickstart](docs/GITHUB_TRIAGE_QUICKSTART.md) connects a
 workload to issue reads and human-approved writes. The [pilot operations
 runbook](docs/PILOT_OPERATIONS.md) covers deployment and recovery.
