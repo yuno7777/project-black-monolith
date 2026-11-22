@@ -84,7 +84,7 @@ def github_handler(token, labels, comments, writes):
     return GitHub
 
 
-def exercise(env, logs: Path, port: int):
+def exercise(env, logs: Path, port: int, psql: Path):
     """Run against the migrated disposable database created by native_smoke.py."""
     logs.mkdir()
     dashboard = ROOT / "dashboard"
@@ -115,7 +115,7 @@ def exercise(env, logs: Path, port: int):
                 "NODE_OPTIONS": f'--import="{fixture.as_uri()}"',
             })
             wait_health(dashboard_url + "/api/ingest", process)
-            check_acceptance(env, logs, dashboard_url, fixture_url, workload, operator, github, comments, writes)
+            check_acceptance(env, psql, logs, dashboard_url, fixture_url, workload, operator, github, comments, writes)
         finally:
             runner.close()
             server.shutdown()
@@ -123,7 +123,7 @@ def exercise(env, logs: Path, port: int):
     print("Verified the acceptance CLI and evidence against the dashboard and PostgreSQL with loopback GitHub.")
 
 
-def check_acceptance(env, logs, dashboard_url, fixture_url, workload, operator, github, comments, writes):
+def check_acceptance(env, psql, logs, dashboard_url, fixture_url, workload, operator, github, comments, writes):
     state_path = logs / "state.json"
     common = ["--test-repository", REPOSITORY, "--issue", "1", "--state", str(state_path)]
     settings = {
@@ -174,7 +174,7 @@ def check_acceptance(env, logs, dashboard_url, fixture_url, workload, operator, 
 
     target = UUID(drafts["expired"]["id"])
     postgres = subprocess.run(
-        ["psql", env["DATABASE_ADMIN_URL"], "-X", "-v", "ON_ERROR_STOP=1", "-c",
+        [psql, env["DATABASE_ADMIN_URL"], "-X", "-v", "ON_ERROR_STOP=1", "-c",
          f"update monolith.github_triage_actions set expires_at = now() where id = '{target}'"],
         check=True, env=env, capture_output=True, text=True, timeout=15,
     )

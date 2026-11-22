@@ -44,7 +44,7 @@ def connector_handler(token, tenant, writes):
     return Connector
 
 
-def exercise(env, logs, port):
+def exercise(env, logs, port, psql):
     logs.mkdir()
     tenant = "business-smoke-" + secrets.token_hex(6)
     agent = "returns-assistant"
@@ -88,7 +88,7 @@ def exercise(env, logs, port):
                 "node", str(dashboard / "node_modules/next/dist/bin/next"), "start", "-H", "127.0.0.1", "-p", str(port),
             ], dashboard, env | settings)
             wait_health(base + "/api/ingest", process)
-            check_workflow(env, base + "/api/business", tenant, agent, tokens, workload, writes)
+            check_workflow(env, psql, base + "/api/business", tenant, agent, tokens, workload, writes)
         finally:
             runner.close()
             server.shutdown()
@@ -96,7 +96,7 @@ def exercise(env, logs, port):
     print("Verified business refund workflow, reviewer routing, tenant isolation, revocation, and recovery with loopback provider.")
 
 
-def check_workflow(env, api, tenant, agent, tokens, workload, writes):
+def check_workflow(env, psql, api, tenant, agent, tokens, workload, writes):
     manager = tokens["manager"]
     support = tokens["support-reviewer"]
     finance = tokens["finance-reviewer"]
@@ -189,7 +189,7 @@ def check_workflow(env, api, tenant, agent, tokens, workload, writes):
     # Seed the same revocation table used by the operator quarantine and circuit breaker.
     pending = proposal(refund, case="case-revoked")
     subprocess.run(
-        ["psql", env["DATABASE_ADMIN_URL"], "-X", "-v", "ON_ERROR_STOP=1", "-c",
+        [psql, env["DATABASE_ADMIN_URL"], "-X", "-v", "ON_ERROR_STOP=1", "-c",
          f"insert into monolith.revoked_sessions(tenant_id,agent_id,session_id,reason,triggered_by) "
          f"values ('{tenant}','{agent}','run','acceptance','test')"],
         env=env, check=True, capture_output=True, timeout=15,
@@ -211,7 +211,7 @@ def check_workflow(env, api, tenant, agent, tokens, workload, writes):
     # A missing RLS policy would leak rows even if the dashboard's filter is correct.
     for scope, count in [(tenant, len(expected_statuses)), (tenant + "-other", 0)]:
         result = subprocess.run(
-            ["psql", env["DATABASE_URL"], "-XqAt", "-v", "ON_ERROR_STOP=1", "-c",
+            [psql, env["DATABASE_URL"], "-XqAt", "-v", "ON_ERROR_STOP=1", "-c",
              f"set role monolith_app; set monolith.tenant_id = '{scope}'; select count(*) from monolith.business_decisions"],
             env=env, check=True, capture_output=True, text=True, timeout=15,
         )

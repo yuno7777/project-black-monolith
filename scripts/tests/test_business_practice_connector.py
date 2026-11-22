@@ -76,10 +76,14 @@ class PracticeConnectorTests(unittest.TestCase):
             (422, {**self.envelope, "action": {"kind": "other"}}, {}),
             (422, {**self.envelope, "action": {**self.envelope["action"], "cc": "other"}}, {}),
             (415, self.envelope, {"Content-Type": "text/plain"}),
-            (413, {**self.envelope, "padding": "x" * 82000}, {}),
         ]:
             with self.subTest(expected=expected):
                 self.assertEqual(self.post(server, data, {**self.headers, **headers})[0], expected)
+        # Send only the oversized declaration. The server can reject it before
+        # reading a body, and closing with unread bytes can reset a macOS socket.
+        with closing(HTTPConnection(*server.server_address, timeout=5)) as client:
+            client.request("POST", "/monolith", headers={**self.headers, "Content-Length": "82000"})
+            self.assertEqual(client.getresponse().status, 413)
         self.assertEqual(self.post(server, self.envelope, path="/other")[0], 404)
         with closing(sqlite3.connect(self.db)) as db:
             self.assertEqual(db.execute("select count(*) from practice_decisions").fetchone()[0], 0)

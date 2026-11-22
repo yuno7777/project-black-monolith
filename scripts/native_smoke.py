@@ -35,7 +35,7 @@ def postgres_bin():
     suffix = ".exe" if os.name == "nt" else ""
     for path in candidates:
         if (path / ("initdb" + suffix)).is_file():
-            return path, suffix
+            return path.resolve(), suffix
     raise RuntimeError("Install PostgreSQL or set PG_BIN to its bin directory")
 
 
@@ -164,10 +164,12 @@ def main():
                 )
                 from verify_github_pilot_local import exercise
 
-                exercise(env, state / "github-acceptance", free_port())
+                # Windows resolves executables using the parent process's PATH.
+                psql = directory / ("psql" + suffix)
+                exercise(env, state / "github-acceptance", free_port(), psql)
                 from verify_business_local import exercise as exercise_business
 
-                exercise_business(env, state / "business-acceptance", free_port())
+                exercise_business(env, state / "business-acceptance", free_port(), psql)
             # The compatibility roles must stay inert on a plain database.
             roles = subprocess.run(
                 [str(directory / ("psql" + suffix)), env["DATABASE_ADMIN_URL"],
