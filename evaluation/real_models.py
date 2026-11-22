@@ -254,9 +254,16 @@ def main():
         for label in (False, True):
             data["evaluation"].extend([r for r in external["cases"] if r["attack"] == label][:8])
     validate_dataset(data)
-    result = (
-        asyncio.run(evaluate_trace(args, data)) if args.layer == "trace" else evaluate_vector(data)
-    )
+    if args.layer == "trace":
+        import httpx
+
+        try:
+            result = asyncio.run(evaluate_trace(args, data))
+        except (httpx.TimeoutException, TimeoutError) as error:
+            print(f"{args.model} inference timed out ({type(error).__name__})", file=sys.stderr)
+            return 75
+    else:
+        result = evaluate_vector(data)
     if args.external:
         result["external_dataset_sha256"] = hashlib.sha256(args.external.read_bytes()).hexdigest()
     try:
@@ -278,4 +285,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
