@@ -780,6 +780,7 @@ class ChildEnvTests(unittest.TestCase):
             "MONOLITH_PRACTICE_CONNECTOR_TOKEN": "private-practice-token",
             "MONOLITH_ZENDESK_ACCESS_TOKEN": "private-zendesk-access-token",
             "MONOLITH_ZENDESK_CONNECTOR_TOKEN": "private-zendesk-connector-token",
+            "MONOLITH_VERIFY_ZENDESK_TOKEN": "private-zendesk-verify-token",
             "MONOLITH_BUSINESS_REVIEWERS_JSON": "reviewer-membership",
             "OPERATOR_TOKENS_JSON": "operator-accounts",
             "A_TOKEN_FOR_SOMETHING_ELSE": "not-ours-to-take",
@@ -797,6 +798,7 @@ class ChildEnvTests(unittest.TestCase):
             "MONOLITH_PRACTICE_CONNECTOR_TOKEN",
             "MONOLITH_ZENDESK_ACCESS_TOKEN",
             "MONOLITH_ZENDESK_CONNECTOR_TOKEN",
+            "MONOLITH_VERIFY_ZENDESK_TOKEN",
             "MONOLITH_BUSINESS_REVIEWERS_JSON",
             "OPERATOR_TOKENS_JSON",
         ):

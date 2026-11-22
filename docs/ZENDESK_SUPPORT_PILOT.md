@@ -63,8 +63,31 @@ approved text.
   a decision becomes uncertain, use the reconciliation procedure below.
   A replay of an uncertain decision must leave the ticket unchanged.
 
-Keep the decision IDs, final dashboard statuses, and Zendesk references
-with the pilot evidence. Preserve the connector ledger with your backups.
+Use the two-phase acceptance runner to save the decision IDs, final dashboard
+statuses and Zendesk receipt. Configure a separate Zendesk verifier OAuth
+token with read access to the sandbox ticket audits as
+`MONOLITH_VERIFY_ZENDESK_TOKEN`. Set `MONOLITH_DASHBOARD_API_URL` to your
+dashboard, `MONOLITH_WORKLOAD_TOKEN` for preparation and
+`MONOLITH_OPERATOR_TOKEN` for the evidence check.
+
+```sh
+python3 scripts/verify_zendesk_pilot.py prepare \
+  --sandbox-subdomain your-sandbox --ticket 42 --state ./zendesk-pilot-state/run.json
+```
+
+Approve the printed **approved** decision and deny the printed **denied**
+decision in the dashboard. Then check the recorded outcome against Zendesk.
+
+```sh
+python3 scripts/verify_zendesk_pilot.py check \
+  --sandbox-subdomain your-sandbox --ticket 42 --state ./zendesk-pilot-state/run.json \
+  --evidence ./zendesk-pilot-state/evidence.json
+```
+
+The check reads both systems and only saves evidence after it finds one exact
+approved reply and zero denied replies. Use new state and evidence paths for
+each run. The evidence contains decision IDs, digests, outcomes and the
+provider reference. Preserve the connector ledger with your backups.
 After restoring a backup, compare its decisions with provider records before
 re-enabling the connector. [Recovery procedure](BUSINESS_CONTROL_CENTER.md#recover-after-a-database-restore)
 

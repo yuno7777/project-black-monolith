@@ -1,11 +1,15 @@
 """Verify approved replies against the production dashboard and Zendesk API fixture."""
 
 import hashlib
+import io
 import json
 import secrets
 import threading
+from contextlib import redirect_stderr, redirect_stdout
+from unittest.mock import patch
 from uuid import uuid4
 
+import verify_zendesk_pilot
 from business_practice_connector import ConnectorServer
 from business_zendesk_connector import DispatchLedger, Zendesk
 from fixtures.zendesk_fixture import REPLY, TICKET, ZendeskFixture
@@ -45,7 +49,7 @@ def exercise(env, logs, port):
             process = runner.start("dashboard", ["node", str(dashboard / "node_modules/next/dist/bin/next"),
                                    "start", "-H", "127.0.0.1", "-p", str(port)], dashboard, env | settings)
             wait_health(base + "/api/ingest", process)
-            run_workflow(base + "/api/business", agent, token, operator_headers, ledger, provider)
+            run_workflow(base + "/api/business", agent, token, operator_headers, ledger, provider, logs)
         finally:
             runner.close()
             server.shutdown()
@@ -53,7 +57,7 @@ def exercise(env, logs, port):
     print("Verified Zendesk exact reply, denial, replay refusal and reconciliation using the dashboard and local API fixture.")
 
 
-def run_workflow(api, agent, token, operator, ledger, provider):
+def run_workflow(api, agent, token, operator, ledger, provider, logs):
     request(api + "/agents", operator, payload={
         "agentId": agent, "owner": "Support", "allowedKinds": ["customer_reply"], "paused": False, "practiceOnly": False,
     })
@@ -68,7 +72,28 @@ def run_workflow(api, agent, token, operator, ledger, provider):
             "id": row["id"], "digest": row["digest"], "decision": decision, **kwargs,
         }).get("decision")
 
-    approved, denied, interrupted = propose(), propose(), propose()
+    state_path = logs / "zendesk-state.json"
+    report = logs / "zendesk-evidence.json"
+    settings = {
+        "MONOLITH_DASHBOARD_API_URL": api.removesuffix("/api/business"),
+        "MONOLITH_WORKLOAD_TOKEN": token,
+        "MONOLITH_VERIFY_ZENDESK_TOKEN": "zendesk-token-for-testing",
+        "MONOLITH_OPERATOR_TOKEN": operator["Authorization"].removeprefix("Bearer "),
+    }
+
+    def run_cli(phase, *options):
+        args = [phase, "--sandbox-subdomain", "pilot-sandbox", "--ticket", str(TICKET),
+                "--state", str(state_path), *options]
+        with (patch.dict("os.environ", settings), patch.object(verify_zendesk_pilot, "Zendesk", return_value=ledger.zendesk),
+              redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as errors):
+            result = verify_zendesk_pilot.main(args)
+        return result, errors.getvalue()
+
+    status, error = run_cli("prepare")
+    require(status == 0, error)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    approved, denied = (state["decisions"][scenario] for scenario in ("approved", "denied"))
+    interrupted = propose()
     require(not provider.writes, "Drafting a reply wrote to the provider.")
     confirmed = decide(approved, "approve")
     require(confirmed["status"] == "succeeded" and confirmed["reference"] == "zendesk-ticket-42-comment-51",
@@ -77,6 +102,21 @@ def run_workflow(api, agent, token, operator, ledger, provider):
     decide(denied, "deny")
     decide(denied, "approve", expected=409)
     require(len(provider.writes) == 1, "A denied or replayed decision wrote to Zendesk.")
+
+    status, error = run_cli("check", "--evidence", str(report))
+    require(status == 0, error)
+    evidence = json.loads(report.read_text(encoding="utf-8"))
+    require(evidence["decisions"]["approved"]["reference"] == confirmed["reference"]
+            and evidence["decisions"]["denied"]["status"] == "denied", "Saved Zendesk evidence was incorrect.")
+    serialized = report.read_text(encoding="utf-8")
+    require(state["marker"] not in serialized and all(secret not in serialized for secret in settings.values()),
+            "Saved Zendesk evidence contained credentials or reply text.")
+    duplicate_report = logs / "duplicate.json"
+    provider.receipts.append(provider.receipts[0])
+    status, error = run_cli("check", "--evidence", str(duplicate_report))
+    provider.receipts.pop()
+    require(status == 1 and "exactly one" in error and not duplicate_report.exists(),
+            "Duplicate Zendesk comments must not produce accepted evidence.")
 
     provider.fail = "lost"
     lost = decide(interrupted, "approve")
@@ -87,5 +127,6 @@ def run_workflow(api, agent, token, operator, ledger, provider):
             "Read-only reconciliation could not find the provider receipt.")
     resolved = decide(interrupted, "confirm", note=f"Verified provider receipt {receipt['reference']}")
     require(resolved["status"] == "succeeded", "Dashboard did not record the reconciliation.")
-    require([item["comment"]["body"] for item in provider.writes] == [REPLY["body"], REPLY["body"]],
+    expected = verify_zendesk_pilot.reply("pilot-sandbox", TICKET, state["marker"], "approved")
+    require([item["comment"]["body"] for item in provider.writes] == [expected["body"], REPLY["body"]],
             "Zendesk received an extra or changed write.")

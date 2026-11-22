@@ -83,28 +83,32 @@ class Zendesk:
             raise RequestError(503, "Zendesk did not confirm the approved reply.")
         return reference
 
-    def find(self, ticket_id: int, recipient: str, decision_id: str, digest: str) -> str | None:
+    def audits(self, ticket_id: int):
+        if ticket_id not in self.tickets:
+            raise RequestError(403, "Ticket is outside the configured Zendesk allowlist.")
         query = {"page[size]": "100"}
-        found: list[str | None] = []
         for _ in range(10):
             data = self.request(f"/api/v2/tickets/{ticket_id}/audits?" + urllib.parse.urlencode(query))
             audits = data.get("audits")
             if not isinstance(audits, list):
                 raise RequestError(503, "Zendesk did not return ticket audits.")
-            for audit in audits:
-                if matches_decision(audit, ticket_id, decision_id, digest):
-                    found.append(audit_reference(audit, ticket_id, recipient, decision_id, digest))
+            yield from audits
             meta = data.get("meta", {})
             if not isinstance(meta, dict):
                 raise RequestError(503, "Zendesk audit pagination was invalid.")
             if meta.get("has_more") is False or (
                     "has_more" not in meta and "next_page" in data and data["next_page"] is None):
-                return found[0] if len(found) == 1 else None
+                return
             cursor = meta.get("after_cursor")
             if not isinstance(cursor, str) or not cursor or len(cursor) > 4096 or cursor == query.get("page[after]"):
                 break
             query["page[after]"] = cursor
         raise RequestError(503, "Zendesk audit history could not be checked to completion.")
+
+    def find(self, ticket_id: int, recipient: str, decision_id: str, digest: str) -> str | None:
+        references = [audit_reference(audit, ticket_id, recipient, decision_id, digest)
+                      for audit in self.audits(ticket_id) if matches_decision(audit, ticket_id, decision_id, digest)]
+        return references[0] if len(references) == 1 else None
 
 
 def reply_digest(action: dict) -> str:
